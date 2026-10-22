@@ -1,28 +1,86 @@
 # Mathsemble｜数课工坊
 
-Mathsemble is a local-first Obsidian desktop plugin for mathematics teaching materials, question sheets, handouts, and student/teacher PDF exports.
+Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，用于将 Markdown 题卡、讲义或题目集合转成可预览、可打印的 A4 学生版／教师版。当前优先确保 **一份 Markdown 源码、两份教学输出、数学公式与答题留白可核验**。
 
-**Status:** Public repository initialized. The full source and automated release workflow are being prepared for an initial beta; **there is no installable GitHub Release yet**. Do not submit this repository to the Obsidian community directory until the source, `manifest.json`, build artifacts, license, and host tests are complete.
+> **当前状态（2026-10-23）**：本地实验安装包为 **v0.1.9**（局部渲染警告、经确认可继续 PDF／打印）。已有代码级与局部浏览器测试记录，但**尚未完成真实 Obsidian 中整份长讲义、双版本 PDF 的最终视觉／分页验收**。GitHub 仓库目前仅发布文档，**尚未提交完整源代码，也没有可供安装的 GitHub Release**。本文“已实现”仅指已在当前本地安装包中看到相应实现，不等于正式稳定发布。
 
-## Product scope
+- [详细功能需求与验收标准](docs/REQUIREMENTS.md)
+- [版本路线图与风险清单](docs/ROADMAP.md)
 
-- Current experimental plugin: Markdown question cards, A4 previews, solution/answer separation, writing spaces, handout student/teacher export, printing.
-- Future work: question search and basket, KnowledgeItem assembly, family-aware teaching materials, full content assemblies, and audited release pipeline.
-- Privacy: do not commit private question banks, student records, PDFs containing personal data, or API keys.
+## 1. 核心使用场景
 
-## Version and identity
+1. **讲义**：打开一份普通 Markdown，通过命令面板执行“长 Markdown 文档预览、PDF 与打印（实验）”，切换原文、讲义学生版、讲义教师版。
+2. **题卡**：对当前题卡执行“预览并导出当前数学题卡（P0）”，导出学生卷／教师卷。
+3. **组卷**：在题卡所在文件夹执行“当前文件夹组卷并预览 A4 试卷”，按题型或主知识点分组。当前限制：文件夹不超过 200 个 Markdown 文件、单次组卷最多 100 题。
+4. **打印与诊断**：预览窗口提供“保存 PDF”“打印…”“保存并打印…”“保存 HTML 备用”“复制渲染错误详情”“复制留白核验”等操作。
 
-Last independently tested prototype: **0.1.6.0** (145/145 Node tests). Before a public Obsidian release, convert to a three-part version (planned **0.1.6**) and keep the legacy plugin ID `math-teaching-workbench` unless a migration is explicitly designed.
+> 目前只提供 **桌面版 Obsidian** 插件（`manifest.json` 中 `isDesktopOnly: true`，`minAppVersion: 1.5.0`）。插件 ID 为 `math-teaching-workbench`，**不得在没有迁移设计时更名**。
 
-The full release candidate source has not been committed to this repository yet.
+## 2. 简单而统一的 Markdown 规则
 
-## Answer-slot grammar (0.1.8)
+### Callout 双版本规则
 
-Mathsemble determines each inline `==...==` answer slot **only from its immediately surrounding parentheses**:
+**只看 `[!类型]` 后是否紧跟 `+` 或 `-`；不根据 `answer`、`scaffold`、`note` 等类型分配显隐权限。**
 
-- `(==anything==)` or `（==anything==）` (optional spaces): **choice**, hidden without an underline in student output.
-- `==anything==` without immediately surrounding parentheses: **fill-in**, hidden with an underline in student output.
-- Both ASCII and Chinese full-width parentheses are accepted. The answer can be letters, numbers, Chinese text, or TeX. **Neither answer content nor YAML `question_type` overrides this per-slot rule.**
-- YAML `question_type` may still be used for question grouping and other question-level functionality.
+| 写法 | 教师版 | 学生版 |
+| --- | --- | --- |
+| `> [!answer]- 答案与解析` | 显示完整内容 | 替换为对应高度的空白 |
+| `> [!scaffold]+ 过程提示` | 显示完整内容 | 替换为对应高度的空白 |
+| `> [!任意类型]+/- 标题`（任选 `+` 或 `-`） | 显示完整内容 | 替换为对应高度的空白 |
+| `> [!任意类型] 标题` | 显示完整内容 | 显示完整内容 |
 
-This behavior has been implemented in a local **0.1.8 experimental source package** and passed 159/159 Node tests; **the public repository does not yet contain the plugin source or an installable Release**. Obsidian host and PDF visual acceptance remain pending.
+这里的 `+/-` 是 **Mathsemble 导出的教师专用标记**；原始 Obsidian 阅读视图仍按 Obsidian 的折叠语义运行。导出预览和测量层会临时展开 Callout，**不改写源文件**。
+
+学生留白以 **教师版完整渲染后的对应 Callout 外部高度** 为依据；默认比例 **100%**、最小留白 **0 cm**。预览中可选比例 50/75/90/100/110/125/150%，最小高度 0/2/4 cm。长留白允许跨页拆分；不可为省纸压缩或删掉必要答题空间。**允许 PDF 最后一页为空白，不能仅据此判定导出失败。**
+
+### 答案槽
+
+| Markdown | 识别类型 | 学生版 | 教师版 |
+| --- | --- | --- | --- |
+| `(==B==)`、`（==BC==）` | 选择（含多选） | 隐藏答案、没有填空下划线 | 显示答案 |
+| `==$\frac{1}{2}$==`、`==42==` | 填空 | 保留填写横线／空槽 | 显示参考答案 |
+
+判断只取决于**答案槽外层是否紧贴中文或英文圆括号**，不看内容，也不依赖 `question_type`。输入 LaTeX 时使用普通反斜杠；不要在已有数学环境中不当嵌套 `$`、`==` 或 `\text{...}`。对于复杂行内 TeX，应先核验渲染结果。
+
+### YAML 与数据元信息
+
+- **普通讲义导出、答案槽识别**：不需要靠 YAML 的 `question_type` 判断选择或填空。
+- **题库／文件夹组卷、题型与知识点分类、元信息审计**：仍可使用 YAML。`question_type`、`object_type`、`knowledge_nodes`、`role` 等有各自用途，但不覆盖答案槽显隐语法。
+- **缺失元信息**：应产生审计提示，不应自动补造 ID、来源或关联关系；参见需求文档。
+
+## 3. 渲染失败处理
+
+- **正常**：直接生成 PDF／打印。
+- **局部可恢复异常**：如个别 MathJax 语法错误、图片加载失败、TikZ 未生成，显示错误概要与风险；用户**明确勾选同意导出不完整内容**后，可以继续保存 PDF、打印或保存并打印。输出可能存在不可读公式或缺图，**不得称为内容完整**。
+- **结构或安全失败**：如真正的版心越界／裁切、题目块丢失、答题留白高度异常、无法生成有效页面，应停止导出，不能通过勾选绕过。
+
+渲染诊断应优先指出公式序号、所属 Callout、附近文字和具体 MathJax 错误。当前本地包的定位信息仍有误差，精确映射到 Markdown 行号属于后续任务。
+
+## 4. 本地安装与使用
+
+**暂不能通过 GitHub Releases 安装。** 如果你已取得可信的本地 v0.1.9 直接安装包：
+
+1. 备份现有插件目录及需要打印的 Markdown。
+2. 解压 ZIP 内 `main.js`、`manifest.json`、`styles.css`。
+3. 覆盖 Obsidian 库目录下的 `.obsidian/plugins/math-teaching-workbench/` 对应文件。
+4. 重新加载插件／重启 Obsidian；打开 Markdown 文件，在命令面板运行对应的预览命令。
+5. 预览并确认学生／教师双版，PDF 默认写入库内 `ExamExports/` 目录（需有写入权限）。
+
+**重要**：本 README 随本地安装包配套更新时属于说明文档；GitHub 仓库当前不保证其与未来源码构建完全一致。
+
+## 5. 当前实现边界
+
+**本地包已有相关代码路径**：Markdown 与 MathJax 渲染、题卡预览、长讲义双版本、Callout 教师专用等高留白、选择／填空槽、文件夹分组组卷、基础元信息审计、A4 分页、PDF／系统打印、HTML 备用、局部渲染警告与确认。
+
+**尚未作为稳定交付验收**：Obsidian 宿主全流程、复杂主题 CSS、超长讲义的真实打印分页、不同字体／系统下的等高留白、TikZ／图片与长公式的兼容性。
+
+**尚未实现为完整产品**：题库搜索与题篮、知识点条目（KnowledgeItem）编排、题族关系驱动的组讲义、源代码与自动测试／构建发布流水线、正式上架 Obsidian 社区插件目录。
+
+## 6. 项目与隐私
+
+- 仓库：<https://github.com/sunsimilarsun/Mathsemble>
+- 当前版本号（本地实验包）：`0.1.9`
+- 作者：`sunsimilarsun`
+- 原则：本地优先；禁止提交私人题库、学生档案、含个人信息的 PDF、API Key 和任何访问凭证。
+
+完整的 P0/P1/P2 需求、验收用例、风险及发布门槛见 [功能需求](docs/REQUIREMENTS.md) 和 [路线图](docs/ROADMAP.md)。
