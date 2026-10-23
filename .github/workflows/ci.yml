@@ -17,8 +17,11 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Require tracked source (not a partial scanner extract)
-        run: test -s src/main.js
+      - name: Emulate Community scanner clean build (remove all main.js outputs)
+        run: |
+          find . -type f -name main.js -delete
+          test ! -e main.js
+          test -s src/plugin.js
       - run: npm run check
       - name: Ensure release code was committed from source
         run: git diff --exit-code -- main.js

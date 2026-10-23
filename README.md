@@ -34,7 +34,7 @@ npm run check
 npm run prepublish-check
 ```
 
-On a complete checkout, `src/main.js` is the tracked source for the release bundle. CI requires that file and verifies byte-for-byte build consistency. When an external scanner extracts only root-level installation assets, `npm run build` may preserve an existing `main.js` rather than fail; that fallback is **not** an alternative source-release process.
+The tracked source is `src/plugin.js`, deliberately named differently from the generated root `main.js`. `npm run build` must regenerate `main.js` from this source even after deleting every existing `main.js`; it never relies on a prebuilt bundle. CI tests this scanner-style clean build and verifies byte-for-byte output identity.
 
 ## 中文说明
 

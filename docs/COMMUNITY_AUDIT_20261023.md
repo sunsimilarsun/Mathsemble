@@ -36,3 +36,16 @@ Changes on `main` do not rewrite the existing immutable historical **0.1.9** tag
 - [Signed provenance for styles.css](https://github.com/sunsimilarsun/Mathsemble/attestations/58900360): SHA-256 `d64e53f9fde8c33c41f78c1a915d7152cf513dc5cd2897a61cd11607829e5da9`.
 - Workflow logs report Public Good Sigstore signatures, Rekor uploads and repository attestation uploads. Digests match the existing 0.1.9 Release assets, **but these attestations belong to the subsequent main-branch CI run, not the original tag workflow**.
 - Community scanner re-evaluation remains pending. Its historical scorecard cannot be assumed to update merely from changes to `main`.
+
+## Second scan (0.1.10) and source-path fix, 2026-10-23
+
+The 0.1.10 scorecard again failed its isolated build, now reporting **`Missing both src/main.js and main.js`**. Both paths existed at the published tag, with identical Git blob IDs. Since the scanner was able to execute `scripts/build.mjs` yet reported both `main.js` basenames missing, a scanner cleanup of prebuilt `main.js` files (possibly recursively) is a plausible explanation; the scanner's internal extraction/deletion procedure has **not** been independently verified.
+
+**Fix on main (for a future patch release):**
+- Rename tracked `src/main.js` to **`src/plugin.js`** without changing its Git blob or byte content.
+- Generate root `main.js` *only* from `src/plugin.js`; remove the misleading fallback that treated a checked-in build artifact as source.
+- Emulate removal of all files named `main.js` in CI before `npm run check`. Ensure the build recreates `main.js` byte-for-byte.
+- Add regression cases for a missing root bundle, stale bundle, and rejected attempts to build without the source.
+- Keep `manifest.json` version 0.1.10 until the dashboard's **Review branch** preview can confirm the fix. A future patch tag is required for the public 0.1.10 scorecard to change.
+
+No Mathsemble runtime JavaScript or stylesheet changes are included. The existing release tag remains unchanged.
