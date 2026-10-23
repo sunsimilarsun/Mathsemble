@@ -116,3 +116,9 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 ## 开源许可证
 
 Mathsemble 采用 [MIT License](LICENSE)（Copyright © 2026 sunsimilarsun）。许可允许在保留版权与许可声明的前提下使用、修改及再分发；使用者需遵守独立第三方代码的许可条件。
+
+## Network access and files outside the vault
+
+Mathsemble is local-first and has no built-in analytics, telemetry or account service. When exporting a document that references remote HTTP(S) images or fonts, the plugin may request those resources; those servers can see the normal requests.
+
+The plugin may read explicitly referenced `file://` image and font resources **outside the vault**. To generate PDF output it temporarily writes print-ready HTML to the operating system's temporary directory and removes it after the printing process. Exported PDF/HTML is saved to the vault's `ExamExports/` folder. Review linked resources before exporting sensitive documents. See [Privacy details](docs/PRIVACY.md).
