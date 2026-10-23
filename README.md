@@ -108,6 +108,11 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 ## 发布准备状态与隐私披露（2026-10-23）
 
-用户已报告 v0.1.9 手动测试未发现明显问题；该版本**还不是** GitHub 正式 Release 或 Obsidian Community 已审核版本。源码导入、独立构建校验、许可证与网站提交正在准备中。参见 [发布审计](docs/RELEASE_AUDIT.md) 和 [提交指引](docs/PUBLISHING.md)。
+用户已报告 v0.1.9 手动测试未发现明显问题；该版本**还不是** GitHub 正式 Release 或 Obsidian Community 已审核版本。源码导入、独立构建校验与网站提交仍在准备中；版权持有人已于 2026-10-23 确认采用 MIT。参见 [发布审计](docs/RELEASE_AUDIT.md) 和 [提交指引](docs/PUBLISHING.md)。
 
 **网络和文件系统说明：** 导出 PDF/HTML 时，插件可能为了内联用户文档中的远程 HTTP(S) 图片／字体而发起请求。PDF 转换会在操作系统临时目录写入临时 HTML 并尝试清理；可能读取被引用的 `file://` 本地图像／字体，最终 PDF/HTML 默认存入库内 `ExamExports/`。当前代码未实现遥测/账户数据上传。请勿在保密讲义中引用不受信任的远程资源。
+
+
+## 开源许可证
+
+Mathsemble 采用 [MIT License](LICENSE)（Copyright © 2026 sunsimilarsun）。许可允许在保留版权与许可声明的前提下使用、修改及再分发；使用者需遵守独立第三方代码的许可条件。
