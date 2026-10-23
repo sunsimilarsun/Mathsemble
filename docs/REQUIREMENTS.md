@@ -140,6 +140,11 @@
 
 核心类型为 `definition`、`theorem`、`method`、`conclusion`、`attention`、`thinking`、`answer`、`scaffold`。旧 `solution` 兼容 `answer` 配色；`example` 不提供专用主题，例题使用普通 Markdown。颜色与图标只表达语义，不改变 `[!type]+/-` 显隐和学生等高留白规则。
 
-打印 Callout 透明背景、彩色左边框和彩色标题；正文、加粗推导保持标准前景色。阅读视图采用 Obsidian 原有图标，打印版隐藏图标以统一实际测量与 PDF 几何。作用范围限制在 Mathsemble 的打印/测量 DOM、已识别题卡和数学讲义的阅读视图。禁止全局干预 `mark`、`strong`、MathJax SVG 的布局、学生填空线、教师答案与学生响应留白。
+打印 Callout 透明背景、彩色左边框和彩色标题；正文、加粗推导保持标准前景色。阅读视图采用 Obsidian 原有图标，打印版隐藏图标以统一实际测量与 PDF 几何。作用范围包括标准 Obsidian 阅读视图、实时预览及 Mathsemble 打印/测量 DOM，无需 YAML 或额外添加 `mwb-*` 类；语义匹配仅针对八类核心 Callout 和历史 `solution` 兼容类型。禁止全局干预 `mark`、`strong`、MathJax SVG 的布局、学生填空线、教师答案与学生响应留白。
 
 **验收**：八类核心加旧 `solution`、普通 `example`/ `student-note`，短长解析、数学公式、折叠与非折叠混用；检查阅读与 PDF 同类配色，以及教师内容高度到学生留白的映射。当前仅完成静态、转换和 Chromium 局部浏览器测试；宿主真实 PDF 验收待完成。黑白打印和自定义主题属于后续 P1，不在本次引入复杂开关。
+
+
+## v0.1.9 普通阅读视图主题修复（2026-10-23）
+
+修复上一版 Callout 配色依赖 `mwb-math-material`、`mwb-answer-note` 等识别类导致普通笔记不生效的问题。现直接覆盖 Obsidian **阅读视图、实时预览**和 Mathsemble A4 预览/打印。只有八类核心 Callout 加旧版 `solution` 受到配色影响；`example` 保持普通外观。无 YAML 亦可应用，且不改写 `mark`、`strong`，不改变 `[!类型]+/-` 教师专用学生等高留白及答案槽语义。已经通过无 YAML 普通阅读、实时预览、打印 DOM 的 Chromium 模拟测试及 36 个留白槽回归；真实 Obsidian 宿主及长 PDF 仍待验收。
