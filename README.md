@@ -2,7 +2,7 @@
 
 Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，用于将 Markdown 题卡、讲义或题目集合转成可预览、可打印的 A4 学生版／教师版。当前优先确保 **一份 Markdown 源码、两份教学输出、数学公式与答题留白可核验**。
 
-> **当前状态（2026-10-23）**：本地实验安装包为 **v0.1.9**（局部渲染警告、经确认可继续 PDF／打印）。已有代码级与局部浏览器测试记录，但**尚未完成真实 Obsidian 中整份长讲义、双版本 PDF 的最终视觉／分页验收**。GitHub 仓库目前仅发布文档，**尚未提交完整源代码，也没有可供安装的 GitHub Release**。本文“已实现”仅指已在当前本地安装包中看到相应实现，不等于正式稳定发布。
+> **当前状态（2026-10-23）**：本地实验安装包为 **v0.1.9**（局部渲染警告、经确认可继续 PDF／打印）。已有代码级与局部浏览器测试记录，但**尚未完成真实 Obsidian 中整份长讲义、双版本 PDF 的最终视觉／分页验收**。GitHub 已提交 MIT 许可的完整 v0.1.9 源码、测试及构建工作流，**正式 [0.1.9 GitHub Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9) 已发布**，三个独立安装文件的 SHA-256 已核对一致。Obsidian Community 目录**尚未提交审核或上架**；用户报告手动测试未发现问题，但跨主题、跨系统的完整 PDF 视觉验收尚未独立完成。
 
 - [详细功能需求与验收标准](docs/REQUIREMENTS.md)
 - [版本路线图与风险清单](docs/ROADMAP.md)
@@ -58,7 +58,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 ## 4. 本地安装与使用
 
-**暂不能通过 GitHub Releases 安装。** 如果你已取得可信的本地 v0.1.9 直接安装包：
+**可以通过 [GitHub Releases 0.1.9](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9) 下载** `main.js`、`manifest.json`、`styles.css` 三个独立文件；社区插件目录尚不能一键安装。
 
 1. 备份现有插件目录及需要打印的 Markdown。
 2. 解压 ZIP 内 `main.js`、`manifest.json`、`styles.css`。
@@ -66,7 +66,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 4. 重新加载插件／重启 Obsidian；打开 Markdown 文件，在命令面板运行对应的预览命令。
 5. 预览并确认学生／教师双版，PDF 默认写入库内 `ExamExports/` 目录（需有写入权限）。
 
-**重要**：本 README 随本地安装包配套更新时属于说明文档；GitHub 仓库当前不保证其与未来源码构建完全一致。
+**重要**：官方 GitHub 0.1.9 Release 中的三个安装文件与仓库构建基线及 SHA-256 校验一致；今后版本更新应在 GitHub Actions 中重复此项检查。
 
 ## 5. 当前实现边界
 
@@ -74,7 +74,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 **尚未作为稳定交付验收**：Obsidian 宿主全流程、复杂主题 CSS、超长讲义的真实打印分页、不同字体／系统下的等高留白、TikZ／图片与长公式的兼容性。
 
-**尚未实现为完整产品**：题库搜索与题篮、知识点条目（KnowledgeItem）编排、题族关系驱动的组讲义、源代码与自动测试／构建发布流水线、正式上架 Obsidian 社区插件目录。
+**尚未实现为完整产品**：题库搜索与题篮、知识点条目（KnowledgeItem）编排、题族关系驱动的组讲义；**尚未完成** Obsidian 社区插件目录审核上架。源码、MIT 许可、自动化测试与 GitHub Release 已提交。
 
 ## 6. 项目与隐私
 
@@ -90,7 +90,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 实验安装包的学生版填空线不再使用固定的全角空格或固定 2.2em/2.8em 宽度。普通文本、独立数学公式均按答案的临时排版尺寸设置宽度；已有数学公式内部的填空采用 MathJax 宽度校准后的 `\underline{\hspace{...}}`。最小宽度为 **3em**，长答案按实际排版扩展；学生版 HTML/PDF 不保留测量用的答案文本。`(==答案==)` 选择槽无横线，以及 `[!类型]+/-` 教师专用学生等高留白规则不变。
 
-该项已有 Node 转换测试及 Chromium 字体/MathJax 几何测试，**真实 Obsidian 各主题及完整 PDF 尚待验收**。正式源码与 GitHub Release 仍未提交。
+该项已有 Node 转换测试及 Chromium 字体/MathJax 几何测试，**真实 Obsidian 各主题及完整 PDF 尚待验收**。源码及 GitHub Release 0.1.9 已提交；真实 Obsidian 各主题与长 PDF 的后续验收仍可继续补充。
 
 
 ## v0.1.9 数学讲义 Callout 主题（2026-10-23）
@@ -108,7 +108,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 ## 发布准备状态与隐私披露（2026-10-23）
 
-用户已报告 v0.1.9 手动测试未发现明显问题；该版本**还不是** GitHub 正式 Release 或 Obsidian Community 已审核版本。源码导入、独立构建校验与网站提交仍在准备中；版权持有人已于 2026-10-23 确认采用 MIT。参见 [发布审计](docs/RELEASE_AUDIT.md) 和 [提交指引](docs/PUBLISHING.md)。
+用户已报告 v0.1.9 手动测试未发现明显问题；该版本已完成 GitHub 正式 Release、完整源码入库和 MIT 授权；**Obsidian Community 目录提交与审核仍未完成**。版权持有人已于 2026-10-23 确认采用 MIT。参见 [发布审计](docs/RELEASE_AUDIT.md) 和 [提交指引](docs/PUBLISHING.md)。
 
 **网络和文件系统说明：** 导出 PDF/HTML 时，插件可能为了内联用户文档中的远程 HTTP(S) 图片／字体而发起请求。PDF 转换会在操作系统临时目录写入临时 HTML 并尝试清理；可能读取被引用的 `file://` 本地图像／字体，最终 PDF/HTML 默认存入库内 `ExamExports/`。当前代码未实现遥测/账户数据上传。请勿在保密讲义中引用不受信任的远程资源。
 
