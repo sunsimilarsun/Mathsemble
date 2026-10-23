@@ -17,27 +17,29 @@ test('embedded print CSS equals the initial stylesheet prefix',()=>{
 });
 test('preserve high-impact mathematics/answer/print layout CSS',()=>{
   for(const fragment of [
-    'display: block !important;\n  visibility: visible !important;',
-    '-webkit-text-fill-color: transparent !important;',
-    'visibility: hidden !important;',
-    'border-bottom: none !important;',
+    'display: block;\n  visibility: visible;',
+    '-webkit-text-fill-color: transparent;',
+    'visibility: hidden;',
+    'border-bottom: none;',
     'page-break-inside: auto;',
     'page-break-inside: avoid;',
     'mjx-container svg'
   ])assert.ok(css.includes(fragment),fragment);
   assert.ok(css.includes('.mwb-answer-space-chunk'));
+  assert.ok(css.includes('.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring'),
+    'option width probe must outrank the final choice grid');
 });
 test('choice border declarations exist only in the final effective override',()=>{
   const target=[
     '.mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,',
     '.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-choice-answer,',
     '.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-choice-answer {',
-    '  border: 0 !important;',
-    '  border-bottom: none !important;',
-    '  box-shadow: none !important;'
+    '  border: 0;',
+    '  border-bottom: none;',
+    '  box-shadow: none;'
   ].join('\n');
   assert.equal(css.split(target).length-1,1);
-  assert.equal((css.match(/!important/g)||[]).length,72);
+  assert.equal((css.match(/!important/g)||[]).length,0);
 });
 test('release workflow is version-aware, immutable and build-verified',()=>{
   assert.ok(workflow.includes('docs/RELEASE_NOTES_${GITHUB_REF_NAME}.md'));
