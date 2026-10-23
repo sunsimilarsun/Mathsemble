@@ -221,3 +221,18 @@ test('diagnostic version comes from actual plugin manifest rather than fixed v0.
   assert.match(js,/this\.manifest\?\.version \|\| 'unknown'/);
   assert.doesNotMatch(js,/版本:'v0\.1\.9'/);
 });
+
+test('repository host sample projects typed answers without leaking teacher-only callouts',()=>{
+  const hostSource=fs.readFileSync(path.resolve(__dirname,'fixtures/typed-answer-host.md'),'utf8');
+  const student=handoutPlan(hostSource,'student');
+  const teacher=handoutPlan(hostSource,'teacher');
+  assert.match(student.markdown,/==这是 Obsidian 普通高亮内容/);
+  assert.match(teacher.markdown,/==这是 Obsidian 普通高亮内容/);
+  assert.doesNotMatch(student.markdown,/掌握数学概念、基本方法及运算步骤|独立证明段落甲|独立提示段落乙/);
+  assert.doesNotMatch(student.markdown,/\!\{ACD\}|\?\{\-1\}/);
+  assert.match(student.markdown,/MWB_SOLUTION_SPACE_ANCHOR_/);
+  assert.match(teacher.markdown,/独立证明段落甲|独立提示段落乙/);
+  assert.match(teacher.markdown,/掌握数学概念/);
+  assert.match(student.markdown,/代码块内部的 \?\{代码填空\}/);
+  assert.match(student.markdown,/\\\?\{普通文本\}/);
+});
