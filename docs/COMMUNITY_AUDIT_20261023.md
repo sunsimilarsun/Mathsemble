@@ -27,3 +27,12 @@ Changes on `main` do not rewrite the existing immutable historical **0.1.9** tag
 2. Verify the scanner build in the Community directory or provide the Git-tree source-file evidence when reporting the discrepancy.
 3. Only then release the next patch version with attestation-enabled tag workflow.
 4. Keep functional CSS overrides until independent Obsidian visual and PDF geometry acceptance demonstrates safe simplification.
+
+## Verified GitHub Actions results
+
+- Commit: [`4562466`](https://github.com/sunsimilarsun/Mathsemble/commit/4562466116aa393c526856f825789102f213eae6)
+- [GitHub CI run 39887718684](https://github.com/sunsimilarsun/Mathsemble/actions/runs/39887718684): **success**, 17/17 Node tests passed; CI explicitly checked `src/main.js` and byte-for-byte build parity.
+- [Signed provenance for main.js](https://github.com/sunsimilarsun/Mathsemble/attestations/58900357): SHA-256 `979d8e41d3fc171dff05a30b1fa017ba361cbf315e5bf174176ca94002956410`.
+- [Signed provenance for styles.css](https://github.com/sunsimilarsun/Mathsemble/attestations/58900360): SHA-256 `d64e53f9fde8c33c41f78c1a915d7152cf513dc5cd2897a61cd11607829e5da9`.
+- Workflow logs report Public Good Sigstore signatures, Rekor uploads and repository attestation uploads. Digests match the existing 0.1.9 Release assets, **but these attestations belong to the subsequent main-branch CI run, not the original tag workflow**.
+- Community scanner re-evaluation remains pending. Its historical scorecard cannot be assumed to update merely from changes to `main`.
