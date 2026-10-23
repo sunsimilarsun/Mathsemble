@@ -105,3 +105,9 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 ## v0.1.9 普通阅读视图主题修复（2026-10-23）
 
 修复上一版 Callout 配色依赖 `mwb-math-material`、`mwb-answer-note` 等识别类导致普通笔记不生效的问题。现直接覆盖 Obsidian **阅读视图、实时预览**和 Mathsemble A4 预览/打印。只有八类核心 Callout 加旧版 `solution` 受到配色影响；`example` 保持普通外观。无 YAML 亦可应用，且不改写 `mark`、`strong`，不改变 `[!类型]+/-` 教师专用学生等高留白及答案槽语义。已经通过无 YAML 普通阅读、实时预览、打印 DOM 的 Chromium 模拟测试及 36 个留白槽回归；真实 Obsidian 宿主及长 PDF 仍待验收。
+
+## 发布准备状态与隐私披露（2026-10-23）
+
+用户已报告 v0.1.9 手动测试未发现明显问题；该版本**还不是** GitHub 正式 Release 或 Obsidian Community 已审核版本。源码导入、独立构建校验、许可证与网站提交正在准备中。参见 [发布审计](docs/RELEASE_AUDIT.md) 和 [提交指引](docs/PUBLISHING.md)。
+
+**网络和文件系统说明：** 导出 PDF/HTML 时，插件可能为了内联用户文档中的远程 HTTP(S) 图片／字体而发起请求。PDF 转换会在操作系统临时目录写入临时 HTML 并尝试清理；可能读取被引用的 `file://` 本地图像／字体，最终 PDF/HTML 默认存入库内 `ExamExports/`。当前代码未实现遥测/账户数据上传。请勿在保密讲义中引用不受信任的远程资源。
