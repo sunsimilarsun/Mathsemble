@@ -1,3 +1,45 @@
+# Mathsemble — Math Handouts for Obsidian
+
+Mathsemble is a **desktop-only Obsidian plugin** for creating mathematics handouts, question cards, and A4 student/teacher PDF exports from Markdown notes. It works locally with your Obsidian vault and MathJax.
+
+**Current release:** [Mathsemble 0.1.9 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9). The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
+
+## Installation
+
+1. Download the three separate assets **`main.js`**, **`manifest.json`**, and **`styles.css`** from the [latest GitHub Release](https://github.com/sunsimilarsun/Mathsemble/releases/latest).
+2. Create the folder `<your-vault>/.obsidian/plugins/math-teaching-workbench/`.
+3. Put all three downloaded files in that folder, keeping their filenames unchanged.
+4. Restart Obsidian (or reload the plugin), open **Settings → Community plugins**, and enable **Mathsemble**. Desktop Obsidian is required.
+
+When the Community directory approves the plugin, installation from its Community plugins page can replace these manual steps.
+
+## Usage
+
+1. Open a Markdown handout and use the Obsidian command palette (`Ctrl+P` on Windows, `Cmd+P` on macOS).
+2. Run the command named **长 Markdown 文档预览、PDF 与打印（实验）** (long Markdown preview, PDF and print). Switch between **Original**, **Student** and **Teacher** editions.
+3. Use **预览并导出当前数学题卡（P0）** for an individual question card, or **当前文件夹组卷并预览 A4 试卷** to assemble an exam from question cards in the current folder.
+4. Check the preview; choose **Save PDF**, **Print** or **Save HTML**. By default, exported files are saved in the vault's `ExamExports/` folder.
+
+A callout with `+` or `-` immediately after its type, for example `> [!answer]- Solution`, appears in the teacher edition while reserving the corresponding measured writing space in the student edition. Unmarked callouts appear in both versions. `(==B==)` is a choice-answer slot with no student underline, whereas `==42==` is a fill-in slot with an underline.
+
+## Privacy and permissions
+
+Mathsemble does not implement telemetry. **Network access** may occur when printing remote images or fonts referenced by a note. Its desktop PDF exporter uses Node.js/Electron, writes temporary HTML **outside the vault** to the OS temporary directory, then attempts cleanup; it can also read explicitly referenced `file://` image/font resources. Clipboard writing only occurs after a user clicks a copy action. The folder-assembly command scans Markdown file metadata to identify question cards. More: [Privacy and security](docs/PRIVACY.md).
+
+## Development and verification
+
+```sh
+npm ci
+npm run check
+npm run prepublish-check
+```
+
+On a complete checkout, `src/main.js` is the tracked source for the release bundle. CI requires that file and verifies byte-for-byte build consistency. When an external scanner extracts only root-level installation assets, `npm run build` may preserve an existing `main.js` rather than fail; that fallback is **not** an alternative source-release process.
+
+## 中文说明
+
+---
+
 # Mathsemble｜数课工坊
 
 Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，用于将 Markdown 题卡、讲义或题目集合转成可预览、可打印的 A4 学生版／教师版。当前优先确保 **一份 Markdown 源码、两份教学输出、数学公式与答题留白可核验**。

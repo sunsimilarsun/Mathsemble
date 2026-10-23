@@ -21,6 +21,6 @@ Mathsemble brings local-first mathematics handout and exam printing to Obsidian 
 
 ## Privacy and security
 
-No client telemetry. Referenced HTTP(S) images/fonts may be fetched when exporting, and temporary printable HTML is written outside the vault to the OS temp directory then deleted. Full details: [Privacy](PRIVACY.md).
+No client telemetry. Referenced HTTP(S) images/fonts may be fetched when exporting, and temporary printable HTML is written outside the vault to the OS temp directory then deleted. Full details: [Privacy](https://github.com/sunsimilarsun/Mathsemble/blob/main/docs/PRIVACY.md).
 
 Project: https://github.com/sunsimilarsun/Mathsemble

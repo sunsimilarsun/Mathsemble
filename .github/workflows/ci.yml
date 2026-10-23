@@ -5,6 +5,8 @@ on:
   pull_request:
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -15,6 +17,18 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Require tracked source (not a partial scanner extract)
+        run: test -s src/main.js
       - run: npm run check
       - name: Ensure release code was committed from source
         run: git diff --exit-code -- main.js
+      - name: Attest JavaScript build provenance (main branch)
+        if: github.event_name == 'push'
+        uses: actions/attest@v4
+        with:
+          subject-path: main.js
+      - name: Attest CSS build provenance (main branch)
+        if: github.event_name == 'push'
+        uses: actions/attest@v4
+        with:
+          subject-path: styles.css
