@@ -20,7 +20,7 @@ When the Community directory approves the plugin, installation from its Communit
 3. Use **预览并导出当前数学题卡（P0）** for an individual question card, or **当前文件夹组卷并预览 A4 试卷** to assemble an exam from question cards in the current folder.
 4. Check the preview; choose **Save PDF**, **Print** or **Save HTML**. By default, exported files are saved in the vault's `ExamExports/` folder.
 
-A callout with `+` or `-` immediately after its type, for example `> [!answer]- Solution`, appears in the teacher edition while reserving the corresponding measured writing space in the student edition. Unmarked callouts appear in both versions. `(==B==)` is a choice-answer slot with no student underline, whereas `==42==` is a fill-in slot with an underline.
+A callout with `+` or `-` immediately after its type, for example `> [!answer]- Solution`, appears in the teacher edition while reserving the corresponding measured writing space in the student edition. Unmarked callouts appear in both versions. On the development branch, `!{B}` is a choice-answer slot with no student underline, `?{42}` is a fill-in slot with an underline, and `==important==` remains ordinary Markdown highlighting. The published v0.1.10 still uses the legacy syntax.
 
 ## Privacy and permissions
 
@@ -84,14 +84,18 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 学生留白以 **教师版完整渲染后的对应 Callout 外部高度** 为依据；默认比例 **100%**、最小留白 **0 cm**。预览中可选比例 50/75/90/100/110/125/150%，最小高度 0/2/4 cm。长留白允许跨页拆分；不可为省纸压缩或删掉必要答题空间。**允许 PDF 最后一页为空白，不能仅据此判定导出失败。**
 
-### 答案槽
+### 答案槽（当前 `main` 开发分支，尚未正式发布）
 
-| Markdown | 识别类型 | 学生版 | 教师版 |
+| Markdown | 类型 | 学生版 | 教师版 |
 | --- | --- | --- | --- |
-| `(==B==)`、`（==BC==）` | 选择（含多选） | 隐藏答案、没有填空下划线 | 显示答案 |
-| `==$\frac{1}{2}$==`、`==42==` | 填空 | 保留填写横线／空槽 | 显示参考答案 |
+| `?{42}` | 填空 | 按答案实际排版宽度生成横线（最小 3em） | 显示答案 42 |
+| `?{$\\frac{1}{2}$}` | 数学填空 | 按公式测量宽度生成横线 | 显示对应公式 |
+| `!{B}`、`（!{ACD}）` | 单选／多选 | 隐藏选项、无横线 | 显示选项 |
+| `==重要内容==` | Obsidian 原生高亮 | 正常高亮 | 正常高亮 |
 
-判断只取决于**答案槽外层是否紧贴中文或英文圆括号**，不看内容，也不依赖 `question_type`。输入 LaTeX 时使用普通反斜杠；不要在已有数学环境中不当嵌套 `$`、`==` 或 `\text{...}`。对于复杂行内 TeX，应先核验渲染结果。
+选择／填空由标记本身决定，**不依赖外部中英文圆括号或 YAML 题型**。嵌套 LaTeX 花括号按平衡结构解析；普通高亮不再隐藏。
+
+**迁移注意**：已发布的 v0.1.10 仍按旧语法 `(==B==)` / `==42==` 识别答案。当前开发分支中的 `==...==` 只表示高亮，旧题目必须逐个确认后迁移；插件绝不自动重写现有 Markdown 文件。详见 [新答案语法与迁移规范](docs/ANSWER_SYNTAX.md)。
 
 ### YAML 与数据元信息
 
@@ -109,7 +113,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 ## 4. 本地安装与使用
 
-**可以通过 [GitHub Releases 0.1.9](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10) 下载** `main.js`、`manifest.json`、`styles.css` 三个独立文件；社区插件目录尚不能一键安装。
+**可以通过 [GitHub Releases 0.1.10](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10) 下载** `main.js`、`manifest.json`、`styles.css` 三个独立文件；社区插件目录尚不能一键安装。
 
 1. 备份现有插件目录及需要打印的 Markdown。
 2. 解压 ZIP 内 `main.js`、`manifest.json`、`styles.css`。
@@ -130,7 +134,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 ## 6. 项目与隐私
 
 - 仓库：<https://github.com/sunsimilarsun/Mathsemble>
-- 当前版本号（本地实验包）：`0.1.9`
+- 当前已发布版本：`0.1.10`（开发分支尚未发布）
 - 作者：`sunsimilarsun`
 - 原则：本地优先；禁止提交私人题库、学生档案、含个人信息的 PDF、API Key 和任何访问凭证。
 
@@ -141,7 +145,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 实验安装包的学生版填空线不再使用固定的全角空格或固定 2.2em/2.8em 宽度。普通文本、独立数学公式均按答案的临时排版尺寸设置宽度；已有数学公式内部的填空采用 MathJax 宽度校准后的 `\underline{\hspace{...}}`。最小宽度为 **3em**，长答案按实际排版扩展；学生版 HTML/PDF 不保留测量用的答案文本。`(==答案==)` 选择槽无横线，以及 `[!类型]+/-` 教师专用学生等高留白规则不变。
 
-该项已有 Node 转换测试及 Chromium 字体/MathJax 几何测试，**真实 Obsidian 各主题及完整 PDF 尚待验收**。源码及 GitHub Release 0.1.9 已提交；真实 Obsidian 各主题与长 PDF 的后续验收仍可继续补充。
+该项已有 Node 转换测试及 Chromium 字体/MathJax 几何测试，**真实 Obsidian 各主题及完整 PDF 尚待验收**。源码及 GitHub Release 0.1.10 已提交；真实 Obsidian 各主题与长 PDF 的后续验收仍可继续补充。
 
 
 ## v0.1.10 数学讲义 Callout 主题（2026-10-23）
