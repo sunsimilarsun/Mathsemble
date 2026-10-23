@@ -483,9 +483,6 @@
 .mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-choice-answer,
 .mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-choice-answer {
-  border: 0 !important;
-  border-bottom: none !important;
-  box-shadow: none !important;
   text-decoration: none !important;
 }
 

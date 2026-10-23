@@ -21,6 +21,10 @@ jobs:
         run: node scripts/prepublish.mjs
       - name: Match tag and manifest version
         run: test "${GITHUB_REF_NAME}" = "$(node -p 'require("./manifest.json").version')"
+      - name: Verify built JavaScript and version-specific notes
+        run: |
+          git diff --exit-code -- main.js
+          test -s "docs/RELEASE_NOTES_${GITHUB_REF_NAME}.md"
       - name: Attest JavaScript build provenance
         uses: actions/attest@v4
         with:
@@ -34,9 +38,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" main.js manifest.json styles.css --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" main.js manifest.json styles.css \
-              --title "Mathsemble $GITHUB_REF_NAME" \
-              --notes-file docs/RELEASE_NOTES_0.1.9.md
+            echo "::error::Release $GITHUB_REF_NAME already exists; refusing to change published assets" >&2
+            exit 1
           fi
+          gh release create "$GITHUB_REF_NAME" main.js manifest.json styles.css \
+            --verify-tag \
+            --title "Mathsemble $GITHUB_REF_NAME" \
+            --notes-file "docs/RELEASE_NOTES_${GITHUB_REF_NAME}.md"
