@@ -28,6 +28,7 @@ test('plugin stylesheet avoids important declarations and confines modal control
   assert.match(css, /\.mwb-modal \.mwb-page/);
   assert.match(css, /\.mwb-modal \.mwb-measure-layer/);
   assert.match(css, /\.mwb-modal \.mwb-controls/);
+  assert.doesNotMatch(css, /\.mwb-modal \.mwb-[\w-]+ \.mwb-modal \.mwb-/);
 });
 
 test('answer geometry and collapsed callouts retain explicit print styling', () => {
