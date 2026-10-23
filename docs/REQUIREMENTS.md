@@ -4,7 +4,7 @@
 - 日期：**2026-10-23**
 - 适用范围：Obsidian **桌面端**、本地 Markdown 题卡与讲义、学生版／教师版 A4 PDF／打印
 - 代码依据：本地 `Mathsemble_v0.1.9_局部渲染警告_可继续PDF打印_直接安装包.zip` 内的 `main.js`、`manifest.json`、`styles.css`
-- 状态口径：**L=本地包存在代码实现；V=静态／局部自动化验证；H=真实 Obsidian 宿主／PDF 验收；P=规划**。L 不代表 H；本仓库当前不含完整源码及正式 GitHub Release。
+- 状态口径：**L=本地包存在代码实现；V=静态／局部自动化验证；H=真实 Obsidian 宿主／PDF 验收；P=规划**。L 不代表 H；本仓库已包含完整 v0.1.9 源码、MIT 许可证、14 项 Node 回归测试及正式 GitHub Release，真实宿主 PDF 仍需持续验收。
 
 ## 1. 产品目标与非目标
 
@@ -114,11 +114,11 @@
 
 | 等级 | 必要证据 | 当前状态 |
 | --- | --- | --- |
-| 静态 | `manifest.json`、`main.js` 语法、打包清单一致 | 本地安装包可核对；需加入持续集成 |
-| 单元 | 语法分类、Callout 转换、留白映射、警告分类、分页回归 | 有过局部验证记录，但仓库没有完整可复验测试资产 |
+| 静态 | `manifest.json`、`main.js` 语法、打包清单一致 | GitHub CI 已通过，发行三件套 SHA-256 一致 |
+| 单元 | 语法分类、Callout 转换、留白映射、警告分类、分页回归 | 已提交可复跑的 14 项 Node 回归测试；独立宿主视觉测试仍待扩充 |
 | 宿主 | Obsidian Windows/macOS 主程序版本、主题兼容、预览与导出全路径 | **待验收** |
 | 视觉 | 同源 Markdown 的学生／教师 A4 PDF 逐页对照与长讲义答题区测量 | **待验收** |
-| 发布 | 完整源码、依赖锁定、构建脚本、测试报告、版本号、许可证、可验证 Release | **未完成；不得宣称已正式发布** |
+| 发布 | 完整源码、依赖锁定、构建脚本、测试报告、版本号、许可证、可验证 Release | GitHub 0.1.9 Release 已完成；Obsidian Community 审核与上架未完成 |
 
 必须纳入回归样本：本次高一期中长讲义；混用 `student-note` / `answer` / `scaffold` 等所有 Callout；短公式和长公式；`Missing close brace` 单点容错；多处报错；跨页大块教师解答；末页空白；文件夹组卷和选择／填空混排。
 
@@ -148,3 +148,8 @@
 ## v0.1.9 普通阅读视图主题修复（2026-10-23）
 
 修复上一版 Callout 配色依赖 `mwb-math-material`、`mwb-answer-note` 等识别类导致普通笔记不生效的问题。现直接覆盖 Obsidian **阅读视图、实时预览**和 Mathsemble A4 预览/打印。只有八类核心 Callout 加旧版 `solution` 受到配色影响；`example` 保持普通外观。无 YAML 亦可应用，且不改写 `mark`、`strong`，不改变 `[!类型]+/-` 教师专用学生等高留白及答案槽语义。已经通过无 YAML 普通阅读、实时预览、打印 DOM 的 Chromium 模拟测试及 36 个留白槽回归；真实 Obsidian 宿主及长 PDF 仍待验收。
+
+
+## 2026-10-23 GitHub 发布状态
+
+正式 GitHub Release 0.1.9 已创建，附独立 `main.js`、`manifest.json`、`styles.css`；GitHub 附件 SHA-256 与源码构建清单完全一致。此状态仅证明**GitHub 发布**，不等于 Obsidian Community 目录上架或宿主视觉测试全部通过。详见 [提交指引](PUBLISHING.md)。
