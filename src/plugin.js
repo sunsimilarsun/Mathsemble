@@ -2695,7 +2695,7 @@ module.exports = { GROUPS, GROUPING_MODES, TEACHING_ROLES, normalizeTeachingRole
 
 return module.exports; })();
 
-const { decorateAnswerMarks, normalizedQuestionType, createMathAnswerEditorExtension, refreshQuestionEditors, maskReadingMathSlots, syncQuestionViewClasses, answerSlots, mathAnswerSlots } = (() => { const module = {exports:{}};
+const { normalizedQuestionType, createMathAnswerEditorExtension, refreshQuestionEditors, syncQuestionViewClasses, answerSlots, mathAnswerSlots } = (() => { const module = {exports:{}};
 'use strict';
 
 // Reading View uses MarkdownPostProcessor; Live Preview uses CodeMirror DOM.
@@ -2716,30 +2716,6 @@ function normalizedQuestionType(fm) {
 
 // Only the surrounding punctuation classifies a slot. The answer text
 // itself (letters, numbers, math) and YAML question_type are irrelevant.
-function hasChoiceParentheses(before, after) {
-  return /[（(]\s*$/.test(before) && /^\s*[）)]/.test(after);
-}
-
-function markLooksLikeChoice(mark) {
-  return hasChoiceParentheses(mark?.previousSibling?.textContent || '', mark?.nextSibling?.textContent || '');
-}
-
-function decorateAnswerMarks(element, question, questionType = 'other') {
-  if (!question || !element || typeof element.querySelectorAll !== 'function') return 0;
-  let count = 0;
-  for (const mark of element.querySelectorAll('mark')) {
-    if (mark.closest?.('.callout')) continue;
-    const choice = markLooksLikeChoice(mark);
-    mark.classList.add(READING_MARK_CLASS);
-    mark.classList.toggle(CHOICE_MARK_CLASS, choice);
-    mark.classList.toggle(FILL_MARK_CLASS, !choice);
-    mark.setAttribute('title', '悬停或聚焦显示答案');
-    mark.setAttribute('tabindex', '0');
-    count++;
-  }
-  return count;
-}
-
 function syncQuestionViewClasses(leaves, getFrontmatter, isQuestion) {
   let updated = 0;
   for (const leaf of leaves || []) {
@@ -2751,8 +2727,8 @@ function syncQuestionViewClasses(leaves, getFrontmatter, isQuestion) {
       .test(String(frontmatter?.note_type || '').trim());
     view.containerEl.classList.toggle('mwb-math-material', mathMaterial);
     view.containerEl.classList.toggle(QUESTION_VIEW_CLASS, question);
-    // A long handout has no per-question YAML. Detect actual ==...== ranges in
-    // its Markdown source rather than requiring object_type/question_type.
+    // A long handout has no per-question YAML. Only explicitly typed answer slots
+    // enable the answer-scoped CSS, never native Markdown highlights.
     // Only scoped answer styles are enabled; general handout typography stays
     // governed by the user's theme.
     let raw = '';
@@ -2768,61 +2744,6 @@ function syncQuestionViewClasses(leaves, getFrontmatter, isQuestion) {
 
 // Return cloze boundaries in the original line; only complete, unescaped pairs.
 // Exact source ranges matter when there are several formulas on one line.
-function lineAnswerRanges(line) {
-  const ranges = [];
-  const s = String(line);
-  let code = false;
-  for (let i = 0; i < s.length;) {
-    if (s[i] === '\\' && i + 1 < s.length) { i += 2; continue; }
-    if (s[i] === '`') { code = !code; i++; continue; }
-    if (!code && s.startsWith('==', i)) {
-      const begin = i;
-      let j = i + 2;
-      while (j < s.length && !(s.startsWith('==', j) && s[j-1] !== '\\')) j++;
-      if (j < s.length && j > i + 2) { ranges.push([begin, j + 2]); i = j + 2; continue; }
-    }
-    i++;
-  }
-  return ranges;
-}
-
-function lineMathTokens(source) {
-  // Only single-dollar math expressions. $$...$$ and multi-line math are not
-  // valid answer slots. Ignore escaped dollars and inline code.
-  const ranges = [];
-  const s = String(source);
-  let code = false;
-  for (let i = 0; i < s.length;) {
-    if (s[i] === '\\' && i + 1 < s.length) { i += 2; continue; }
-    if (s[i] === '`') { code = !code; i++; continue; }
-    if (code || s[i] !== '$') { i++; continue; }
-    if (s[i + 1] === '$') { i += 2; continue; }
-    let j = i+1;
-    while (j < s.length) {
-      if (s[j] === '\\') { j += 2; continue; }
-      if (s[j] === '$') break;
-      j++;
-    }
-    if (j < s.length && j > i+1) { ranges.push([i, j+1]); i = j+1; }
-    else i++;
-  }
-  return ranges;
-}
-
-function mathAnswerIndices(line) {
-  const clozes = lineAnswerRanges(line);
-  return lineMathTokens(line).reduce((indices, token, index) => {
-    if (clozes.some(([a,b])=>token[0]>=a+2 && token[1]<=b-2)) indices.push(index);
-    return indices;
-  }, []);
-}
-
-// v0.1.4.8: Math-containing answer slots must be taken from Markdown source
-// positions. Do not infer source positions from the number of MathJax widgets:
-// Live Preview can merge adjacent math, change rendering at the cursor, or
-// create siblings outside Markdown <mark> elements.
-// Classify every literal answer slot once, including math-bearing slots.
-// Markdown metadata remains useful for grouping but never changes slot style.
 function answerSlots(markdown) {
   return mwbTypedSlots(markdown);
 }
@@ -2839,7 +2760,7 @@ function overlapsSelection(selection,from,to) {
   return (selection?.ranges || []).some(r => {
     const a=Math.min(r.from ?? r.anchor ?? 0,r.to ?? r.head ?? 0);
     const b=Math.max(r.from ?? r.anchor ?? 0,r.to ?? r.head ?? 0);
-    // Cursor on one of the == delimiters should expose editable source.
+    // Cursor on either typed-slot delimiter exposes the editable source.
     return a===b ? a>=from && a<=to : a<to && b>from;
   });
 }
@@ -2859,8 +2780,8 @@ function buildMathAnswerDecorations(view, engine) {
       ranges.push(engine.Decoration.replace({widget}).range(slot.from,slot.to));
     } else {
       // Use an atomic source-position widget for literal answers as well.
-      // A broad .cm-highlight rule would inadvertently conceal unrelated
-      // highlights in a long handout (including notes and explanations).
+      // Broad .cm-highlight rules would inadvertently conceal unrelated
+      // highlights in long handouts (including notes and explanations).
       const widget=new engine.TextAnswerWidget(slot);
       ranges.push(engine.Decoration.replace({widget}).range(slot.from,slot.to));
     }
@@ -2893,8 +2814,8 @@ function createMathAnswerEditorExtension(cmModule, renderMath, finishRenderMath,
       } catch (_) {answer.textContent=this.slot.latex;}
       root.appendChild(answer);
       root.addEventListener('mousedown',(event)=>{
-        // The replacement is ONLY a view decoration. One click expands the
-        // original literal ==$...$== for editing without modifying the file.
+        // The replacement is only a view decoration. One click restores the
+        // original typed TeX source for editing; no vault write is performed.
         event.preventDefault();
         const pos=this.slot.from+2;
         view.dispatch({selection:{anchor:pos}});
@@ -2947,42 +2868,11 @@ function refreshQuestionEditors(leaves) {
   }
 }
 
-// Reading View: match math widgets against the original section source, not
-// against an accidentally rendered <mark>. No guessing on count mismatch.
-function maskReadingMathSlots(element,source) {
-  if (!element || !source || typeof element.querySelectorAll!=='function') return {applied:0,expected:0};
-  const slots=mathAnswerSlots(source);
-  if (!slots.length) return {applied:0,expected:0};
-  const tokens=String(source).split('\n').flatMap(lineMathTokens);
-  // `mathAnswerIndices` indexes are per-line; calculate global math positions.
-  let shift=0;const indices=[];
-  for(const line of String(source).split('\n')) {
-    for(const i of mathAnswerIndices(line)) indices.push(shift+i);
-    shift+=lineMathTokens(line).length;
-  }
-  const widgets=[...element.querySelectorAll('.math-inline')].filter(w=>!w.parentElement?.closest?.('.math-inline') && !w.closest?.('.callout'));
-  if(widgets.length!==tokens.length || indices.length!==slots.length) return {applied:0,expected:slots.length,mismatch:true};
-  let applied=0;
-  for(let slotIndex=0;slotIndex<indices.length;slotIndex++) {
-    const index=indices[slotIndex];
-    const widget=widgets[index];
-    if(!widget || widget.closest?.('.mwb-reading-answer-math')) continue;
-    const holder=widget.ownerDocument.createElement('span');
-    holder.className='mwb-reading-answer-math '+(slots[slotIndex]?.choice?'mwb-choice-answer':'mwb-fill-answer');
-    holder.tabIndex=0;
-    holder.title='悬停或聚焦显示答案';
-    widget.parentNode?.insertBefore(holder,widget);
-    holder.appendChild(widget);
-    applied++;
-  }
-  return {applied,expected:slots.length};
-}
-
-module.exports = { QUESTION_VIEW_CLASS, READING_MARK_CLASS, CHOICE_MARK_CLASS, FILL_MARK_CLASS,
-  LIVE_MATH_CLASS, normalizedQuestionType, markLooksLikeChoice, hasChoiceParentheses, decorateAnswerMarks,
-  syncQuestionViewClasses, lineAnswerRanges, lineMathTokens, mathAnswerIndices,
+module.exports = {
+  QUESTION_VIEW_CLASS, normalizedQuestionType, syncQuestionViewClasses,
   answerSlots, mathAnswerSlots, overlapsSelection, buildMathAnswerDecorations,
-  createMathAnswerEditorExtension, refreshQuestionEditors, maskReadingMathSlots };
+  createMathAnswerEditorExtension, refreshQuestionEditors
+};
 
 return module.exports; })();
 
