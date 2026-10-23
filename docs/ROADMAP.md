@@ -55,3 +55,12 @@
 - **实验包已更新**：学生填空采用原答案临时渲染测宽，最小 3em；学生输出不包含原答案文本。
 - **已测**：中文、英文字体宽度；MathJax 短公式、分式、区间答案；转换后的学生版隐去答案，选择题规则不变。
 - **待验收**：Windows/macOS Obsidian 不同主题下阅读视图、实时预览和学生 A4 PDF 同槽宽度对照；检查超宽公式拦截、PDF 分页和教师专用块等高留白。
+
+
+## 2026-10-23 数学 Callout 样式整合
+
+- **本地实验实现**：八类数学 Callout 内置语义配色；`answer` 深橙、`scaffold` 淡紫，`solution` 兼容；普通 Markdown 例题无需 `example` Callout。
+- **隔离与保护**：不覆盖全局 `mark`、`strong`，不修改显隐/等高留白判定或填空宽度；打印 CSS 同步嵌入 `main.js` 独立 HTML 输出。
+- **局部测试已通过**：JavaScript 语法、36 个教师专用块对应 36 个学生留白槽、Chromium 11 类 Callout 的配色及几何；示例 Callout 高度变化 0px。
+- **P0 待验收**：真实 Obsidian 多主题及用户 CSS Snippets、长讲义学生/教师 A4 PDF 分页、跨页等高留白和 MathJax。
+- **P1 可选功能**：数学彩色/简洁黑白/跟随 Obsidian 的外观切换；如需求明确再支持自定义颜色。
