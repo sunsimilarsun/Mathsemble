@@ -38,7 +38,7 @@ jobs:
             gh release upload 0.1.9 main.js manifest.json styles.css --clobber
           else
             gh release create 0.1.9 main.js manifest.json styles.css \
-              --target 97eae48dc394c12de1591957b9a05ccbb6f73a3b \
+              --target 2bd0fe7857e9ac054eebe699875b80b852b0617b \
               --title "Mathsemble 0.1.9" \
               --notes-file docs/RELEASE_NOTES_0.1.9.md
           fi
