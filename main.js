@@ -2824,33 +2824,7 @@ function mathAnswerIndices(line) {
 // Classify every literal answer slot once, including math-bearing slots.
 // Markdown metadata remains useful for grouping but never changes slot style.
 function answerSlots(markdown) {
-  const source=String(markdown).replace(/\r\n?/g,'\n');
-  const slots=[];
-  const lines=source.split('\n');
-  let pos=0, fence=null, yaml=lines[0]?.trim()==='---', inPedagogicalCallout=false;
-  for (let i=0;i<lines.length;i++) {
-    const line=lines[i];
-    if (yaml) { if (i>0 && /^(---|\.\.)\s*$/.test(line)) yaml=false; pos+=line.length+1; continue; }
-    const fm=line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fm) {
-      if (!fence) fence=fm[1];
-      else if (fm[1][0]===fence[0] && fm[1].length>=fence.length) fence=null;
-      pos+=line.length+1; continue;
-    }
-    if (fence) {pos+=line.length+1;continue;}
-    if (/^\s*>\s*\[!(?:answer|solution|success|info)\]/i.test(line)) inPedagogicalCallout=true;
-    else if (!/^\s*>/.test(line)) inPedagogicalCallout=false;
-    if (inPedagogicalCallout || /^\s{4,}\S/.test(line)) {pos+=line.length+1;continue;}
-    for (const [start,end] of lineAnswerRanges(line)) {
-      const raw=line.slice(start+2,end-2);
-      const math=raw.match(/^\$([^$\n]+)\$$/);
-      slots.push({from:pos+start,to:pos+end,raw,
-        choice:hasChoiceParentheses(line.slice(0,start),line.slice(end)),
-        ...(math ? {latex:math[1]} : {})});
-    }
-    pos+=line.length+1;
-  }
-  return slots;
+  return mwbTypedSlots(markdown);
 }
 
 function mathAnswerSlots(markdown) {
