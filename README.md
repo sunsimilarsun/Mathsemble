@@ -36,6 +36,15 @@ npm run prepublish-check
 
 The tracked source is `src/plugin.js`, deliberately named differently from the generated root `main.js`. `npm run build` must regenerate `main.js` from this source even after deleting every existing `main.js`; it never relies on a prebuilt bundle. CI tests this scanner-style clean build and verifies byte-for-byte output identity.
 
+## New typed answer syntax (development main branch; not in published v0.1.10)
+
+- Fill: `?{42}` or `?{$\frac{1}{2}$}`; student gets a measured underline.
+- Choice: `!{B}` or `!{ACD}`; no student underline. Add optional outer parentheses `（!{B}）`.
+- Native Obsidian highlight: `==important content==`, always ordinary highlight.
+
+**Migration note:** Older `==42==` and `(==B==)` are no longer concealed by Mathsemble.
+Do not automatically rewrite all highlights: some are emphasis rather than answers.
+Reading View deliberately skips a section containing escaped typed markers until a source-map-aware solution is ready.
 ## 中文说明
 
 ---
