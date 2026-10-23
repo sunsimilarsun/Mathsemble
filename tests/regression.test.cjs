@@ -207,3 +207,17 @@ test('multiple slots on one line keep exact CodeMirror source ranges',()=>{
   assert.equal(slots.length,3);
   assert.deepEqual(Array.from(slots,s=>source.slice(s.from,s.to)),['?{甲}','?{乙}','!{C}']);
 });
+
+test('Reading View invokes the typed DOM decorator, not legacy highlight masking',()=>{
+  assert.match(js,/mwbDecorateReadingTypedSlots\(element, sectionSource\)/);
+  assert.doesNotMatch(js,/decorateAnswerMarks\(element,\s*true/);
+  assert.doesNotMatch(js,/function decorateAnswerMarks\(/);
+});
+test('Live Preview only starts answer decorations for typed markers',()=>{
+  assert.match(js,/if \(!source\.includes\('\?\{'\) && !source\.includes\('!\{'\)\)/);
+  assert.doesNotMatch(js,/if \(!source\.includes\('=='\)\)/);
+});
+test('diagnostic version comes from actual plugin manifest rather than fixed v0.1.9',()=>{
+  assert.match(js,/this\.manifest\?\.version \|\| 'unknown'/);
+  assert.doesNotMatch(js,/版本:'v0\.1\.9'/);
+});
