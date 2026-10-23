@@ -1,0 +1,32 @@
+name: Publish GitHub release assets
+on:
+  push:
+    tags: ['[0-9]*.[0-9]*.[0-9]*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Enforce owner-approved public release requirements
+        run: node scripts/prepublish.mjs
+      - name: Match tag and manifest version
+        run: test "${GITHUB_REF_NAME}" = "$(node -p 'require("./manifest.json").version')"
+      - name: Create release with separate Obsidian assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" main.js manifest.json styles.css --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" main.js manifest.json styles.css \
+              --title "Mathsemble $GITHUB_REF_NAME" \
+              --notes-file docs/RELEASE_NOTES_0.1.9.md
+          fi

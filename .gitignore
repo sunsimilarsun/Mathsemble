@@ -1,0 +1,8 @@
+node_modules/
+*.log
+*.pdf
+ExamExports/
+.obsidian/
+.DS_Store
+coverage/
+*.zip

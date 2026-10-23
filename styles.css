@@ -1,0 +1,575 @@
+/* One mathematical typography contract, shared verbatim by reading, A4 preview and PDF.
+ * IMPORTANT: MathJax owns <mjx-container> and its descendant SVG dimensions, baseline,
+ * viewBox, overflow and font metrics. Never apply generic svg{height:auto} here.
+ */
+.mwb-typography {
+  font-family: "Noto Serif CJK SC", "Songti SC", "SimSun", serif;
+  font-size: 11pt;
+  line-height: 1.65;
+  letter-spacing: normal;
+  font-kerning: normal;
+  overflow: visible;
+}
+.mwb-typography p,
+.mwb-typography ul,
+.mwb-typography ol {
+  margin-block: 0.55em;
+  line-height: inherit;
+}
+.mwb-typography li { margin-block: 0.24em; line-height: inherit; }
+.mwb-typography h1,
+.mwb-typography h2,
+.mwb-typography h3,
+.mwb-typography h4 {
+  line-height: 1.45;
+  margin-block: 0.85em 0.4em;
+  break-after: avoid;
+}
+.mwb-typography h1 { font-size: 1.42em; }
+.mwb-typography h2 { font-size: 1.27em; }
+.mwb-typography h3 { font-size: 1.13em; }
+.mwb-typography h4 { font-size: 1.03em; }
+.mwb-typography img {
+  max-width: 100%; height: auto; filter: none !important;
+  object-fit: contain;
+}
+/* Only known TikZ wrappers are scaled. Never select arbitrary SVG descendants. */
+.mwb-typography :is(.tikzjax, .tikzjax-output, .mwb-tikz, .tikz) > svg,
+.mwb-typography .block-language-tikz svg,
+.mwb-typography .block-language-tikzjax svg {
+  max-width: 100%; height: auto; filter: none !important;
+}
+.mwb-typography .mwb-answer-slot {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 3em;
+  min-height: 1.35em;
+  padding-inline: 0.18em;
+  /* Answer text is intentionally transparent. A currentColor underline would
+     therefore be transparent too; the writing line needs its own ink color. */
+  --mwb-answer-underline-color: var(--text-normal, #141414);
+  border-bottom: 1px solid var(--mwb-answer-underline-color);
+  vertical-align: baseline;
+  color: transparent;
+  white-space: nowrap;
+}
+/* Teacher-mode fill answers: red text centered on a persistent black line.
+ * Choice letters use mwb-answer-revealed instead and are never underlined.
+ * Math answers use TeX \underline{\color{red}{...}} for correct MathJax baselines. */
+.mwb-typography .mwb-teacher-fill-slot {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 3em;
+  min-height: 1.35em;
+  padding-inline: 0.18em;
+  border: 0;
+  border-bottom: 1px solid var(--mwb-answer-underline-color, #141414);
+  color: #ad2323;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: baseline;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+.mwb-print-document .mwb-teacher-fill-slot {
+  border-bottom-color: #141414 !important;
+}
+/* Choice slots reserve a little inline space in parentheses, NEVER a writing line. */
+.mwb-typography .mwb-choice-slot,
+.mwb-print-document .mwb-choice-slot {
+  display: inline-block;
+  min-width: 1.4em;
+  min-height: 0;
+  padding: 0;
+  border: 0 !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  vertical-align: baseline;
+  text-decoration: none !important;
+  white-space: nowrap;
+}
+.mwb-typography .mwb-answer-revealed { color: #ad2323; font-weight: 600; }
+.mwb-typography blockquote { margin-block: 0.8em; padding: 0.3em 0.85em; border-left: 3px solid #999; }
+.mwb-typography .callout { border: 1px solid #bbb; border-radius: 4px; padding: 0.4em 0.75em; margin-block: 0.7em; }
+.mwb-print-document .callout-icon,
+.mwb-print-document .callout-fold { display: none; }
+.mwb-typography table { border-collapse: collapse; max-width: 100%; }
+.mwb-typography td, .mwb-typography th { border: 1px solid #999; padding: 0.25em 0.45em; }
+/* A unified print-mode font/color, distinct from dark-theme reading foreground. */
+.mwb-print-document { color: #141414; background: white; }
+/* Keep ink black even when the original Obsidian theme is dark or inherited
+   text fill is transparent. This is separate from the hidden answer content. */
+.mwb-print-document .mwb-answer-slot {
+  --mwb-answer-underline-color: #141414;
+  border-bottom-color: #141414 !important;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+/* Print-oriented teacher solutions: no gray fills; identical in preview/PDF. */
+.mwb-print-document .callout { background: #fff !important; border-color: #c4c4c4; border-left: 2px solid #999; }
+/* Teacher solutions must occupy the same geometry in preview and isolated PDF. */
+.mwb-print-document .callout-title { display: block; font-weight: 600; line-height: 1.5; padding: 0; margin: 0 0 0.35em; }
+.mwb-print-document .callout-content { display: block; padding: 0; margin: 0; }
+/* Export-only callout expansion: Obsidian themes can make folded content
+   display:none with higher specificity. Do not change the reading view. */
+.mwb-print-document .callout > .callout-content,
+.mwb-print-document .callout.is-collapsed > .callout-content {
+  display: block !important;
+  visibility: visible !important;
+}
+.mwb-print-document .callout-content > :first-child { margin-top: 0; }
+.mwb-print-document .callout-content > :last-child { margin-bottom: 0; }
+/* TikZJax can invert drawings in dark themes; the paper output stays unfiltered. */
+.mwb-print-document mjx-container svg { filter: none !important; }
+.mwb-print-document pre,
+.mwb-print-document figure,
+.mwb-print-document table,
+.mwb-print-document blockquote { break-inside: avoid; }
+.mwb-print-document p,
+.mwb-print-document li { orphans: 2; widows: 2; }
+/* Do not force height, overflow, vertical-align or display on MathJax containers. */
+
+/* Student response space measured from the fully rendered teacher solution.
+ * Short questions with a response space are permitted to split on these chunks;
+ * the first prompt paragraph remains protected by the rule below. */
+.mwb-print-document .mwb-answer-space {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+  break-inside: auto;
+  page-break-inside: auto;
+}
+.mwb-print-document .mwb-answer-space-chunk {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* v0.1.4: options use the SAME responsive grid after live measurement. */
+.mwb-typography ul.mwb-options, .mwb-typography ol.mwb-options {
+  display: grid !important;
+  gap: 0.3em 12px;
+  margin: 0.3em 0 0.7em !important;
+  padding: 0 !important;
+  list-style: none !important;
+  break-inside: avoid;
+}
+.mwb-typography .mwb-options li { list-style: none !important; margin:0 !important; min-width:0; }
+.mwb-typography .mwb-options-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.mwb-typography .mwb-options-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mwb-typography .mwb-options-1 { grid-template-columns: minmax(0, 1fr); }
+/* Measure natural, unwrapped MathJax and text widths without retaining these rules in PDF. */
+.mwb-typography .mwb-options-measuring { display: block !important; padding: 0 !important; margin: 0 !important; }
+.mwb-typography .mwb-options-measuring > li {
+  display: block !important;
+  width: max-content !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+  margin:0 !important;
+  padding:0 !important;
+  list-style:none !important;
+}
+.mwb-typography .mwb-options-1 > li { overflow-wrap: anywhere; }
+/* Q numbering and sectional headers are print content, not Obsidian file metadata. */
+.mwb-print-document .mwb-exam-title { font-size: 18pt; text-align:center; margin: 0 0 0.85em; line-height:1.4; }
+.mwb-print-document .mwb-exam-section {
+  font-weight:700; font-size: 12pt; margin: 1.15em 0 0.65em;
+  break-after:avoid; page-break-after:avoid;
+}
+.mwb-print-document .mwb-exam-question { margin: 0 0 1.05em; break-inside: auto; }
+.mwb-print-document .mwb-exam-question.mwb-question-keep { break-inside: avoid; page-break-inside: avoid; }
+.mwb-print-document .mwb-number-only { break-after: avoid; page-break-after: avoid; }
+.mwb-print-document .mwb-question-index { font-weight:700; display:inline-block; margin-right:0.42em; white-space:nowrap; vertical-align:baseline; }
+.mwb-print-document .mwb-exam-question-content > p:first-child { break-after: avoid; page-break-after:avoid; }
+.mwb-print-document mjx-container[display="true"],
+.mwb-print-document .math.math-block,
+.mwb-print-document .block-language-tikz,
+.mwb-print-document .block-language-tikzjax { break-inside: avoid; page-break-inside: avoid; }
+/* No forced no-break for a *long* question; a long answer space can split. */
+
+/* v0.1.4.1: MathJax-based answers have a stable underlined inline slot. */
+.mwb-typography .mwb-answer-slot-math { min-width: 3em; height: 1.65em; line-height: 1.65em; }
+.mwb-print-document .mwb-exam-edition {
+  text-align: right; font-size: 9pt; font-weight: 600; color:#444;
+  margin: -0.85em 0 0.85em;
+}
+
+/* Mathsemble mathematics teaching palette — reading-view reach fix (2026-10-23).
+ * Read/Live Preview: match native Obsidian .callout markup DIRECTLY, even for
+ * notes lacking YAML or Mathsemble class annotations. The previous version
+ * required .mwb-math-material/.mwb-answer-note and could miss regular notes.
+ * Keep colors independent of teacher/student +/- blank-space projection.
+ * Example questions remain ordinary Markdown; [!example] gets no special look.
+ * Do not globally style mark, strong, body fonts, or MathJax containers.
+ */
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(
+  [data-callout="definition"],
+  [data-callout="theorem"],
+  [data-callout="method"],
+  [data-callout="conclusion"],
+  [data-callout="attention"],
+  [data-callout="thinking"],
+  [data-callout="answer"],
+  [data-callout="scaffold"],
+  [data-callout="solution"]
+) {
+  background-color: transparent !important;
+  border-left-color: var(--mwb-callout-accent, #999) !important;
+}
+/* A visual accent that does not add border width or change printed heights.
+ * The paper layout retains its existing 2px physical left border. */
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6) .callout:is(
+  [data-callout="definition"],
+  [data-callout="theorem"],
+  [data-callout="method"],
+  [data-callout="conclusion"],
+  [data-callout="attention"],
+  [data-callout="thinking"],
+  [data-callout="answer"],
+  [data-callout="scaffold"],
+  [data-callout="solution"]
+) {
+  box-shadow: inset 3px 0 0 var(--mwb-callout-accent, #999);
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(
+  [data-callout="definition"],
+  [data-callout="theorem"],
+  [data-callout="method"],
+  [data-callout="conclusion"],
+  [data-callout="attention"],
+  [data-callout="thinking"],
+  [data-callout="answer"],
+  [data-callout="scaffold"],
+  [data-callout="solution"]
+) > .callout-title {
+  color: var(--mwb-callout-title-ink, #444) !important;
+  font-weight: 600;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="definition"] {
+  --callout-color: 46, 164, 79;
+  --callout-icon: book-open;
+  --mwb-callout-accent: #2ea44f;
+  --mwb-callout-title-ink: #237b39;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="theorem"] {
+  --callout-color: 47, 129, 247;
+  --callout-icon: sigma;
+  --mwb-callout-accent: #2f81f7;
+  --mwb-callout-title-ink: #1f64c2;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="method"] {
+  --callout-color: 155, 89, 182;
+  --callout-icon: lightbulb;
+  --mwb-callout-accent: #9b59b6;
+  --mwb-callout-title-ink: #793a97;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="conclusion"] {
+  --callout-color: 0, 168, 150;
+  --callout-icon: check-circle;
+  --mwb-callout-accent: #00a896;
+  --mwb-callout-title-ink: #007d70;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="attention"] {
+  --callout-color: 241, 196, 15;
+  --callout-icon: alert-triangle;
+  --mwb-callout-accent: #f1c40f;
+  --mwb-callout-title-ink: #866600;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="thinking"] {
+  --callout-color: 99, 110, 114;
+  --callout-icon: help-circle;
+  --mwb-callout-accent: #636e72;
+  --mwb-callout-title-ink: #525c60;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="answer"] {
+  --callout-color: 230, 126, 34;
+  --callout-icon: list-ordered;
+  --mwb-callout-accent: #e67e22;
+  --mwb-callout-title-ink: #a44f06;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="scaffold"] {
+  --callout-color: 143, 112, 181;
+  --callout-icon: list-checks;
+  --mwb-callout-accent: #8f70b5;
+  --mwb-callout-title-ink: #684b91;
+}
+:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="solution"] {
+  --callout-color: 230, 126, 34;
+  --callout-icon: list-ordered;
+  --mwb-callout-accent: #e67e22;
+  --mwb-callout-title-ink: #a44f06;
+}
+
+/* v0.2.1: optional metadata is always separate from math/answer DOM. */
+.mwb-typography .mwb-print-meta { color:#666; font-size:8.5pt; line-height:1.5;
+  display:flex; flex-wrap:wrap; gap:0.12em 1.1em; margin:0.2em 0 0.45em;
+  break-inside:avoid; }
+.mwb-typography .mwb-print-meta-item { white-space:normal; overflow-wrap:anywhere; }
+.mwb-typography .mwb-long-document { line-height:inherit; }
+
+/* v0.1.7: literal Markdown writing blanks, not LaTeX or answer reveal slots. */
+.mwb-typography .mwb-fixed-blank {
+  display:inline-block; box-sizing:border-box; min-height:1em;
+  border-bottom:1px solid #333; margin:0 0.22em; vertical-align:baseline;
+}
+/* Marker + and - control student/teacher projection in JavaScript only.
+ * Do not apply visibility, fixed height, text recoloring or break-inside rules
+ * based on callout names; long teacher solutions must remain fully measurable. */
+/* Headings must stay with following paragraphs. Do NOT break before all H2:
+   an automatic new page on every unit wastes sheets and disrupts space. */
+@media print {
+  .mwb-print-document h2,.mwb-print-document h3,.mwb-print-document h4 { break-after:avoid; page-break-after:avoid; }
+  .mwb-print-document .mwb-fixed-blank { border-bottom-color:#333 !important; }
+}
+
+/* Isolate controls and A4 simulation from Obsidian's own note layout. */
+.mwb-modal { width: min(94vw, 1000px); max-width: 1000px; }
+.mwb-modal .modal-content { width: 100%; }
+.mwb-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.mwb-status { margin: 10px 0; font-size: 0.85rem; color: var(--text-muted); white-space: pre-wrap; }
+.mwb-scroll { max-height: 72vh; overflow: auto; background: #cbd0d6; padding: 15px; }
+.mwb-page {
+  box-sizing: border-box;
+  width: 210mm; min-height: 297mm;
+  padding: 14mm 16mm 18mm;
+  margin: 0 auto;
+  background: white !important; color: #141414 !important;
+  box-shadow: 0 2px 12px rgba(0,0,0,.22);
+}
+.mwb-page .mwb-typography { max-width: none; }
+/* Apply shared typography to reading only for confirmed item files. */
+.markdown-preview-view.mwb-reading-view .mwb-typography {
+  max-width: 178mm;
+  color: var(--text-normal);
+}
+.markdown-preview-view.mwb-reading-view .mwb-typography :is(p,ul,ol) { line-height: inherit; }
+
+.mwb-scroll { position: relative; }
+.mwb-setting-label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.mwb-setting-select { font-size: 0.9em; }
+/* The measuring layer is inside the same A4 paper, with identical content
+   width and type scale. Opacity does not suppress geometry or lazy SVG render. */
+.mwb-page { position: relative; }
+.mwb-measure-layer {
+  position: absolute !important;
+  top: 14mm;
+  left: 16mm;
+  right: 16mm;
+  width: auto;
+  height: auto;
+  max-width: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  z-index: 1;
+  overflow: visible;
+}
+.mwb-controls input.mwb-exam-title-input { min-width: 180px; max-width: 320px; flex: 1; }
+.mwb-status .mwb-status-note { display:block; }
+
+/* Diagnostic text is selectable; errors remain visible even if the toast disappears. */
+.mwb-error-actions { display: flex; justify-content: flex-end; margin: 0.15em 0 0.5em; }
+.mwb-status { user-select: text; overflow-wrap: anywhere; }
+
+/* v0.1.4.3: explicit role picker; no automatic tagging of user files. */
+.mwb-role-picker { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+
+/* v0.1.4.7 — answer slots use explicit choice/fill semantics.
+ * Choice marks hide the letters but do NOT draw a line beneath the brackets.
+ * Fill marks preserve their width and draw a visible blank line. */
+.markdown-preview-view mark.mwb-hover-answer {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  background: transparent !important;
+  text-shadow: none !important;
+  cursor: help;
+}
+.markdown-preview-view mark.mwb-hover-answer :is(mjx-container, .MathJax, .katex) {
+  visibility: hidden !important;
+}
+/* A slot wrapped by ASCII/full-width parentheses is a choice, regardless of its value. */
+.markdown-preview-view mark.mwb-choice-answer {
+  border-bottom: none !important;
+  padding-bottom: 0 !important;
+}
+/* Fill answers preserve a usable writing line even for MathJax elements. */
+.markdown-preview-view mark.mwb-fill-answer {
+  display: inline-block;
+  vertical-align: baseline;
+  border-bottom: 1px solid var(--text-normal) !important;
+  min-width: 2.4em;
+  padding-inline: 0.15em;
+}
+.markdown-preview-view mark.mwb-hover-answer:is(:hover,:focus,:focus-within) {
+  color: #bd2525 !important;
+  -webkit-text-fill-color: #bd2525 !important;
+  border-bottom-color: transparent !important;
+}
+.markdown-preview-view mark.mwb-hover-answer:is(:hover,:focus,:focus-within) :is(mjx-container, .MathJax, .katex) {
+  visibility: visible !important;
+  color: #bd2525 !important;
+}
+
+/* v0.1.9: every ==...== span in Live Preview is an atomic CodeMirror
+ * widget. Styling never conceals arbitrary .cm-highlight text elsewhere in
+ * a mixed handout, preserving teacher notes and explanatory highlights. */
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-text-answer-slot {
+  display: inline-flex;
+  position: relative;
+  vertical-align: -0.12em;
+  min-width: 2.4em;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 0.15em;
+  min-height: 1.35em;
+  cursor: help;
+  background: transparent;
+  border-bottom: 1px solid var(--text-normal, #141414) !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-text-answer-content {
+  visibility: hidden !important;
+  color: #bd2525 !important;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-text-answer-slot:is(:hover,:focus,:focus-within) .mwb-cm-text-answer-content {
+  visibility: visible !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-text-answer-slot.mwb-choice-answer {
+  border: 0 !important;
+  border-bottom: none !important;
+}
+/* v0.1.4.8: math fill answer widgets produced from literal ==$...$==
+   positions; independent of Obsidian's .cm-highlight or math node count. */
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math {
+  display:inline-block;
+  position:relative;
+  vertical-align:baseline;
+  min-width:2.4em;
+  box-sizing:border-box;
+  border-bottom:1px solid var(--text-normal) !important;
+  cursor:help;
+  padding-inline:0.12em;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-content,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math > .math-inline {
+  visibility:hidden !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within),
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) {
+  border-bottom-color:transparent !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) .mwb-cm-math-answer-content,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) > .math-inline {
+  visibility:visible !important;
+  color:#bd2525 !important;
+}
+
+/* v0.1.4.11: choice answers must remain line-free in BOTH reading and
+   Live Preview even if a generic highlight/answer selector also matches. */
+.mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-choice-answer,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-choice-answer {
+  border: 0 !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+  text-decoration: none !important;
+}
+
+
+/* v0.1.4.12 — a fill-in writing line is a permanent visual anchor.
+ * Hover/focus must reveal the answer OVER the same line, not remove the line.
+ * Reading View and CodeMirror use their own answer wrappers, but share the
+ * same centered slot geometry. Choices are excluded from these selectors. */
+.mwb-answer-note .markdown-preview-view mark.mwb-fill-answer {
+  display: inline-block;
+  text-align: center;
+  min-width: 3em;
+  box-sizing: border-box;
+  vertical-align: -0.12em;
+  padding-inline: 0.18em;
+  border-bottom: 1px solid var(--text-normal, #141414) !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-text-answer-slot.mwb-fill-answer {
+  display: inline-block;
+  text-align: center;
+  min-width: 3em;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--text-normal, #141414) !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-fill-answer,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-fill-answer {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  vertical-align: -0.12em;
+  min-width: 3em;
+  min-height: 1.65em;
+  box-sizing: border-box;
+  padding: 0 0.18em 0.06em;
+  border-bottom: 1px solid var(--text-normal, #141414) !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-content,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math > .math-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+/* Preserve underline while revealing answers on hover or keyboard focus. */
+.mwb-answer-note .markdown-preview-view mark.mwb-fill-answer:is(:hover,:focus,:focus-within),
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-fill-answer:is(:hover,:focus-within),
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-fill-answer:is(:hover,:focus,:focus-within) {
+  border-bottom-color: var(--text-normal, #141414) !important;
+}
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) .mwb-cm-math-answer-content,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) > .math-inline,
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) mjx-container,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) mjx-container {
+  color: #bd2525 !important;
+}
+/* Ensure the choice override continues to win when both generic highlights and
+ * question-level metadata selectors match. */
+.mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,
+.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-choice-answer,
+.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-choice-answer {
+  border: 0 !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+}
+
+/* v0.1.5.0: opt-in metadata fields */
+.mwb-meta-selector { margin:0 0 12px; padding:9px 12px; border:1px solid var(--background-modifier-border); border-radius:6px; }
+.mwb-meta-fields { display:flex; flex-wrap:wrap; gap:5px 13px; margin:6px 0; }
+.mwb-meta-fields label { font-size:12px; white-space:nowrap; display:inline-flex; align-items:center; gap:4px; }
+.mwb-meta-selector > label {font-size:12px;}
+.mwb-meta-selector select {margin-left:5px;}
+
+/* Export warning consent; only local, already-reported failures may be bypassed. */
+.mwb-partial-warning { margin: 0.35em 0 0.6em; font-size: 0.9em; }
+.mwb-partial-warning label { display: inline-flex; gap: 0.45em; align-items: baseline; cursor: pointer; }
+.mwb-partial-warning input { flex: none; }
+
+/* v0.1.9 fill-width parity: student output uses intrinsic answer geometry
+ * measured only in an ephemeral local DOM probe, with no answer in student DOM. */
+.mwb-print-document .mwb-answer-slot {
+  box-sizing: border-box;
+  min-width: 3em;
+  padding-inline: 0.18em;
+}

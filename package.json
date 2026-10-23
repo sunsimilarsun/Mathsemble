@@ -1,0 +1,17 @@
+{
+  "name": "mathsemble",
+  "private": true,
+  "version": "0.1.9",
+  "description": "Obsidian desktop mathematics handouts and student/teacher PDF exports",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.cjs",
+    "verify": "node scripts/verify.mjs",
+    "check": "npm run build && npm test && npm run verify",
+    "prepublish-check": "npm run check && node scripts/prepublish.mjs"
+  }
+}
