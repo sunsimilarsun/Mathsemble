@@ -387,7 +387,7 @@
   overflow: visible;
 }
 .mwb-modal .mwb-controls input.mwb-exam-title-input { min-width: 180px; max-width: 320px; flex: 1; }
-.mwb-modal .mwb-status .mwb-modal .mwb-status-note { display:block; }
+.mwb-modal .mwb-status .mwb-status-note { display:block; }
 
 /* Diagnostic text is selectable; errors remain visible even if the toast disappears. */
 .mwb-modal .mwb-error-actions { display: flex; justify-content: flex-end; margin: 0.15em 0 0.5em; }
