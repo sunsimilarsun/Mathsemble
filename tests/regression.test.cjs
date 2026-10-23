@@ -84,7 +84,9 @@ test('math palette styles known callouts and not examples',()=>{
 test('release has one unambiguous plugin identity',()=>{
   const manifest=JSON.parse(fs.readFileSync(path.resolve(__dirname,'../manifest.json'),'utf8'));
   assert.equal(manifest.id,'math-teaching-workbench');
-  assert.equal(manifest.version,'0.1.9');
+  const pkg=JSON.parse(fs.readFileSync(path.resolve(__dirname,'../package.json'),'utf8'));
+  assert.match(manifest.version,/^\d+\.\d+\.\d+$/);
+  assert.equal(manifest.version,pkg.version);
   assert.equal(manifest.isDesktopOnly,true);
 });
 
