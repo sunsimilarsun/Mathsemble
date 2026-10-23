@@ -2,7 +2,7 @@
 
 Mathsemble is a **desktop-only Obsidian plugin** for creating mathematics handouts, question cards, and A4 student/teacher PDF exports from Markdown notes. It works locally with your Obsidian vault and MathJax.
 
-**Current release:** [Mathsemble 0.1.9 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9). The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
+**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
 
 ## Installation
 
@@ -44,7 +44,7 @@ On a complete checkout, `src/main.js` is the tracked source for the release bund
 
 Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，用于将 Markdown 题卡、讲义或题目集合转成可预览、可打印的 A4 学生版／教师版。当前优先确保 **一份 Markdown 源码、两份教学输出、数学公式与答题留白可核验**。
 
-> **当前状态（2026-10-23）**：本地实验安装包为 **v0.1.9**（局部渲染警告、经确认可继续 PDF／打印）。已有代码级与局部浏览器测试记录，但**尚未完成真实 Obsidian 中整份长讲义、双版本 PDF 的最终视觉／分页验收**。GitHub 已提交 MIT 许可的完整 v0.1.9 源码、测试及构建工作流，**正式 [0.1.9 GitHub Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9) 已发布**，三个独立安装文件的 SHA-256 已核对一致。Obsidian Community 目录**尚未提交审核或上架**；用户报告手动测试未发现问题，但跨主题、跨系统的完整 PDF 视觉验收尚未独立完成。
+> **当前状态（2026-10-23）**：本地实验安装包为 **v0.1.10**（局部渲染警告、经确认可继续 PDF／打印）。已有代码级与局部浏览器测试记录，但**尚未完成真实 Obsidian 中整份长讲义、双版本 PDF 的最终视觉／分页验收**。GitHub 已提交 MIT 许可的完整 v0.1.10 源码、测试及构建工作流，**正式 [0.1.10 GitHub Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10) 已发布**，三个独立安装文件的 SHA-256 已核对一致。Obsidian Community 目录**尚未提交审核或上架**；用户报告手动测试未发现问题，但跨主题、跨系统的完整 PDF 视觉验收尚未独立完成。
 
 - [详细功能需求与验收标准](docs/REQUIREMENTS.md)
 - [版本路线图与风险清单](docs/ROADMAP.md)
@@ -100,7 +100,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 ## 4. 本地安装与使用
 
-**可以通过 [GitHub Releases 0.1.9](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9) 下载** `main.js`、`manifest.json`、`styles.css` 三个独立文件；社区插件目录尚不能一键安装。
+**可以通过 [GitHub Releases 0.1.9](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10) 下载** `main.js`、`manifest.json`、`styles.css` 三个独立文件；社区插件目录尚不能一键安装。
 
 1. 备份现有插件目录及需要打印的 Markdown。
 2. 解压 ZIP 内 `main.js`、`manifest.json`、`styles.css`。
@@ -108,7 +108,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 4. 重新加载插件／重启 Obsidian；打开 Markdown 文件，在命令面板运行对应的预览命令。
 5. 预览并确认学生／教师双版，PDF 默认写入库内 `ExamExports/` 目录（需有写入权限）。
 
-**重要**：官方 GitHub 0.1.9 Release 中的三个安装文件与仓库构建基线及 SHA-256 校验一致；今后版本更新应在 GitHub Actions 中重复此项检查。
+**重要**：官方 GitHub 0.1.10 Release 中的三个安装文件与仓库构建基线及 SHA-256 校验一致；今后版本更新应在 GitHub Actions 中重复此项检查。
 
 ## 5. 当前实现边界
 
@@ -128,14 +128,14 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 完整的 P0/P1/P2 需求、验收用例、风险及发布门槛见 [功能需求](docs/REQUIREMENTS.md) 和 [路线图](docs/ROADMAP.md)。
 
 
-## v0.1.9 学生填空宽度修复（2026-10-23）
+## v0.1.10 学生填空宽度修复（2026-10-23）
 
 实验安装包的学生版填空线不再使用固定的全角空格或固定 2.2em/2.8em 宽度。普通文本、独立数学公式均按答案的临时排版尺寸设置宽度；已有数学公式内部的填空采用 MathJax 宽度校准后的 `\underline{\hspace{...}}`。最小宽度为 **3em**，长答案按实际排版扩展；学生版 HTML/PDF 不保留测量用的答案文本。`(==答案==)` 选择槽无横线，以及 `[!类型]+/-` 教师专用学生等高留白规则不变。
 
 该项已有 Node 转换测试及 Chromium 字体/MathJax 几何测试，**真实 Obsidian 各主题及完整 PDF 尚待验收**。源码及 GitHub Release 0.1.9 已提交；真实 Obsidian 各主题与长 PDF 的后续验收仍可继续补充。
 
 
-## v0.1.9 数学讲义 Callout 主题（2026-10-23）
+## v0.1.10 数学讲义 Callout 主题（2026-10-23）
 
 本地实验包新增八类数学教学 Callout 配色（仅外观）：`definition` 定义绿 `#2EA44F`、`theorem` 定理蓝 `#2F81F7`、`method` 方法紫 `#9B59B6`、`conclusion` 结论青 `#00A896`、`attention` 注意黄 `#F1C40F`、`thinking` 思考灰蓝 `#636E72`、`answer` 答案深橙 `#E67E22`、`scaffold` 脚手架淡紫 `#8F70B5`。原 `solution` 为 `answer` 配色兼容别名；例题直接使用普通 Markdown 标题和题干，插件不给 `example` 赋专门配色。
 
@@ -144,13 +144,13 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 颜色与导出逻辑严格分离：带 `+/-` 的任意 Callout 教师版完整显示、学生版等高留白；无 `+/-` 两版显示。选择/填空语法及填空宽度不变。Chromium 11 类 Callout 测试中外部高度差 0px；完整 Obsidian PDF 验收仍待完成。已启用旧版同类 CSS 片段时建议停用避免重复。黑白/彩色主题切换列入后续规划。
 
 
-## v0.1.9 普通阅读视图主题修复（2026-10-23）
+## v0.1.10 普通阅读视图主题修复（2026-10-23）
 
 修复上一版 Callout 配色依赖 `mwb-math-material`、`mwb-answer-note` 等识别类导致普通笔记不生效的问题。现直接覆盖 Obsidian **阅读视图、实时预览**和 Mathsemble A4 预览/打印。只有八类核心 Callout 加旧版 `solution` 受到配色影响；`example` 保持普通外观。无 YAML 亦可应用，且不改写 `mark`、`strong`，不改变 `[!类型]+/-` 教师专用学生等高留白及答案槽语义。已经通过无 YAML 普通阅读、实时预览、打印 DOM 的 Chromium 模拟测试及 36 个留白槽回归；真实 Obsidian 宿主及长 PDF 仍待验收。
 
 ## 发布准备状态与隐私披露（2026-10-23）
 
-用户已报告 v0.1.9 手动测试未发现明显问题；该版本已完成 GitHub 正式 Release、完整源码入库和 MIT 授权；**Obsidian Community 目录提交与审核仍未完成**。版权持有人已于 2026-10-23 确认采用 MIT。参见 [发布审计](docs/RELEASE_AUDIT.md) 和 [提交指引](docs/PUBLISHING.md)。
+用户已报告 v0.1.10 手动测试未发现明显问题；该版本已完成 GitHub 正式 Release、完整源码入库和 MIT 授权；**Obsidian Community 目录提交与审核仍未完成**。版权持有人已于 2026-10-23 确认采用 MIT。参见 [发布审计](docs/RELEASE_AUDIT.md) 和 [提交指引](docs/PUBLISHING.md)。
 
 **网络和文件系统说明：** 导出 PDF/HTML 时，插件可能为了内联用户文档中的远程 HTTP(S) 图片／字体而发起请求。PDF 转换会在操作系统临时目录写入临时 HTML 并尝试清理；可能读取被引用的 `file://` 本地图像／字体，最终 PDF/HTML 默认存入库内 `ExamExports/`。当前代码未实现遥测/账户数据上传。请勿在保密讲义中引用不受信任的远程资源。
 
