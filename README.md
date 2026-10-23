@@ -91,3 +91,12 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 实验安装包的学生版填空线不再使用固定的全角空格或固定 2.2em/2.8em 宽度。普通文本、独立数学公式均按答案的临时排版尺寸设置宽度；已有数学公式内部的填空采用 MathJax 宽度校准后的 `\underline{\hspace{...}}`。最小宽度为 **3em**，长答案按实际排版扩展；学生版 HTML/PDF 不保留测量用的答案文本。`(==答案==)` 选择槽无横线，以及 `[!类型]+/-` 教师专用学生等高留白规则不变。
 
 该项已有 Node 转换测试及 Chromium 字体/MathJax 几何测试，**真实 Obsidian 各主题及完整 PDF 尚待验收**。正式源码与 GitHub Release 仍未提交。
+
+
+## v0.1.9 数学讲义 Callout 主题（2026-10-23）
+
+本地实验包新增八类数学教学 Callout 配色（仅外观）：`definition` 定义绿 `#2EA44F`、`theorem` 定理蓝 `#2F81F7`、`method` 方法紫 `#9B59B6`、`conclusion` 结论青 `#00A896`、`attention` 注意黄 `#F1C40F`、`thinking` 思考灰蓝 `#636E72`、`answer` 答案深橙 `#E67E22`、`scaffold` 脚手架淡紫 `#8F70B5`。原 `solution` 为 `answer` 配色兼容别名；例题直接使用普通 Markdown 标题和题干，插件不给 `example` 赋专门配色。
+
+打印采用透明背景、细左彩边与彩色标题，正文及 `strong` 不整段染色。阅读视图保留 Obsidian 图标，打印版为一致排版隐藏图标。作用于 Mathsemble A4 预览/PDF/HTML 与识别为题卡、`note_type: handout` 等数学材料以及答案槽笔记的阅读视图；不全局覆盖 `mark` 或其它普通笔记样式。
+
+颜色与导出逻辑严格分离：带 `+/-` 的任意 Callout 教师版完整显示、学生版等高留白；无 `+/-` 两版显示。选择/填空语法及填空宽度不变。Chromium 11 类 Callout 测试中外部高度差 0px；完整 Obsidian PDF 验收仍待完成。已启用旧版同类 CSS 片段时建议停用避免重复。黑白/彩色主题切换列入后续规划。
