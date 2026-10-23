@@ -2757,7 +2757,7 @@ function syncQuestionViewClasses(leaves, getFrontmatter, isQuestion) {
     // governed by the user's theme.
     let raw = '';
     try { raw = view.editor?.getValue?.() || ''; } catch (_) { /* view not ready */ }
-    const hasAnswers = question || (raw.includes('==') && answerSlots(raw).length > 0);
+    const hasAnswers = (raw.includes('?{') || raw.includes('!{')) && answerSlots(raw).length > 0;
     view.containerEl.classList.toggle('mwb-answer-note', hasAnswers);
     view.containerEl.classList.toggle('mwb-question-choice', question && normalizedQuestionType(frontmatter) === 'choice');
     view.containerEl.classList.toggle('mwb-question-fill', question && normalizedQuestionType(frontmatter) === 'fill');
@@ -2850,7 +2850,7 @@ function buildMathAnswerDecorations(view, engine) {
   // scoped separately to avoid changing the user's stored Markdown.
   if (!isLivePreviewEditor(view)) return engine.Decoration.none;
   const source=view.state.doc.toString();
-  if (!source.includes('==')) return engine.Decoration.none;
+  if (!source.includes('?{') && !source.includes('!{')) return engine.Decoration.none;
   const ranges=[];
   for (const slot of answerSlots(source)) {
     if (overlapsSelection(view.state.selection,slot.from,slot.to)) continue;
@@ -2896,7 +2896,7 @@ function createMathAnswerEditorExtension(cmModule, renderMath, finishRenderMath,
         // The replacement is ONLY a view decoration. One click expands the
         // original literal ==$...$== for editing without modifying the file.
         event.preventDefault();
-        const pos=this.slot.from+3;
+        const pos=this.slot.from+2;
         view.dispatch({selection:{anchor:pos}});
         view.focus();
       });
@@ -3489,7 +3489,7 @@ class PreviewModal extends Modal {
       } catch (e) {
         if (generation !== this.generation) return;
         const detail = String(e?.message || e);
-        this.lastRenderError = ['Mathsemble v' + (this.plugin.manifest?.version || '0.1.9'),
+        this.lastRenderError = ['Mathsemble v' + (this.plugin.manifest?.version || 'unknown'),
           '模式：' + (mode === 'student' ? '学生版' : mode === 'teacher' ? '教师版' : '原文'),
           '入口：' + (this.documentMode ? '长 Markdown 讲义' : this.exam ? '当前文件夹整卷' : '当前题卡'),
           '错误：' + detail,
@@ -3776,7 +3776,7 @@ module.exports = class MathTeachingWorkbench extends Plugin {
         const reading=!!root?.querySelector?.('.markdown-preview-view');
         const slots=mathAnswerSlots(markdown);
         const report={
-          版本:'v0.1.9',文件:file.path,
+          版本:'v'+(this.manifest?.version || 'unknown'),文件:file.path,
           是否识别为题卡:isQuestion(fm),
           讲义答案槽数量:answerSlots(markdown).length,
           题型:fm.question_type||fm.type||'未填写',
@@ -3853,35 +3853,28 @@ module.exports = class MathTeachingWorkbench extends Plugin {
       const mathMaterial = question || /^(?:handout|lesson|lecture|worksheet|讲义|试卷)$/i
         .test(String(fm?.note_type || '').trim());
       const reading = element.closest?.('.markdown-preview-view');
-      // Source sections remain available for ordinary handouts that have no
-      // question frontmatter. Do not gate ==answer== styling on YAML.
+      // Typed answer markers come from the section's raw Markdown.
+      // Native ==highlight== remains a regular Obsidian mark.
       const sectionSource = typeof context.getSectionInfo === 'function'
         ? context.getSectionInfo(element)?.text : null;
-      const sectionHasAnswers = typeof sectionSource === 'string' && sectionSource.includes('==')
-        && answerSlots(sectionSource).length > 0;
-      const hasMarks = !!element.querySelector?.('mark');
-      const answerSection = question || sectionHasAnswers || (!!reading && hasMarks);
+      const sectionHasAnswers = typeof sectionSource === 'string' &&
+        (sectionSource.includes('?{') || sectionSource.includes('!{')) &&
+        answerSlots(sectionSource).length > 0;
       if (reading) {
         reading.classList.toggle('mwb-reading-view', question);
         reading.classList.toggle('mwb-math-material', mathMaterial);
         const sizer = reading.querySelector('.markdown-preview-sizer') || element;
         sizer.classList.toggle('mwb-typography', question);
-        if (answerSection) {
-          // CSS supports both the containing MarkdownView and the reading
-          // parent, since Obsidian may attach sections asynchronously.
+        if (sectionHasAnswers) {
           reading.parentElement?.classList.add('mwb-answer-note');
           reading.classList.add('mwb-answer-note');
         }
       }
-      if (!answerSection) return;
-      decorateAnswerMarks(element, true, normalizedQuestionType(fm));
-      // MathJax may render the answer as a sibling of <mark>. In Reading View
-      // wrap the original answer math widget from the exact source section.
-      if (sectionSource && sectionSource.includes('==')) {
+      if (sectionHasAnswers) {
         void Promise.resolve(finishRenderMath()).then(() => {
           requestAnimationFrame(() => {
-            try { maskReadingMathSlots(element, sectionSource); }
-            catch (e) { console.warn('[Math Teaching Workbench] reading math slot:',e); }
+            if (!element.isConnected) return;
+            mwbDecorateReadingTypedSlots(element, sectionSource);
           });
         }).catch(() => {});
       }
