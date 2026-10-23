@@ -126,6 +126,7 @@
 .mwb-print-document .callout-content > :first-child { margin-top: 0; }
 .mwb-print-document .callout-content > :last-child { margin-bottom: 0; }
 /* TikZJax can invert drawings in dark themes; the paper output stays unfiltered. */
+/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */
 .mwb-print-document mjx-container svg { filter: none; }
 .mwb-print-document pre,
 .mwb-print-document figure,
@@ -197,6 +198,7 @@
 .mwb-print-document .mwb-number-only { break-after: avoid; page-break-after: avoid; }
 .mwb-print-document .mwb-question-index { font-weight:700; display:inline-block; margin-right:0.42em; white-space:nowrap; vertical-align:baseline; }
 .mwb-print-document .mwb-exam-question-content > p:first-child { break-after: avoid; page-break-after:avoid; }
+/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */
 .mwb-print-document mjx-container[display="true"],
 .mwb-print-document .math.math-block,
 .mwb-print-document .block-language-tikz,
@@ -406,6 +408,7 @@
   text-shadow: none;
   cursor: help;
 }
+/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */
 .markdown-preview-view mark.mwb-hover-answer :is(mjx-container, .MathJax, .katex) {
   visibility: hidden;
 }
@@ -427,6 +430,7 @@
   -webkit-text-fill-color: #bd2525;
   border-bottom-color: transparent;
 }
+/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */
 .markdown-preview-view mark.mwb-hover-answer:is(:hover,:focus,:focus-within) :is(mjx-container, .MathJax, .katex) {
   visibility: visible;
   color: #bd2525;
@@ -546,12 +550,14 @@
 .mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-fill-answer:is(:hover,:focus,:focus-within) {
   border-bottom-color: var(--text-normal, #141414);
 }
+/* stylelint-disable selector-type-no-unknown -- Only MathJax-rendered math uses this type selector. */
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) .mwb-cm-math-answer-content,
 .mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) > .math-inline,
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) mjx-container,
 .mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) mjx-container {
   color: #bd2525;
 }
+/* stylelint-enable selector-type-no-unknown */
 /* Ensure the choice override continues to win when both generic highlights and
  * question-level metadata selectors match. */
 .mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,
