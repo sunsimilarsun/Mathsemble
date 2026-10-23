@@ -6,7 +6,7 @@
 
 - [x] GitHub 公开仓库： https://github.com/sunsimilarsun/Mathsemble
 - [x] `LICENSE`：版权持有人已批准 MIT。
-- [x] 源码与构建：`src/plugin.js`、`main.js`、`styles.css`、`manifest.json`、`package.json`、lockfile、构建脚本、18 项 Node 回归测试及 GitHub Actions 均已提交。
+- [x] 源码与构建：`src/plugin.js`、`main.js`、`styles.css`、`manifest.json`、`package.json`、lockfile、构建脚本、19 项 Node 回归测试及 GitHub Actions 均已提交。
 - [x] `0.1.9` Git 标签与正式 GitHub Release：https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9
 - [x] Release 包含三个独立文件：`main.js`（220195 字节）、`manifest.json`（279 字节）、`styles.css`（24825 字节）；三个文件的 GitHub SHA-256 摘要均与构建清单一致。
 - [x] CI 与首次发布工作流通过。插件 ID 仍为 `math-teaching-workbench`；`isDesktopOnly: true`。
