@@ -60,7 +60,12 @@
 ## 2026-10-23 数学 Callout 样式整合
 
 - **本地实验实现**：八类数学 Callout 内置语义配色；`answer` 深橙、`scaffold` 淡紫，`solution` 兼容；普通 Markdown 例题无需 `example` Callout。
-- **隔离与保护**：不覆盖全局 `mark`、`strong`，不修改显隐/等高留白判定或填空宽度；打印 CSS 同步嵌入 `main.js` 独立 HTML 输出。
+- **隔离与保护**：默认 Obsidian 阅读视图、实时预览、打印/测量 DOM 均直接匹配八类语义 Callout（无 YAML 亦可）；不覆盖全局 `mark`、`strong`、`example`，不修改显隐/等高留白判定或填空宽度；打印 CSS 同步嵌入 `main.js` 独立 HTML 输出。
 - **局部测试已通过**：JavaScript 语法、36 个教师专用块对应 36 个学生留白槽、Chromium 11 类 Callout 的配色及几何；示例 Callout 高度变化 0px。
 - **P0 待验收**：真实 Obsidian 多主题及用户 CSS Snippets、长讲义学生/教师 A4 PDF 分页、跨页等高留白和 MathJax。
 - **P1 可选功能**：数学彩色/简洁黑白/跟随 Obsidian 的外观切换；如需求明确再支持自定义颜色。
+
+
+## v0.1.9 普通阅读视图主题修复（2026-10-23）
+
+修复上一版 Callout 配色依赖 `mwb-math-material`、`mwb-answer-note` 等识别类导致普通笔记不生效的问题。现直接覆盖 Obsidian **阅读视图、实时预览**和 Mathsemble A4 预览/打印。只有八类核心 Callout 加旧版 `solution` 受到配色影响；`example` 保持普通外观。无 YAML 亦可应用，且不改写 `mark`、`strong`，不改变 `[!类型]+/-` 教师专用学生等高留白及答案槽语义。已经通过无 YAML 普通阅读、实时预览、打印 DOM 的 Chromium 模拟测试及 36 个留白槽回归；真实 Obsidian 宿主及长 PDF 仍待验收。
