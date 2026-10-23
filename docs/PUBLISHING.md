@@ -1,18 +1,28 @@
-# Mathsemble 提交 Obsidian Community 指引（2026-10-23）
+# Mathsemble 0.1.9 · Obsidian Community 提交指引
 
-官方指引： https://docs.obsidian.md/Plugins/Releasing/Submit%20your%20plugin
+更新：2026-10-23。官方步骤：https://docs.obsidian.md/Plugins/Releasing/Submit%20your%20plugin
 
-**现行规则**：通过 https://community.obsidian.md 提交，不再向 obsidian-releases 仓库创建旧式 PR。
+## 已完成
 
-1. 先将完整源码、构建脚本、测试、`manifest.json`、`README.md`、`LICENSE` 放入 `sunsimilarsun/Mathsemble` 默认分支；审计应通过。请勿上传私有题库、学生数据或敏感 PDF。
-2. 版权持有人已确定 MIT。发布准备版 `package.json` 的 `license` 暂为 `UNLICENSED`，是为了阻止未经授权的法律授予。
-3. 将根目录 manifest 与 package 版本保持为 `0.1.9`。在 GitHub 创建 tag **`0.1.9`**，不得添加 `v` 前缀；创建同版本 Release，分别上传 `main.js`、`manifest.json`、`styles.css`，不能仅上传 ZIP。
-4. 登录 Obsidian Community 网站，关联拥有此仓库的 GitHub 账号，进入 **Plugins → Add a plugin** 提交 `https://github.com/sunsimilarsun/Mathsemble`。
-5. 查看自动源码、许可、Manifest、构建与 Release 扫描结果，解决错误后发布最终条目。未获审核通过之前不能宣传为社区商店已上架。
+- [x] GitHub 公开仓库： https://github.com/sunsimilarsun/Mathsemble
+- [x] `LICENSE`：版权持有人已批准 MIT。
+- [x] 源码与构建：`src/main.js`、`main.js`、`styles.css`、`manifest.json`、`package.json`、lockfile、构建脚本、14 项 Node 回归测试及 GitHub Actions 均已提交。
+- [x] `0.1.9` Git 标签与正式 GitHub Release：https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.9
+- [x] Release 包含三个独立文件：`main.js`（220195 字节）、`manifest.json`（279 字节）、`styles.css`（24825 字节）；三个文件的 GitHub SHA-256 摘要均与构建清单一致。
+- [x] CI 与首次发布工作流通过。插件 ID 仍为 `math-teaching-workbench`；`isDesktopOnly: true`。
 
-发布后如需提升版本，应同步修改 manifest/package，发布新 tag 和新 Release。当前 GitHub 仓库原先仅有说明文档，必须先导入源代码与 CI 才能提交。
+## 尚待用户提交社区审核（本轮未操作）
 
+1. 登录 https://community.obsidian.md，并连接拥有此仓库权限的 GitHub 账号。
+2. 在 **Plugins → Add a plugin** 提交 `https://github.com/sunsimilarsun/Mathsemble`。
+3. 按社区自动扫描和审核反馈处理问题。获审核通过之前，不要宣称已在社区插件目录上架。
 
-## 许可证决定（2026-10-23）
+现行提交流程使用 Obsidian Community 网站，不是旧版向 `obsidianmd/obsidian-releases` 提交 PR 的流程。
 
-版权持有人已批准以 MIT License 发布。仓库根目录 [`LICENSE`](../LICENSE) 已提交，完整工程包中 `package.json` 和 `package-lock.json` 的许可证字段均同步为 `MIT`。**仍需把完整源码及构建配置提交到默认分支，CI 成功后再打 Release。**
+## 发布注意事项
+
+- `manifest.json`、`package.json`、tag 与 Release 应始终使用一致的三段式版本。
+- 每次 Release 分别上传三个独立文件，不得只提供 ZIP。
+- 完整的 Windows/macOS 原生 Obsidian PDF 视觉验收不属于 14 项 Node 自动测试结果；用户报告已做手动测试且未发现问题。
+- 不上传私有题库、学生数据、个人文档、密钥。
+- 打印可能请求 Markdown 引用的远程 HTTP(S) 图像或字体，并暂时在库外系统临时目录生成打印 HTML；详见 [PRIVACY.md](PRIVACY.md)。
