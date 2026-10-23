@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - 'manifest.json'
+      - 'tests/regression.test.cjs'
       - '.github/workflows/publish-maintenance-0.1.10.yml'
 permissions:
   contents: write
