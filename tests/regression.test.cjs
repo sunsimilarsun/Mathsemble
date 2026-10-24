@@ -132,7 +132,7 @@ test('formula geometry failures remain blockers without explicit partial permiss
   assert.equal(fs.existsSync(tempHtml),false);
 });
 
-test('partial math permission does not suppress pagination failures',async()=>{
+test('structural pagination failures remain blockers in strict mode',async()=>{
   let tempHtml='';
   class FakeWindow {
     constructor(){this.webContents={
@@ -143,8 +143,48 @@ test('partial math permission does not suppress pagination failures',async()=>{
     isDestroyed(){return false;}
     destroy(){}
   }
-  await assert.rejects(()=>pdfBufferFromHtml('<!doctype html><html><main class="mwb-export-doc"></main></html>',FakeWindow,{allowPartialMath:true}),/打印前分页失败/);
+  await assert.rejects(()=>pdfBufferFromHtml('<!doctype html><html><main class="mwb-export-doc"></main></html>',FakeWindow,{allowPartialMath:true,allowOverflowFallback:false}),/打印前分页失败/);
   assert.equal(fs.existsSync(tempHtml),false);
+});
+
+
+test('renderer overflow error reloads the original HTML and generates a flagged PDF',async()=>{
+  let loads=0, destroyed=false, filepath='';
+  class FakeWindow {
+    constructor(){this.webContents={
+      executeJavaScript:async script=>script.includes('document.querySelector')
+        ? {__mathsembleError:'存在超过 A4 可打印区域的不可拆分内容：公式',stack:'fake renderer stack'}
+        : {badImage:false,badMath:false},
+      printToPDF:async()=>Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj'),
+    };}
+    async loadFile(path){loads++;filepath=path;assert.ok(fs.existsSync(path));}
+    isDestroyed(){return destroyed;}
+    destroy(){destroyed=true;}
+  }
+  const pdf=await pdfBufferFromHtml('<!doctype html><html><main class="mwb-export-doc"></main></html>',FakeWindow);
+  assert.equal(pdf.mwbPrintReport.nativeFallback,true);
+  assert.equal(pdf.mwbPrintReport.pages,0);
+  assert.match(pdf.mwbPrintReport.warnings[0],/原生分页/);
+  assert.equal(loads,2,'partial pagination DOM must be discarded before fallback printing');
+  assert.equal(destroyed,true);
+  assert.equal(fs.existsSync(filepath),false);
+});
+
+test('answer-space mismatch remains a hard failure even with pagination fallback',async()=>{
+  let printCalled=false;
+  class FakeWindow {
+    constructor(){this.webContents={
+      executeJavaScript:async script=>script.includes('document.querySelector')
+        ? {__mathsembleError:'分页后答题空间丢失或高度异常'}
+        : {badImage:false,badMath:false},
+      printToPDF:async()=>{printCalled=true;throw new Error('must not print');},
+    };}
+    async loadFile(){}
+    isDestroyed(){return false;}
+    destroy(){}
+  }
+  await assert.rejects(()=>pdfBufferFromHtml('<!doctype html><html><main class="mwb-export-doc"></main></html>',FakeWindow),/答题空间丢失/);
+  assert.equal(printCalled,false);
 });
 
 test('ordinary ==highlight== remains visible in both editions',()=>{

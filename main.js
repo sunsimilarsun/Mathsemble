@@ -498,6 +498,9 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   const expectedSpaceChunks = originalSpaces.reduce((total, node) => total + node.querySelectorAll('.mwb-answer-space-chunk').length, 0);
   root.replaceChildren();
   const pages = [];
+  const overflowWarnings = [];
+  const scaledNodes = new WeakSet();
+  let autoScaledBlocks = 0;
   let page, body;
   let atomicCount = 0, spaceChunks = 0, splitCallouts = 0;
   let lastRejectedHeight = 0;
@@ -549,9 +552,50 @@ function paginatePrintDocument(root, allowPartialMath = false) {
       questionPart.section.remove(); questionPart = null;
     }
   };
+  // Only resize oversized atomic media/formulas; never resize answer blanks.
+  // Chromium's zoom changes layout geometry; transform:scale does not.
+  const isScalableMedia = (node) => !!node?.matches &&
+    !node.matches('.callout, .mwb-answer-space, .mwb-answer-space-chunk') &&
+    !node.querySelector('.mwb-answer-space, .mwb-answer-space-chunk') &&
+    (node.matches('img, svg, table, pre, figure, mjx-container, .MathJax, .katex, .math, .math-block') ||
+      !!node.querySelector('img, svg, table, pre, figure, mjx-container, .MathJax, .katex'));
+  const fitMedia = (node, allowVertical) => {
+    if (!isScalableMedia(node)) return;
+    let zoom = Number.parseFloat(node.style.zoom) || 1;
+    let shrunk = false;
+    for (let attempt = 0; attempt < 22; attempt++) {
+      const bounds = body.getBoundingClientRect();
+      const descendants = [node, ...node.querySelectorAll('img, svg, table, pre, mjx-container, .MathJax, .katex')];
+      let left = bounds.right, right = bounds.left;
+      for (const el of descendants) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 0 && Number.isFinite(rect.left) && Number.isFinite(rect.right)) {
+          left = Math.min(left, rect.left); right = Math.max(right, rect.right);
+        }
+      }
+      const outsideLeft = Math.max(0, bounds.left - left);
+      const outsideRight = Math.max(0, right - bounds.right);
+      const excessHeight = allowVertical ? Math.max(0, used() - capacity()) : 0;
+      if (outsideLeft <= 1.5 && outsideRight <= 1.5 && excessHeight <= 1.25) break;
+      if (zoom <= 0.06) break;
+      const horizontalRatio = bounds.width / Math.max(bounds.width, right - left);
+      const verticalRatio = excessHeight ? capacity() / Math.max(capacity(), used()) : 1;
+      const factor = Math.min(0.88, horizontalRatio * 0.97, verticalRatio * 0.97);
+      const nextZoom = Math.max(0.06, Math.round(zoom * factor * 10000) / 10000);
+      if (!(nextZoom < zoom)) break;
+      zoom = nextZoom;
+      node.style.zoom = String(zoom);
+      shrunk = true;
+    }
+    if (shrunk && !scaledNodes.has(node)) {
+      scaledNodes.add(node); autoScaledBlocks++;
+      overflowWarnings.push('已缩放超出版心的公式/图片/表格内容（约 ' + Math.round(zoom * 100) + '%），请检查可读性');
+    }
+  };
   const commit = (node, q = null) => {
     const parent = targetFor(q);
     parent.appendChild(node);
+    fitMedia(node, active().meaningful === 0);
     const fits = !overflowed();
     if (fits) { active().meaningful++; atomicCount++; return true; }
     lastRejectedHeight = node.getBoundingClientRect().height;
@@ -801,6 +845,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   }
   return {
     pages: pages.length, blocks: atomicCount, answerSpaceChunks: spaceChunks, splitCallouts,
+    autoScaledBlocks, warnings: overflowWarnings.slice(0, 20),
     answerSpaceExpectedPx: Number(expectedSpacePx.toFixed(2)),
     answerSpacePlacedPx: Number(placedSpacePx.toFixed(2)),
     answerSpaceDeltaPx: Number(spaceDeltaPx.toFixed(2)),
@@ -883,11 +928,33 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
       if (typeof printWindow.webContents.executeJavaScript !== 'function') {
         throw new Error('当前 Electron 不支持打印前智能分页，已阻止导出');
       }
-      paginationReport = await printWindow.webContents.executeJavaScript(
-        options.allowPartialMath ? printPaginationPartialScript : printPaginationScript
-      );
-      if (!paginationReport || !Number.isInteger(paginationReport.pages) || paginationReport.pages < 1) {
-        throw new Error('打印前分页失败：没有有效 A4 页面');
+      try {
+        const script = options.allowPartialMath ? printPaginationPartialScript : printPaginationScript;
+        // Preserve the renderer's true error instead of Electron's generic wrapper.
+        paginationReport = await printWindow.webContents.executeJavaScript(
+          '(async () => { try { return ' + script + '; } catch (error) { return {' +
+          '__mathsembleError: String(error?.message || error), stack: String(error?.stack || "")' +
+          '}; } })()'
+        );
+        if (paginationReport?.__mathsembleError) {
+          throw new Error('打印分页脚本异常：' + paginationReport.__mathsembleError +
+            (paginationReport.stack ? '\n' + paginationReport.stack : ''));
+        }
+        if (!paginationReport || !Number.isInteger(paginationReport.pages) || paginationReport.pages < 1) {
+          throw new Error('打印前分页失败：没有有效 A4 页面');
+        }
+      } catch (error) {
+        const detail = String(error?.message || error);
+        // Incomplete answer blanks or missing question counts are never tolerated.
+        const structuralFailure = /答题空间|留白|题号数量异常|试题为空|正文为空|找不到 PDF 正文容器|超过 200 页/.test(detail);
+        if (options.allowOverflowFallback === false || structuralFailure) throw error;
+        console.warn('[Mathsemble] 智能分页失败，改用 Chromium 原生分页：', error);
+        // The paginator moves DOM before it can throw. Restore the original.
+        await printWindow.loadFile(htmlPath);
+        paginationReport = {
+          pages: 0, nativeFallback: true, autoScaledBlocks: 0,
+          warnings: ['智能分页失败，已回退到浏览器原生分页；内容可能裁切，请检查：' + detail.slice(0, 200)],
+        };
       }
     }
     const raw = await printWindow.webContents.printToPDF({
@@ -914,10 +981,10 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
       // page dictionaries alone that the additional PDF sheet is truly blank.
       // Never drop it: it may contain intentional student handwriting space.
       // Missing pages or 2+ unexpected pages still indicate a print failure.
-      if (count && (count < paginationReport.pages || count > paginationReport.pages + 1)) {
+      if (!paginationReport.nativeFallback && count && (count < paginationReport.pages || count > paginationReport.pages + 1)) {
         throw new Error(`PDF 实际生成 ${count} 页，但分页引擎预期 ${paginationReport.pages} 页；允许至多一页额外尾页，其他页数异常已阻止保存`);
       }
-      const oneExtraPage = count === paginationReport.pages + 1;
+      const oneExtraPage = !paginationReport.nativeFallback && count === paginationReport.pages + 1;
       Object.defineProperty(pdf, 'mwbPrintReport', {
         configurable: false, enumerable: false,
         value: {
@@ -3008,10 +3075,15 @@ function divideRenderIssues(root, issues) {
   for (const issue of issues) {
     // Only local content failures are recoverable. No content, lost answer
     // space, missing entire math render or any real clipping stays fatal.
-    const localFailure = /MathJax\/KaTeX 返回了公式错误|MathJax 公式语法错误|尺寸为零或尚未完成排版|存在未加载或加载失败的图片|TikZ 代码块尚未生成 SVG|TikZ 仍显示为代码块/.test(issue);
+    const localFailure = /MathJax\/KaTeX 返回了公式错误|MathJax 公式语法错误|尺寸为零或尚未完成排版|存在未加载或加载失败的图片|TikZ 代码块尚未生成 SVG|TikZ 仍显示为代码块|超出打印版心|被父容器 .*裁切/.test(issue);
     (hasBody && localFailure ? warnings : blockers).push(issue);
   }
   return { warnings, blockers };
+}
+
+// Geometry warnings permit resilient print; genuinely missing content needs consent.
+function requiresPartialApproval(issues) {
+  return (issues || []).some(issue => !/超出打印版心|被父容器 .*裁切/.test(issue));
 }
 
 async function waitForStableRender(root, source, stableMs = DEFAULTS.stableMs, timeoutMs = DEFAULTS.timeoutMs) {
@@ -3130,7 +3202,7 @@ class PreviewModal extends Modal {
   }
 
   assertPartialExportApproved() {
-    if (this.renderWarnings.length && !this.partialExportApproved) {
+    if (requiresPartialApproval(this.renderWarnings) && !this.partialExportApproved) {
       throw new Error('存在局部渲染失败：请查看警告并勾选“允许不完整的 PDF”，然后继续导出。');
     }
   }
@@ -3364,13 +3436,14 @@ class PreviewModal extends Modal {
         const warnings = [...new Set(this.renderWarnings)];
         this.renderWarnings = warnings;
         if (warnings.length) {
+          const needsIncompleteConsent = requiresPartialApproval(warnings);
           this.lastRenderError = ['Mathsemble 局部渲染警告',
             '模式：' + mode, '警告数：' + warnings.length, ...warnings].join('\n');
           if (this.copyErrorButton) this.copyErrorButton.style.display = '';
-          if (this.partialWarning) this.partialWarning.style.display = '';
+          if (this.partialWarning) this.partialWarning.style.display = needsIncompleteConsent ? '' : 'none';
           this.status.setText(`预览已生成，但有 ${warnings.length} 项局部渲染警告。` +
-            ' 部分内容可能错误或缺失；请复制错误详情检查。' +
-            ' 如确需输出，请勾选“允许导出不完整的 PDF”。\n' +
+            (needsIncompleteConsent ? ' 部分内容可能错误或缺失；请复制错误详情检查。 如确需输出，请勾选“允许导出不完整的 PDF”。\n' :
+              ' 检测到版面溢出；PDF 将优先缩放，必要时启用原生分页，请检查输出可读性。\n') +
             summarizeRenderIssues(warnings, 3) + previewInfo);
           new Notice(`预览存在 ${warnings.length} 项局部渲染警告；确认后仍可保存 PDF 或打印。`, 12000);
         } else {
@@ -3566,7 +3639,7 @@ class PreviewModal extends Modal {
         newWarning = true;
       }
     }
-    if (newWarning && this.partialWarning) {
+    if (newWarning && this.partialWarning && requiresPartialApproval(this.renderWarnings)) {
       this.partialExportApproved = false;
       if (this.partialCheckbox) this.partialCheckbox.checked = false;
       this.partialWarning.style.display = '';
@@ -3606,7 +3679,7 @@ class PreviewModal extends Modal {
   async exportPdf({save=true,printAfter=false} = {}) {
     const generation=this.generation;
     if(!this.ready) {new Notice('渲染尚未通过，不能输出');return;}
-    if (this.renderWarnings.length && !this.partialExportApproved) {
+    if (requiresPartialApproval(this.renderWarnings) && !this.partialExportApproved) {
       new Notice('存在局部渲染警告：请先检查错误并勾选允许不完整 PDF，再保存或打印。', 9000);
       return;
     }
@@ -3636,10 +3709,13 @@ class PreviewModal extends Modal {
       const printMessage=!printAfter?'':printOutcome?.success?'；打印任务已提交到系统':
         `；打印取消或失败：${printOutcome?.reason || '未知原因'}`;
       const pagination=pdf.mwbPrintReport;
-      const partialLabel = this.renderWarnings.length ? `；带 ${this.renderWarnings.length} 项局部渲染警告（内容可能不完整）` : '';
+      const qualityWarning = pagination?.nativeFallback ? '；已使用浏览器原生分页（请检查公式与图片）' :
+        pagination?.autoScaledBlocks ? `；自动缩放 ${pagination.autoScaledBlocks} 个超大内容块` : '';
+      const partialLabel = this.renderWarnings.length ? `；带 ${this.renderWarnings.length} 项局部渲染警告（请核查内容）` : '';
       this.status.setText((savedPath ? `PDF 已保存：${savedPath}` : 'PDF 已生成（未保存）')+printMessage+
-        (pagination ? `；${pagination.pages} 页` : '')+partialLabel);
-      new Notice((savedPath?'PDF 已保存':'PDF 已生成')+partialLabel+printMessage,8500);
+        (pagination && !pagination.nativeFallback ? `；${pagination.pages} 页` : '')+partialLabel+qualityWarning);
+      if (pagination?.warnings?.length) console.warn('[Mathsemble] 打印版面警告', pagination.warnings);
+      new Notice((savedPath?'PDF 已保存':'PDF 已生成')+partialLabel+qualityWarning+printMessage,8500);
     } catch(e) {
       const message=e?.message||String(e);
       this.status.setText((savedPath ? `PDF 已保存：${savedPath}；但打印失败：` : 'PDF/打印失败：')+message);
