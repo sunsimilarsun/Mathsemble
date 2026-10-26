@@ -1,0 +1,66 @@
+name: Apply and verify reading and build repairs
+on:
+  pull_request:
+    paths:
+      - .maintenance/reading-build.part1
+      - .maintenance/reading-build.part2
+      - .github/workflows/apply-reading-build.yml
+permissions:
+  contents: write
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/reading-yaml-css-build-20261026'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply checksum-verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, lzma, subprocess
+          assert subprocess.check_output(['git','hash-object','src/plugin.js'],text=True).strip() == '5cc75693f28af050ddd1bd15303f032629e813d1', 'Source baseline moved'
+          encoded=''.join(Path('.maintenance/reading-build.part'+str(i)).read_text().strip() for i in (1,2))
+          packed=base64.b64decode(encoded,validate=True)
+          assert hashlib.sha256(packed).hexdigest() == 'c53d442c83d69e3111a5d1a14789784c519a5f9b5b6c7e373e108309f2d5524e', 'Patch transport checksum mismatch'
+          patch=Path('.maintenance/reading-build.patch'); patch.write_bytes(lzma.decompress(packed))
+          subprocess.run(['git','apply','--check',str(patch)],check=True)
+          subprocess.run(['git','apply',str(patch)],check=True)
+          assert subprocess.check_output(['git','hash-object','src/plugin.js'],text=True).strip() == '30aa42b0155d4dda2ff585888ea32d716778ec17', 'Source differs from tested candidate'
+          for name in ('.maintenance/reading-build.part1','.maintenance/reading-build.part2','.maintenance/reading-build.patch','.github/workflows/apply-reading-build.yml'):
+              Path(name).unlink()
+          PY
+      - name: Full regression including Chromium
+        run: |
+          npm ci
+          npm run prepublish-check
+          git diff --check
+          test "$(git hash-object src/plugin.js)" = 30aa42b0155d4dda2ff585888ea32d716778ec17
+          cmp src/plugin.js main.js
+      - name: Commit tested repairs without staging workflow
+        env:
+          BRANCH: fix/reading-yaml-css-build-20261026
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md docs/CSS_ARCHITECTURE.md docs/READING_BUILD_FIX_0.1.14.md main.js manifest.json package-lock.json package.json scripts/build.mjs scripts/print-css.mjs scripts/verify.mjs src/plugin.js styles.css tests/build.test.cjs tests/css-integrity.test.cjs tests/reading-build-regressions.test.cjs .maintenance .github/workflows/apply-reading-build.yml
+          git commit -m 'fix: unify YAML boundaries, reading answer styles and generated printing CSS'
+          git push origin "HEAD:$BRANCH"
+          git rev-parse HEAD
+      - name: Prepare pure installation
+        run: |
+          mkdir -p dist/install
+          cp main.js styles.css manifest.json dist/install/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mathsemble-v0.1.14-reading-build-install-only
+          path: dist/install/
+          if-no-files-found: error
+          compression-level: 9
