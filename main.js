@@ -2727,13 +2727,12 @@ function syncQuestionViewClasses(leaves, getFrontmatter, isQuestion) {
       .test(String(frontmatter?.note_type || '').trim());
     view.containerEl.classList.toggle('mwb-math-material', mathMaterial);
     view.containerEl.classList.toggle(QUESTION_VIEW_CLASS, question);
-    // A long handout has no per-question YAML. Only explicitly typed answer slots
-    // enable the answer-scoped CSS, never native Markdown highlights.
-    // Only scoped answer styles are enabled; general handout typography stays
-    // governed by the user's theme.
-    let raw = '';
-    try { raw = view.editor?.getValue?.() || ''; } catch (_) { /* view not ready */ }
-    const hasAnswers = (raw.includes('?{') || raw.includes('!{')) && answerSlots(raw).length > 0;
+    // The Reading View postprocessor marks typed answers after rendering.
+    // Metadata updates may fire on each keystroke: never read and rescan the
+    // entire editor just to toggle a cosmetic CSS scope. Live Preview widget
+    // styles do not need this class and are managed by CodeMirror directly.
+    const hasAnswers = !!view.containerEl.querySelector?.(
+      'mark.mwb-hover-answer, .mwb-reading-answer-math, .mwb-cm-math-answer-slot, .mwb-cm-text-answer-slot');
     view.containerEl.classList.toggle('mwb-answer-note', hasAnswers);
     view.containerEl.classList.toggle('mwb-question-choice', question && normalizedQuestionType(frontmatter) === 'choice');
     view.containerEl.classList.toggle('mwb-question-fill', question && normalizedQuestionType(frontmatter) === 'fill');
@@ -3844,7 +3843,8 @@ module.exports = class MathTeachingWorkbench extends Plugin {
       const leaves=this.app.workspace.getLeavesOfType?.('markdown') || [];
       syncQuestionViewClasses(leaves,
         file => this.app.metadataCache.getFileCache(file)?.frontmatter, isQuestion);
-      refreshQuestionEditors(leaves);
+      // CodeMirror tracks edits and slot visibility itself. An empty dispatch
+      // for every metadata update would repeatedly refresh all open editors.
     };
     if (typeof this.app.workspace.onLayoutReady === 'function')
       this.app.workspace.onLayoutReady(syncAnswerViews);
