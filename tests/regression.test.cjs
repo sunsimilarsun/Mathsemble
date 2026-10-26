@@ -13,7 +13,7 @@ const obsidian={
   renderMath:()=>{throw new Error('DOM not available in Node');}
 };
 const ctx={module:{exports:{}},require:name=>name==='obsidian'?obsidian:require(name),console,Buffer};
-vm.runInNewContext(js+'\n;globalThis.mathsembleAudit={handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers};',ctx,{timeout:15000});
+vm.runInNewContext(js+'\n;globalThis.mathsembleAudit={handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers,mwbMapUnchangedAnswerSlots,mwbVisibleAnswerSlots,buildMathAnswerDecorations};',ctx,{timeout:15000});
 const {handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers}=ctx.mathsembleAudit;
 const str=(s)=>String(s);
 const count=(s,r)=>[...str(s).matchAll(r)].length;
@@ -235,4 +235,71 @@ test('repository host sample projects typed answers without leaking teacher-only
   assert.match(teacher.markdown,/掌握数学概念/);
   assert.match(student.markdown,/代码块内部的 \?\{代码填空\}/);
   assert.match(student.markdown,/\\\?\{普通文本\}/);
+});
+
+
+test('live-preview slot index reuses ordinary edits and preserves exact offsets in long notes',()=>{
+  const {mwbMapUnchangedAnswerSlots}=ctx.mathsembleAudit;
+  const original=['# 讲义',...Array(12000).fill('普通题干：请计算对应数值。'),
+    '填写 ?{42} 和 !{BC}。'].join('\n');
+  const slots=answerSlots(original);
+  assert.equal(slots.length,2);
+  const pos=original.indexOf('普通题干')+2;
+  const inserted='新字';
+  const changed=original.slice(0,pos)+inserted+original.slice(pos);
+  const doc=(s)=>({
+    sliceString:(a,b)=>s.slice(a,b),
+    lineAt:(at)=>{
+      const from=s.lastIndexOf('\n',Math.max(0,at-1))+1;
+      const end=s.indexOf('\n',at);
+      return {from,text:s.slice(from,end<0?s.length:end)};
+    },
+  });
+  const update={
+    startState:{doc:doc(original)},state:{doc:doc(changed)},
+    changes:{
+      iterChanges:cb=>cb(pos,pos,pos,pos+inserted.length,{toString:()=>inserted}),
+      mapPos:p=>p>=pos?p+inserted.length:p,
+    },
+  };
+  const cached=mwbMapUnchangedAnswerSlots(slots,update);
+  assert.ok(cached,'ordinary body edit should reuse token index');
+  assert.deepEqual(Array.from(cached,s=>[s.from,s.to,s.raw]),Array.from(answerSlots(changed),s=>[s.from,s.to,s.raw]));
+  const structuralUpdate={...update,changes:{
+    ...update.changes,
+    iterChanges:cb=>cb(pos,pos,pos,pos+1,{toString:()=>'?'}),
+  }};
+  assert.equal(mwbMapUnchangedAnswerSlots(slots,structuralUpdate),null);
+  const inside=slots[0].from+3;
+  const insideUpdate={...update,changes:{
+    iterChanges:cb=>cb(inside,inside,inside,inside+1,{toString:()=> '7'}),
+    mapPos:p=>p>=inside?p+1:p,
+  }};
+  assert.equal(mwbMapUnchangedAnswerSlots(slots,insideUpdate),null);
+});
+
+test('live preview only decorates visible answers without rereading cached Markdown',()=>{
+  const {mwbVisibleAnswerSlots,buildMathAnswerDecorations}=ctx.mathsembleAudit;
+  const slots=answerSlots('填空 ?{1}\n'+Array(50).fill('正文').join('\n')+'\n选择 !{B}');
+  const visible=mwbVisibleAnswerSlots(slots,[{from:0,to:9}]);
+  assert.equal(visible.length,1);
+  const engine={
+    Decoration:{
+      none:[],
+      replace:({widget})=>({range:(from,to)=>({from,to,widget})}),
+      set:r=>r,
+    },
+    MathAnswerWidget:class {constructor(slot){this.slot=slot;}},
+    TextAnswerWidget:class {constructor(slot){this.slot=slot;}},
+  };
+  const view={
+    dom:{closest:()=>({})},visibleRanges:[{from:0,to:9}],
+    state:{
+      selection:{ranges:[]},
+      doc:{toString:()=>{throw new Error('should not read entire document');}},
+    },
+  };
+  const decorations=buildMathAnswerDecorations(view,engine,slots);
+  assert.equal(decorations.length,1);
+  assert.equal(decorations[0].widget.slot.raw,'1');
 });
