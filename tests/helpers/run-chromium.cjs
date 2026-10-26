@@ -20,7 +20,10 @@ async function runChromeDocument(executable, input, profile){
   }
  });
  const send=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
-  const key=++id,timer=setTimeout(()=>{pending.delete(key);reject(Error('Chrome timeout: '+method+' '+stderr));},20000);
+  // Cold hosted runners may spend more than 20s initializing fonts/DBus.
+  // Only browser startup gets extra time; layout/assertion deadlines stay bounded.
+  const timeout=method==='Target.createTarget'?60000:20000;
+  const key=++id,timer=setTimeout(()=>{pending.delete(key);reject(Error('Chrome timeout: '+method+' '+stderr));},timeout);
   pending.set(key,{resolve,reject,timer});proc.stdio[3].write(JSON.stringify({id:key,method,params,sessionId})+'\0');
  });
  const rejectAll=error=>{for(const entry of pending.values()){clearTimeout(entry.timer);entry.reject(error);}pending.clear();};
