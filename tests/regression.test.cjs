@@ -305,3 +305,10 @@ test('live preview only decorates visible answers without rereading cached Markd
   assert.equal(decorations.length,1);
   assert.equal(decorations[0].widget.slot.raw,'1');
 });
+
+test('metadata change handling avoids full Markdown scans and CodeMirror no-op dispatch',()=>{
+  const section=js.slice(js.indexOf('function syncQuestionViewClasses'),js.indexOf('// Return cloze boundaries'));
+  assert.doesNotMatch(section,/getValue\(\)|answerSlots\(raw\)/);
+  const sync=js.slice(js.indexOf('const syncAnswerViews ='),js.indexOf("listen(this.app.metadataCache, 'changed')"));
+  assert.doesNotMatch(sync,/refreshQuestionEditors\(leaves\)/);
+});
