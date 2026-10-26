@@ -1,0 +1,44 @@
+name: Pure Obsidian installation ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - main.js
+      - styles.css
+      - manifest.json
+      - .github/workflows/install-zip.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installation-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check bundle provenance
+        run: |
+          node --check main.js
+          node scripts/verify.mjs
+      - name: Prepare clean installation directory
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./manifest.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          mkdir -p dist/install
+          cp main.js styles.css manifest.json dist/install/
+          test "$(find dist/install -maxdepth 1 -type f | wc -l)" -eq 3
+          test "$(find dist/install -mindepth 1 -maxdepth 1 | wc -l)" -eq 3
+          node -e "const m=require('./dist/install/manifest.json'); if(m.id!=='math-teaching-workbench' || m.isDesktopOnly!==true)process.exit(1)"
+      - name: Upload installation ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mathsemble-v${{ steps.package.outputs.version }}-install-only
+          path: dist/install/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
