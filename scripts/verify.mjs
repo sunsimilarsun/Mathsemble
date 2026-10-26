@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { synchronizePrintCss } from './print-css.mjs';
 const root = resolve(import.meta.dirname, '..');
 const read = (s) => readFileSync(resolve(root,s));
 const manifest = JSON.parse(read('manifest.json').toString('utf8'));
@@ -17,6 +18,8 @@ if (lock.version !== pkg.version || lock.packages?.['']?.version !== pkg.version
 if (manifest.isDesktopOnly !== true) throw new Error('Node/Electron requires desktopOnly=true');
 if (!manifest.description.endsWith('.') || manifest.description.length>250) throw new Error('Invalid manifest description');
 if (!read('main.js').equals(read('src/plugin.js'))) throw new Error('Build differs from source');
+if (synchronizePrintCss(read('src/plugin.js').toString('utf8'), read('styles.css').toString('utf8')) !== read('src/plugin.js').toString('utf8'))
+  throw new Error('Embedded print CSS is stale; run npm run build');
 execFileSync(process.execPath,['--check',resolve(root,'main.js')]);
 // This validation is intentionally separate from publish readiness. Do not
 // create the first public release before choosing a LICENSE and performing
