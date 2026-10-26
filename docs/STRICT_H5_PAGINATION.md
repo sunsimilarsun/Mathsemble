@@ -22,3 +22,12 @@ CommonMark 夹具由 markdown-it-py 解析并用受控 Callout 适配器生成�
 详见 [Markdown 书写规范](MARKDOWN_SPEC.md) 与 [五级题目标注模板](../templates/讲义_五级题目标题.md)。
 
 本地验证：`CHROME_PATH=/usr/bin/chromium npm run prepublish-check` 全部 162 项通过，0 失败、0 跳过，其中真实 Chromium 子场景共 68 个。另生成 5 组样例 PDF（短题、长题、交替小问、学生长留白、MathJax SVG），实际页数均与分页报告相同，并检查长答案续页渲染图。以上为受控样例，不等于用户实际 Obsidian 宿主验收。
+
+## 2026-10-26 最终核对记录
+
+- GitHub Actions `40325883155` 成功应用并验证源码，提交 `4ac5ad232b3f50366bcd66b79dff0a29f462a215`。临时补丁文件与应用工作流已从最终树中删除。
+- 下载该次工作流的源码归档后独立重跑 `npm run prepublish-check`：162 通过、0 失败、0 跳过。测试串行执行；仅增加冷启动浏览器建立页面的等待上限，未放宽排版或内容断言，未跳过任何场景。
+- 纯安装产物 `12651571161` 的 ZIP 完整性通过，且仅有 `main.js`、`styles.css`、`manifest.json`；三个文件与源码归档、本地已验证运行文件逐字节相同。
+- `main.js` 与源码 SHA-256：`aeda63d46bce29d65a31cd8c9b1289a247e9474e042cca4552b812b864e43299`。
+- `styles.css` SHA-256：`d5d61fa378a12e8866a521397f8318083b32e1f2f4304debeb9a387da605f225`。
+- 文档和模板采用五级题目标题（不是三级）；模板中的六道题已做源码范围及三种投影核对，未报告空题或边界警告。
