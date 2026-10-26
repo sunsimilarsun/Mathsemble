@@ -443,7 +443,7 @@ function transformQuestion(markdown, mode, options = {}) {
 module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, isChoiceAnswerSlot, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
 
 return module.exports; })();
-const { pdfBufferFromHtml } = (() => { const module = {exports:{}};
+const { pdfBufferFromHtml, paginatePreviewDocument } = (() => { const module = {exports:{}};
 'use strict';
 
 // Electron is not part of Obsidian's stable public plugin API. This adapter
@@ -452,7 +452,7 @@ const { pdfBufferFromHtml } = (() => { const module = {exports:{}};
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { printPaginationScript, printPaginationPartialScript } = (() => { const module = {exports:{}};
+const { paginatePrintDocument, printPaginationScript, printPaginationPartialScript } = (() => { const module = {exports:{}};
 'use strict';
 
 // Runs INSIDE the isolated print BrowserWindow after fonts and images settle.
@@ -460,7 +460,7 @@ const { printPaginationScript, printPaginationPartialScript } = (() => { const m
 // Every printed page is an explicit A4 sheet. Reject unbreakable over-height
 // blocks instead of clipping. An additional final blank PDF page is permitted;
 // do not shorten/remove legitimate student writing space to eliminate it.
-function paginatePrintDocument(root, allowPartialMath = false) {
+function paginatePrintDocument(root, allowPartialMath = false, preview = false) {
   if (!root || !root.ownerDocument) throw new Error('找不到 PDF 正文容器');
   const doc = root.ownerDocument;
   const paper = doc.createElement('style');
@@ -480,7 +480,9 @@ function paginatePrintDocument(root, allowPartialMath = false) {
     .mwb-paper .callout { break-inside:auto !important; page-break-inside:auto !important; }
     @media screen { .mwb-paper { outline:1px solid #ddd; } }
   `;
-  doc.head.appendChild(paper);
+  // Obsidian modal preview has separately scoped A4 CSS; PDF's html/body
+  // reset must never resize the entire application.
+  if (!preview) doc.head.appendChild(paper);
   // All existing children are detached only once. MathJax baseline attributes,
   // SVG nodes and data URLs remain unchanged throughout pagination.
   const inputNodes = Array.from(root.children);
@@ -1081,7 +1083,7 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
   }
 }
 
-module.exports = { pdfBufferFromHtml };
+module.exports = { pdfBufferFromHtml, paginatePreviewDocument: paginatePrintDocument };
 
 return module.exports; })();
 const { META_FIELDS, MODE_DEFAULTS, addMetaBlock } = (() => { const module = {exports:{}};
@@ -3054,6 +3056,26 @@ return module.exports; })();
 
 const OUTPUT_DIR = 'ExamExports';
 
+// Open only a PDF previously created in this plugin's export directory.
+// Never construct a file:// URL or run a shell command with Markdown content.
+async function openExportedPdf(app, vaultPath, desktopShell = null) {
+  if (typeof vaultPath !== 'string' || !vaultPath.startsWith(OUTPUT_DIR + '/') ||
+      !/\.pdf$/i.test(vaultPath) || vaultPath.includes('..') || vaultPath.includes('\\')) {
+    throw new Error('仅支持打开 Mathsemble 已保存的 PDF 文件');
+  }
+  const file = app.vault.getAbstractFileByPath(vaultPath);
+  if (!file || file.extension !== 'pdf') throw new Error('PDF 文件不存在，可能已被移动或删除');
+  if (typeof app.vault.adapter.getFullPath !== 'function') {
+    throw new Error('当前仓库不支持获取 PDF 本地文件路径');
+  }
+  const fullPath = app.vault.adapter.getFullPath(vaultPath);
+  const shell = desktopShell || require('electron').shell;
+  if (!shell || typeof shell.openPath !== 'function') throw new Error('无法使用系统 PDF 阅读器');
+  const failure = await shell.openPath(fullPath);
+  if (failure) throw new Error('系统无法打开 PDF：' + failure);
+  return fullPath;
+}
+
 function isQuestion(frontmatter) {
   if (!frontmatter || typeof frontmatter !== 'object') return false;
   const objectType = String(frontmatter.object_type || '').toLowerCase();
@@ -3300,6 +3322,9 @@ class PreviewModal extends Modal {
     this.measurePage = null;
     this.renderWarnings = [];
     this.partialExportApproved = false;
+    this.lastSavedPdfPath = null;
+    this.previewPages = null;
+    this.previewPaginationReport = null;
   }
 
   addRenderWarnings(stage, issues) {
@@ -3321,6 +3346,18 @@ class PreviewModal extends Modal {
     const teacher = controls.createEl('button', { text: this.documentMode ? '讲义教师版' : '教师卷' });
     const originalDocument = this.documentMode ? controls.createEl('button', { text: '原文预览（不转换答案）' }) : null;
     const print = controls.createEl('button', { text: '保存 PDF' });
+    const openPdfButton = controls.createEl('button', { text: '打开已保存 PDF' });
+    openPdfButton.style.display = 'none';
+    this.openPdfButton = openPdfButton;
+    openPdfButton.title = '使用操作系统默认 PDF 阅读器打开上次成功保存的文件';
+    openPdfButton.onclick = async () => {
+      if (!this.lastSavedPdfPath) return;
+      try {
+        await openExportedPdf(this.app, this.lastSavedPdfPath);
+      } catch (error) {
+        new Notice('打开 PDF 失败：' + (error?.message || error), 10000);
+      }
+    };
     const printDirect = controls.createEl('button', { text: '打印…' });
     const printAndSave = controls.createEl('button', { text: '保存并打印…' });
 
@@ -3494,6 +3531,7 @@ class PreviewModal extends Modal {
     if (this.copyErrorButton) this.copyErrorButton.style.display = 'none';
     this.renderQueue = this.renderQueue.catch(() => {}).then(async () => {
       if (generation !== this.generation) return;
+      this.clearPaginatedPreview();
       this.rendered.empty();
       try {
         if (this.documentMode) {
@@ -3551,6 +3589,17 @@ class PreviewModal extends Modal {
         // Audit actual student PREVIEW geometry after all MathJax and styles
         // settle. The PDF engine may still create pagination gaps independently.
         this.spaceDiagnostics = mode === 'student' ? auditSpaceGeometry(this.rendered) : [];
+        // Keep the original continuous DOM for stable PDF preflight checks.
+        // Show an A4-paginated clone using the SAME paginator as PDF output.
+        let previewNote = '';
+        try {
+          const pagination = this.showPaginatedPreview();
+          previewNote = `；A4 分页预览 ${pagination.pages} 页（PDF 导出时重新核验）`;
+        } catch (error) {
+          this.clearPaginatedPreview();
+          previewNote = '；A4 分页预览失败，当前显示连续内容：' + String(error?.message || error).slice(0,150);
+          console.warn('[Math Teaching Workbench] A4 预览分页失败', error);
+        }
         this.ready = true;
         const extra = mode === 'student' && this.solutionHeights.length
           ? `；${this.solutionHeights.length} 处答题区按解答高度 ${this.spaceSettings.ratio}%（最低 ${this.spaceSettings.minimumCm} cm）生成`
@@ -3558,7 +3607,7 @@ class PreviewModal extends Modal {
         const roles = this.documentMode ? (mode === 'document' ? '长 Markdown 原文' : mode === 'student' ? '长 Markdown 学生版' : '长 Markdown 教师版') : this.exam ? teachingRoleSummary(this.exam.items)
           : teachingRoleSummary([{ markdown:this.markdown }]);
         const previewInfo = extra + '；教学角色：' + roles +
-          '；留白几何核验 ' + this.spaceDiagnostics.length + ' 项；最终分页仍以 PDF 为准。' +
+          '；留白几何核验 ' + this.spaceDiagnostics.length + ' 项' + previewNote + '。' +
           (this.exam ? ` 共 ${this.exam.items.length} 题。` : this.documentMode ? ` 文档 ${this.markdown.length} 字符。` : '');
         const warnings = [...new Set(this.renderWarnings)];
         this.renderWarnings = warnings;
@@ -3593,6 +3642,39 @@ class PreviewModal extends Modal {
       }
     });
     return this.renderQueue;
+  }
+
+  clearPaginatedPreview() {
+    if (this.previewPages) this.previewPages.remove();
+    this.previewPages = null;
+    this.previewPaginationReport = null;
+    if (this.page) {
+      this.page.classList.remove('mwb-preview-source');
+      this.page.removeAttribute('aria-hidden');
+    }
+  }
+
+  showPaginatedPreview() {
+    this.clearPaginatedPreview();
+    // Reuse the already typeset MathJax/SVG DOM, without editing the source
+    // needed for subsequent PDF/HTML export and writing-height audits.
+    const view = this.rendered.cloneNode(true);
+    view.classList.add('mwb-export-doc', 'mwb-preview-pages');
+    expandPrintCallouts(view);
+    this.page.after(view);
+    try {
+      const report = paginatePreviewDocument(view, false, true);
+      this.previewPages = view;
+      this.previewPaginationReport = report;
+      // Visibility/positioning retain the original DOM's measurable geometry.
+      // display:none would make the student blank-space audit report 0 height.
+      this.page.classList.add('mwb-preview-source');
+      this.page.setAttribute('aria-hidden', 'true');
+      return report;
+    } catch (error) {
+      view.remove();
+      throw error;
+    }
   }
 
   // Preserve complete Markdown headings, fences, and source-file context.
@@ -3829,6 +3911,8 @@ class PreviewModal extends Modal {
           const bytes=buffer.buffer.slice(buffer.byteOffset,buffer.byteOffset+buffer.byteLength);
           savedPath=`${OUTPUT_DIR}/${name}`;
           await this.app.vault.createBinary(savedPath,bytes);
+           this.lastSavedPdfPath = savedPath;
+           if (this.openPdfButton) this.openPdfButton.style.display = '';
         } : undefined,
       });
       const printOutcome=pdf.mwbPrintOutcome;
@@ -3846,7 +3930,7 @@ class PreviewModal extends Modal {
     }
   }
 
-  onClose() { ++this.generation; this.removeMeasurement(); this.contentEl.empty(); }
+  onClose() { ++this.generation; this.clearPaginatedPreview(); this.removeMeasurement(); this.contentEl.empty(); }
 }
 
 module.exports = class MathTeachingWorkbench extends Plugin {
