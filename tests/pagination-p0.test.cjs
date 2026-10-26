@@ -120,6 +120,8 @@ test('P0 short exam questions move intact rather than split across pages',()=>{
   const a=question(d,[['prompt',55]],'1'),b=question(d,[['prompt',55]],'2');
   const {pages,result}=run([a,b]);
   assert.equal(result.pages,2);
+  assert.equal(result.intactQuestions,2);
+  assert.equal(result.splitQuestions,0);
   assert.equal(pages[0].querySelectorAll('.mwb-question-index').length,1);
   assert.equal(pages[1].querySelectorAll('.mwb-question-index').length,1);
   assert.ok(pages[1].querySelectorAll('.mwb-exam-question').includes(b),'original entire question is on next page');
@@ -129,6 +131,9 @@ test('P0 long exam questions may split, but prompt and options stay on one page'
   const {pages,result}=run([q]);
   assert.equal(result.pages,2);
   assert.equal(result.splitCallouts,0);
+  assert.equal(result.intactQuestions,0);
+  assert.equal(result.splitQuestions,1);
+  assert.equal(result.keptPromptOptions,1);
   assert.equal(pages[0].querySelectorAll('.mwb-options').length,1);
   assert.equal(pages[0].querySelectorAll('.mwb-question-index').length,1);
   assert.equal(pages[1].querySelectorAll('.mwb-options').length,0);
@@ -141,6 +146,9 @@ test('P0 student starter space stays with prompt and preserves every handwriting
   assert.equal(result.answerSpaceExpectedPx,60);
   assert.equal(result.answerSpacePlacedPx,60);
   assert.equal(result.answerSpaceChunks,4);
+  assert.equal(result.intactQuestions,1);
+  assert.equal(result.splitQuestions,1);
+  assert.equal(result.keptPromptSpace,1);
   assert.ok(pages.length>=2);
   const promptPage=pages.findIndex(p=>p.querySelectorAll('.mwb-question-index').some(e=>e.textContent==='2.'));
   assert.ok(promptPage>=1,'second prompt moved off nearly full previous page');
@@ -153,6 +161,7 @@ test('P0 long handout keeps final prompt with first writing chunk',()=>{
   const {pages,result}=run([prefix,prompt,s]);
   assert.equal(result.answerSpacePlacedPx,60);
   assert.equal(result.answerSpaceChunks,4);
+  assert.equal(result.keptPromptSpace,1);
   assert.ok(pages.length>=2);
   const pg=pages.findIndex(p=>p.querySelectorAll('p').includes(prompt));
   assert.ok(pg>=1);
@@ -164,4 +173,26 @@ test('P0 unbreakable full-page question still falls back to block-level splittin
   assert.equal(result.pages,2);
   assert.equal(pages[0].querySelectorAll('.mwb-question-index').length,1);
   assert.equal(pages[1].querySelectorAll('.mwb-question-index').length,0);
+});
+
+test('P0 new exam section heading follows its intact short question to next page',()=>{
+  const d=doc();
+  const first=question(d,[['prompt',60]],'1');
+  const title=block(d,'h2',12,'mwb-exam-section');title.textContent='填空题';
+  const second=question(d,[['prompt',55]],'2');
+  const {pages,result}=run([first,title,second]);
+  assert.equal(result.pages,2);
+  assert.equal(result.intactQuestions,2);
+  assert.ok(pages[1].querySelectorAll('.mwb-exam-section').includes(title));
+  assert.ok(pages[1].querySelectorAll('.mwb-exam-question').includes(second));
+  assert.equal(pages[0].querySelectorAll('.mwb-exam-section').length,0);
+});
+test('P0 handout keeps a question paragraph with its full small choice grid',()=>{
+  const d=doc();
+  const filler=block(d,'p',60),prompt=block(d,'p',30),choices=block(d,'ul',40,'mwb-options');
+  const {pages,result}=run([filler,prompt,choices]);
+  assert.equal(result.pages,2);
+  assert.equal(result.keptPromptOptions,1);
+  assert.ok(pages[1].querySelectorAll('p').includes(prompt));
+  assert.ok(pages[1].querySelectorAll('.mwb-options').includes(choices));
 });
