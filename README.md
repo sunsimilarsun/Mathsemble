@@ -2,7 +2,7 @@
 
 Mathsemble is a **desktop-only Obsidian plugin** for creating mathematics handouts, question cards, and A4 student/teacher PDF exports from Markdown notes. It works locally with your Obsidian vault and MathJax.
 
-**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). **Source version:** `0.1.13` (development only; not a GitHub Release). The release retains `(==B==)` / `==42==` answers; development source uses `!{B}` / `?{42}`. Do not combine the two installations or treat a development manifest as a published release. The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
+**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). **Source version:** `0.1.14` (development only; not a GitHub Release). The release retains `(==B==)` / `==42==` answers; development source uses `!{B}` / `?{42}`. Do not combine the two installations or treat a development manifest as a published release. The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
 
 ## Installation
 
@@ -34,7 +34,7 @@ npm run check
 npm run prepublish-check
 ```
 
-The tracked source is `src/plugin.js`, deliberately named differently from the generated root `main.js`. `npm run build` must regenerate `main.js` from this source even after deleting every existing `main.js`; it never relies on a prebuilt bundle. CI tests this scanner-style clean build and verifies byte-for-byte output identity.
+The tracked source is `src/plugin.js`, deliberately named differently from the generated root `main.js`. `npm run build` must regenerate `main.js` from this source even after deleting every existing `main.js`; it never relies on a prebuilt bundle. Printing CSS is authored only in `styles.css`. Build synchronizes its export prefix into the generated literal in `src/plugin.js`, then copies that complete source into `main.js`. Commit both outputs after a CSS change; `verify` also rejects a stale CSS mirror without building. CI tests scanner-style clean builds and byte-for-byte output identity.
 
 ## New typed answer syntax (development main branch; not in published v0.1.10)
 
@@ -207,3 +207,9 @@ The plugin may read explicitly referenced `file://` image and font resources **o
 ## 2026-10-26 · 0.1.13 开发候选：审核缺陷修复
 
 按显式引用层级投影嵌套 Callout；学生版移除教师子树且避免重复留白。留白测量校验完整 Callout 树的数量、类型与父子关系，建立稳定源码标识；默认不为 solution 留白时，从测量投影排除相应教师专用 solution。修复冒号引导长列表、增量编辑形成新答案槽、缩进／引用代码保护及标题变更后分页预览刷新。详见 [七项审核修复与验证边界](docs/AUDIT_FIX_0.1.13.md)。开发安装包不等同正式 Release；公开 0.1.10 Release 不变。
+
+## 2026-10-26 · 0.1.14 开发候选：阅读视图、YAML 与构建维护
+
+修复 `...` 后备元信息边界、阅读视图根段落漏扫、外层公式答案 `?{$...$}` 的显隐样式与永久下划线；固定填空横线可以与链接、图片及注释处于同一行。`styles.css` 是打印 CSS 的唯一编辑来源，构建自动同步内嵌镜像及安装 bundle；删除已经无调用的旧答案格式代码。见 [具体范围、验证与剩余限制](docs/READING_BUILD_FIX_0.1.14.md)。
+
+**尚未完成：** `$x=?{2}$` 等公式内部槽仍支持 A4 学生/教师导出，但 Obsidian 原生 Reading View/Live Preview 的组件适配未在本轮宣称修复。外层 `?{$x=2$}` 隐藏的是整个等式，不能代替仅隐藏数值的原语义。原生模式中应使用诊断命令检查支持范围；正式分发学生材料前仍须检查 A4 输出。

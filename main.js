@@ -91,6 +91,104 @@ function mwbStudentMathFill(answer) {
   return result;
 }
 
+// Skip only the literal inline region, not an entire question line. This
+// scanner intentionally does not rewrite link labels, destinations or HTML.
+function mwbLiteralInlineEnd(line, start) {
+  if (/[hHmM]/.test(line[start] || '') && /^(?:https?:\/\/|mailto:)/i.test(line.slice(start))) {
+    const rest = line.slice(start).match(/^[^\s<>]+/);
+    return start + (rest?.[0].length || 1);
+  }
+  if (line.startsWith('[[', start)) {
+    const end = line.indexOf(']]', start + 2);
+    return end < 0 ? line.length : end + 2;
+  }
+  if (line[start] === '<') {
+    let quote = '';
+    for (let j = start + 1; j < line.length; j++) {
+      if (quote) { if (line[j] === quote) quote = ''; }
+      else if (line[j] === '"' || line[j] === "'") quote = line[j];
+      else if (line[j] === '>') return j + 1;
+    }
+    return line.length;
+  }
+  if (line[start] !== '[') return start;
+  let depth = 1, j = start + 1;
+  for (; j < line.length; j++) {
+    if (line[j] === '\\') { j++; continue; }
+    if (line[j] === '[') depth++;
+    else if (line[j] === ']' && --depth === 0) break;
+  }
+  if (depth || !['(', '['].includes(line[j + 1])) return start;
+  const opening = line[j + 1], closing = opening === '(' ? ')' : ']';
+  depth = 1;
+  let quote = '';
+  for (let k = j + 2; k < line.length; k++) {
+    if (line[k] === '\\') { k++; continue; }
+    if (quote) { if (line[k] === quote) quote = ''; continue; }
+    if ((line[k] === '"' || line[k] === "'") && /\s/.test(line[k - 1] || '')) { quote = line[k]; continue; }
+    if (line[k] === opening) depth++;
+    else if (line[k] === closing && --depth === 0) return k + 1;
+  }
+  // An unfinished destination remains literal rather than injecting HTML into it.
+  return line.length;
+}
+
+function mwbNormalizePrintBlanks(source) {
+  let displayMath = false, mathParen = false, mathBracket = false, comment = false;
+  const output = [];
+  for (const row of mwbMarkdownLines(source)) {
+    const line = row.line;
+    if (!comment && (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /^\s{0,3}\[[^\]]+\]:/.test(row.body))) {
+      output.push(line); continue;
+    }
+    let codeTicks = 0, inlineMath = false, result = '';
+    for (let i = 0; i < line.length;) {
+      const char = line[i];
+      if (comment) {
+        const end = line.indexOf('-->', i);
+        if (end < 0) { result += line.slice(i); i = line.length; continue; }
+        result += line.slice(i, end + 3); i = end + 3; comment = false; continue;
+      }
+      if (char === '\\' && line[i + 1]) {
+        const delimiter = line.slice(i, i + 2);
+        if (delimiter === '\\(') mathParen = true;
+        if (delimiter === '\\)') mathParen = false;
+        if (delimiter === '\\[') mathBracket = true;
+        if (delimiter === '\\]') mathBracket = false;
+        result += delimiter; i += 2; continue;
+      }
+      if (char === '`' && !displayMath && !mathParen && !mathBracket) {
+        let n = 1; while (line[i + n] === '`') n++;
+        if (codeTicks === 0) codeTicks = n;
+        else if (codeTicks === n) codeTicks = 0;
+        result += '`'.repeat(n); i += n; continue;
+      }
+      if (!codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket) {
+        if (line.startsWith('<!--', i)) { comment = true; continue; }
+        const end = mwbLiteralInlineEnd(line, i);
+        if (end > i) { result += line.slice(i, end); i = end; continue; }
+      }
+      if (!codeTicks && char === '$' && !mathParen && !mathBracket) {
+        if (line[i + 1] === '$') { displayMath = !displayMath; result += '$$'; i += 2; continue; }
+        if (!displayMath) inlineMath = !inlineMath;
+        result += char; i++; continue;
+      }
+      if (char === '_' && !codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket) {
+        let j = i + 1; while (line[j] === '_') j++;
+        const previous = line[i - 1] || '', next = line[j] || '';
+        if (j - i >= 3 && !/[\p{L}\p{N}_]/u.test(previous) && !/[\p{L}\p{N}_]/u.test(next)) {
+          const em = Math.min(12, Math.max(3, Math.round((j - i) * 0.8 * 10) / 10));
+          result += `<span class="mwb-fixed-blank" style="width:${em}em" aria-label="填空横线"></span>`;
+          i = j; continue;
+        }
+      }
+      result += char; i++;
+    }
+    output.push(result);
+  }
+  return output.join('\n');
+}
+
 // Shared source context for edition projection, measuring and answer tokens.
 // Quote depth is structural; fenced/indented code is never teaching syntax.
 function mwbMarkdownLines(markdown) {
@@ -311,14 +409,17 @@ function mwbValidateTypedAnswers(markdown){
 // DOM replacement never mutates a source note or the student's exported HTML.
 function mwbDecorateReadingTypedSlots(element,source){
   const expected=mwbTypedSlots(source);
-  if(!expected.length||!element?.ownerDocument)return 0;
+  if(!expected.length||!element?.ownerDocument||element.closest?.('.mwb-print-document'))return 0;
   // Obsidian removes Markdown escape backslashes; avoid ambiguous mixed cases.
   if(/\\[?!]\{/.test(source))return 0;
-  const doc=element.ownerDocument,blocks=[...element.querySelectorAll('p,li,td,th,h1,h2,h3,h4')];let count=0;
+  const selector='p,li,td,th,h1,h2,h3,h4';
+  // Postprocessor roots may themselves be a paragraph, list item or heading.
+  const doc=element.ownerDocument,blocks=[...(element.matches?.(selector)?[element]:[]),...element.querySelectorAll(selector)];let count=0;
   for(const block of blocks){
     const walker=doc.createTreeWalker(block,4),nodes=[];let node;
     while((node=walker.nextNode())){
       if(node.parentElement?.closest('code,pre,script,style,.math-inline,.math-block,mjx-container,.mwb-hover-answer'))continue;
+      if(node.parentElement?.closest(selector)!==block)continue;
       nodes.push(node);
     }
     const positions=[];let visual='';
@@ -342,6 +443,7 @@ function mwbDecorateReadingTypedSlots(element,source){
         const last=texts[texts.length-1];if(last.data.length)last.deleteData(last.data.length-1,1);
         const mark=doc.createElement('mark');
         mark.className='mwb-hover-answer '+(c.kind==='choice'?'mwb-choice-answer':'mwb-fill-answer');
+        if(fragment.querySelector('.math-inline,mjx-container,.MathJax,.katex'))mark.classList.add('mwb-reading-answer-math');
         mark.setAttribute('title','悬停或聚焦显示答案');mark.setAttribute('tabindex','0');
         mark.appendChild(fragment);range.insertNode(mark);count++;
       }catch(e){console.warn('[Mathsemble] reading typed answer:',e);}
@@ -386,40 +488,6 @@ function removeSolutionCallouts(source, mode, options = {}) {
   return mwbProjectCallouts(source, mode, options).markdown;
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// Strict answer-slot syntax: parentheses immediately outside ==...== mean
-// choice; otherwise the slot is fill-in. Contents and YAML never override it.
-// Both ASCII () and full-width （） are accepted, with optional whitespace.
-function isChoiceAnswerSlot(_answer, prefix, suffix, _questionType = '') {
-  return /[（(]\s*$/.test(prefix) && /^\s*[）)]/.test(suffix);
-}
-
-function formatAnswer(answer, mode, inMath, choice = false) {
-  // Only surrounding parentheses classify choice slots; never infer from YAML.
-  if (choice) {
-    if (mode === 'student') return inMath ? '\\hspace{1.4em}' : '<span class="mwb-choice-slot" aria-label="选择题答案留空">&nbsp;&nbsp;</span>';
-    if (inMath) return `\\color{red}{${answer}}`;
-    const mathChoice = answer.match(/^\$([^$\n]+)\$/);
-    return mathChoice ? `$\\color{red}{${mathChoice[1]}}$` : `<span class="mwb-answer-revealed">${escapeHtml(answer)}</span>`;
-  }
-  if (!inMath) {
-    const standaloneMath = answer.match(/^\$([^$\n]+)\$/);
-    if (standaloneMath) {
-      if (mode === 'teacher') return `$\\underline{\\color{red}{${standaloneMath[1]}}}$`;
-      return mwbStudentFillSpan(standaloneMath[1], true);
-    }
-  }
-  if (inMath) {
-    return mode === 'student' ? mwbStudentMathFill(answer) : `\\underline{\\color{red}{${answer}}}`;
-  }
-  return mode === 'student'
-    ? mwbStudentFillSpan(answer, false)
-    : `<span class="mwb-teacher-fill-slot" aria-label="填空题参考答案">${escapeHtml(answer)}</span>`;
-}
-
 // Purposefully conservative: do not transform fenced/inline code, escaped delimiters,
 // or a cloze containing a newline. Each ==...== pair is confined to its line.
 function rewriteClozes(source, mode, questionType = '') {
@@ -438,55 +506,7 @@ function assertValidQuestionSource(markdown) {
 // Projected print mode only. The raw-document mode intentionally bypasses
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
-function normalizePrintBlanks(source) {
-  let displayMath = false, mathParen = false, mathBracket = false;
-  const output = [];
-  for (const row of mwbMarkdownLines(source)) {
-    const line = row.line;
-    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
-      output.push(line); continue;
-    }
-    let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
-    for (let i = 0; i < line.length;) {
-      const char = line[i];
-      if (char === '\\' && line[i+1]) {
-        const delimiter = line.slice(i, i+2);
-        if (delimiter === '\\(') mathParen = true;
-        if (delimiter === '\\)') mathParen = false;
-        if (delimiter === '\\[') mathBracket = true;
-        if (delimiter === '\\]') mathBracket = false;
-        result += delimiter; i += 2; continue;
-      }
-      if (char === '`' && !displayMath && !mathParen && !mathBracket) {
-        let n=1; while (line[i+n] === '`') n++;
-        if (codeTicks === 0) codeTicks = n;
-        else if (codeTicks === n) codeTicks = 0;
-        result += '`'.repeat(n); i += n; continue;
-      }
-      if (!codeTicks && char === '$' && !mathParen && !mathBracket) {
-        if (line[i+1] === '$') { displayMath = !displayMath; result += '$$'; i+=2; continue; }
-        if (!displayMath) inlineMath = !inlineMath;
-        result += char; i++; continue;
-      }
-      if (!codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket) {
-        if (char === '<') inHtml = true;
-        if (char === '>' && inHtml) { inHtml = false; result += char; i++; continue; }
-      }
-      if (char === '_' && !codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket && !inHtml) {
-        let j=i+1; while (line[j] === '_') j++;
-        const previous = line[i-1] || '', next = line[j] || '';
-        if (j-i >= 3 && !/[\p{L}\p{N}_]/u.test(previous) && !/[\p{L}\p{N}_]/u.test(next)) {
-          const em = Math.min(12, Math.max(3, Math.round((j-i)*0.8*10)/10));
-          result += `<span class="mwb-fixed-blank" style="width:${em}em" aria-label="填空横线"></span>`;
-          i=j; continue;
-        }
-      }
-      result += char; i++;
-    }
-    output.push(result);
-  }
-  return output.join('\n');
-}
+function normalizePrintBlanks(source) { return mwbNormalizePrintBlanks(source); }
 
 // Rewrite only an explicit edition suffix on the first H1, never an arbitrary
 // occurrence of 教师版 in body text (e.g. a lesson *about* version differences).
@@ -508,17 +528,13 @@ function projectHandoutHeading(source, mode) {
 function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
-  // Optional metadata supports choice cards whose answer is not immediately
-  // between parentheses; never overwrite frontmatter or infer subject data.
-  const head = String(markdown).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-  const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
-  const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
+  // Typed choice/fill syntax is independent of optional question metadata.
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
   body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
-module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, isChoiceAnswerSlot, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
+module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
 
 return module.exports; })();
 const { pdfBufferFromHtml, paginatePreviewDocument } = (() => { const module = {exports:{}};
@@ -1672,40 +1688,6 @@ function removeSolutionCallouts(source, mode, options = {}) {
   return mwbProjectCallouts(source, mode, options).markdown;
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// Strict answer-slot syntax: parentheses immediately outside ==...== mean
-// choice; otherwise the slot is fill-in. Contents and YAML never override it.
-// Both ASCII () and full-width （） are accepted, with optional whitespace.
-function isChoiceAnswerSlot(_answer, prefix, suffix, _questionType = '') {
-  return /[（(]\s*$/.test(prefix) && /^\s*[）)]/.test(suffix);
-}
-
-function formatAnswer(answer, mode, inMath, choice = false) {
-  // Only surrounding parentheses classify choice slots; never infer from YAML.
-  if (choice) {
-    if (mode === 'student') return inMath ? '\\hspace{1.4em}' : '<span class="mwb-choice-slot" aria-label="选择题答案留空">&nbsp;&nbsp;</span>';
-    if (inMath) return `\\color{red}{${answer}}`;
-    const mathChoice = answer.match(/^\$([^$\n]+)\$/);
-    return mathChoice ? `$\\color{red}{${mathChoice[1]}}$` : `<span class="mwb-answer-revealed">${escapeHtml(answer)}</span>`;
-  }
-  if (!inMath) {
-    const standaloneMath = answer.match(/^\$([^$\n]+)\$/);
-    if (standaloneMath) {
-      if (mode === 'teacher') return `$\\underline{\\color{red}{${standaloneMath[1]}}}$`;
-      return mwbStudentFillSpan(standaloneMath[1], true);
-    }
-  }
-  if (inMath) {
-    return mode === 'student' ? mwbStudentMathFill(answer) : `\\underline{\\color{red}{${answer}}}`;
-  }
-  return mode === 'student'
-    ? mwbStudentFillSpan(answer, false)
-    : `<span class="mwb-teacher-fill-slot" aria-label="填空题参考答案">${escapeHtml(answer)}</span>`;
-}
-
 // Purposefully conservative: do not transform fenced/inline code, escaped delimiters,
 // or a cloze containing a newline. Each ==...== pair is confined to its line.
 function rewriteClozes(source, mode, questionType = '') {
@@ -1724,55 +1706,7 @@ function assertValidQuestionSource(markdown) {
 // Projected print mode only. The raw-document mode intentionally bypasses
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
-function normalizePrintBlanks(source) {
-  let displayMath = false, mathParen = false, mathBracket = false;
-  const output = [];
-  for (const row of mwbMarkdownLines(source)) {
-    const line = row.line;
-    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
-      output.push(line); continue;
-    }
-    let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
-    for (let i = 0; i < line.length;) {
-      const char = line[i];
-      if (char === '\\' && line[i+1]) {
-        const delimiter = line.slice(i, i+2);
-        if (delimiter === '\\(') mathParen = true;
-        if (delimiter === '\\)') mathParen = false;
-        if (delimiter === '\\[') mathBracket = true;
-        if (delimiter === '\\]') mathBracket = false;
-        result += delimiter; i += 2; continue;
-      }
-      if (char === '`' && !displayMath && !mathParen && !mathBracket) {
-        let n=1; while (line[i+n] === '`') n++;
-        if (codeTicks === 0) codeTicks = n;
-        else if (codeTicks === n) codeTicks = 0;
-        result += '`'.repeat(n); i += n; continue;
-      }
-      if (!codeTicks && char === '$' && !mathParen && !mathBracket) {
-        if (line[i+1] === '$') { displayMath = !displayMath; result += '$$'; i+=2; continue; }
-        if (!displayMath) inlineMath = !inlineMath;
-        result += char; i++; continue;
-      }
-      if (!codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket) {
-        if (char === '<') inHtml = true;
-        if (char === '>' && inHtml) { inHtml = false; result += char; i++; continue; }
-      }
-      if (char === '_' && !codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket && !inHtml) {
-        let j=i+1; while (line[j] === '_') j++;
-        const previous = line[i-1] || '', next = line[j] || '';
-        if (j-i >= 3 && !/[\p{L}\p{N}_]/u.test(previous) && !/[\p{L}\p{N}_]/u.test(next)) {
-          const em = Math.min(12, Math.max(3, Math.round((j-i)*0.8*10)/10));
-          result += `<span class="mwb-fixed-blank" style="width:${em}em" aria-label="填空横线"></span>`;
-          i=j; continue;
-        }
-      }
-      result += char; i++;
-    }
-    output.push(result);
-  }
-  return output.join('\n');
-}
+function normalizePrintBlanks(source) { return mwbNormalizePrintBlanks(source); }
 
 // Rewrite only an explicit edition suffix on the first H1, never an arbitrary
 // occurrence of 教师版 in body text (e.g. a lesson *about* version differences).
@@ -1794,17 +1728,13 @@ function projectHandoutHeading(source, mode) {
 function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
-  // Optional metadata supports choice cards whose answer is not immediately
-  // between parentheses; never overwrite frontmatter or infer subject data.
-  const head = String(markdown).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-  const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
-  const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
+  // Typed choice/fill syntax is independent of optional question metadata.
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
   body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
-module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, isChoiceAnswerSlot, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
+module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
 
 return module.exports; })();
 const { stripSolutionsToMarkers } = (() => { const module={exports:{}};
@@ -1847,40 +1777,6 @@ function removeSolutionCallouts(source, mode, options = {}) {
   return mwbProjectCallouts(source, mode, options).markdown;
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// Strict answer-slot syntax: parentheses immediately outside ==...== mean
-// choice; otherwise the slot is fill-in. Contents and YAML never override it.
-// Both ASCII () and full-width （） are accepted, with optional whitespace.
-function isChoiceAnswerSlot(_answer, prefix, suffix, _questionType = '') {
-  return /[（(]\s*$/.test(prefix) && /^\s*[）)]/.test(suffix);
-}
-
-function formatAnswer(answer, mode, inMath, choice = false) {
-  // Only surrounding parentheses classify choice slots; never infer from YAML.
-  if (choice) {
-    if (mode === 'student') return inMath ? '\\hspace{1.4em}' : '<span class="mwb-choice-slot" aria-label="选择题答案留空">&nbsp;&nbsp;</span>';
-    if (inMath) return `\\color{red}{${answer}}`;
-    const mathChoice = answer.match(/^\$([^$\n]+)\$/);
-    return mathChoice ? `$\\color{red}{${mathChoice[1]}}$` : `<span class="mwb-answer-revealed">${escapeHtml(answer)}</span>`;
-  }
-  if (!inMath) {
-    const standaloneMath = answer.match(/^\$([^$\n]+)\$/);
-    if (standaloneMath) {
-      if (mode === 'teacher') return `$\\underline{\\color{red}{${standaloneMath[1]}}}$`;
-      return mwbStudentFillSpan(standaloneMath[1], true);
-    }
-  }
-  if (inMath) {
-    return mode === 'student' ? mwbStudentMathFill(answer) : `\\underline{\\color{red}{${answer}}}`;
-  }
-  return mode === 'student'
-    ? mwbStudentFillSpan(answer, false)
-    : `<span class="mwb-teacher-fill-slot" aria-label="填空题参考答案">${escapeHtml(answer)}</span>`;
-}
-
 // Purposefully conservative: do not transform fenced/inline code, escaped delimiters,
 // or a cloze containing a newline. Each ==...== pair is confined to its line.
 function rewriteClozes(source, mode, questionType = '') {
@@ -1899,55 +1795,7 @@ function assertValidQuestionSource(markdown) {
 // Projected print mode only. The raw-document mode intentionally bypasses
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
-function normalizePrintBlanks(source) {
-  let displayMath = false, mathParen = false, mathBracket = false;
-  const output = [];
-  for (const row of mwbMarkdownLines(source)) {
-    const line = row.line;
-    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
-      output.push(line); continue;
-    }
-    let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
-    for (let i = 0; i < line.length;) {
-      const char = line[i];
-      if (char === '\\' && line[i+1]) {
-        const delimiter = line.slice(i, i+2);
-        if (delimiter === '\\(') mathParen = true;
-        if (delimiter === '\\)') mathParen = false;
-        if (delimiter === '\\[') mathBracket = true;
-        if (delimiter === '\\]') mathBracket = false;
-        result += delimiter; i += 2; continue;
-      }
-      if (char === '`' && !displayMath && !mathParen && !mathBracket) {
-        let n=1; while (line[i+n] === '`') n++;
-        if (codeTicks === 0) codeTicks = n;
-        else if (codeTicks === n) codeTicks = 0;
-        result += '`'.repeat(n); i += n; continue;
-      }
-      if (!codeTicks && char === '$' && !mathParen && !mathBracket) {
-        if (line[i+1] === '$') { displayMath = !displayMath; result += '$$'; i+=2; continue; }
-        if (!displayMath) inlineMath = !inlineMath;
-        result += char; i++; continue;
-      }
-      if (!codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket) {
-        if (char === '<') inHtml = true;
-        if (char === '>' && inHtml) { inHtml = false; result += char; i++; continue; }
-      }
-      if (char === '_' && !codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket && !inHtml) {
-        let j=i+1; while (line[j] === '_') j++;
-        const previous = line[i-1] || '', next = line[j] || '';
-        if (j-i >= 3 && !/[\p{L}\p{N}_]/u.test(previous) && !/[\p{L}\p{N}_]/u.test(next)) {
-          const em = Math.min(12, Math.max(3, Math.round((j-i)*0.8*10)/10));
-          result += `<span class="mwb-fixed-blank" style="width:${em}em" aria-label="填空横线"></span>`;
-          i=j; continue;
-        }
-      }
-      result += char; i++;
-    }
-    output.push(result);
-  }
-  return output.join('\n');
-}
+function normalizePrintBlanks(source) { return mwbNormalizePrintBlanks(source); }
 
 // Rewrite only an explicit edition suffix on the first H1, never an arbitrary
 // occurrence of 教师版 in body text (e.g. a lesson *about* version differences).
@@ -1969,17 +1817,13 @@ function projectHandoutHeading(source, mode) {
 function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
-  // Optional metadata supports choice cards whose answer is not immediately
-  // between parentheses; never overwrite frontmatter or infer subject data.
-  const head = String(markdown).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-  const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
-  const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
+  // Typed choice/fill syntax is independent of optional question metadata.
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
   body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
-module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, isChoiceAnswerSlot, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
+module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
 ;return module.exports;})();
 
 const SLOT_PREFIX = 'MWB_SOLUTION_SPACE_ANCHOR_';
@@ -1991,7 +1835,7 @@ function objectiveTypeFromFrontmatter(markdown) {
   if (lines[0]?.trim() !== '---') return false;
   let questionType = '', legacyType = '';
   for (const line of lines.slice(1)) {
-    if (/^(?:---|\.\.)\s*$/.test(line)) break;
+    if (/^(?:---|\.\.\.)\s*$/.test(line)) break;
     const found = line.match(/^(question_type|type):\s*([^#]+)?/i);
     if (!found) continue;
     const value = String(found[2] || '').trim().replace(/^['"]|['"]$/g,'').toLowerCase();
@@ -2419,40 +2263,6 @@ function removeSolutionCallouts(source, mode, options = {}) {
   return mwbProjectCallouts(source, mode, options).markdown;
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// Strict answer-slot syntax: parentheses immediately outside ==...== mean
-// choice; otherwise the slot is fill-in. Contents and YAML never override it.
-// Both ASCII () and full-width （） are accepted, with optional whitespace.
-function isChoiceAnswerSlot(_answer, prefix, suffix, _questionType = '') {
-  return /[（(]\s*$/.test(prefix) && /^\s*[）)]/.test(suffix);
-}
-
-function formatAnswer(answer, mode, inMath, choice = false) {
-  // Only surrounding parentheses classify choice slots; never infer from YAML.
-  if (choice) {
-    if (mode === 'student') return inMath ? '\\hspace{1.4em}' : '<span class="mwb-choice-slot" aria-label="选择题答案留空">&nbsp;&nbsp;</span>';
-    if (inMath) return `\\color{red}{${answer}}`;
-    const mathChoice = answer.match(/^\$([^$\n]+)\$/);
-    return mathChoice ? `$\\color{red}{${mathChoice[1]}}$` : `<span class="mwb-answer-revealed">${escapeHtml(answer)}</span>`;
-  }
-  if (!inMath) {
-    const standaloneMath = answer.match(/^\$([^$\n]+)\$/);
-    if (standaloneMath) {
-      if (mode === 'teacher') return `$\\underline{\\color{red}{${standaloneMath[1]}}}$`;
-      return mwbStudentFillSpan(standaloneMath[1], true);
-    }
-  }
-  if (inMath) {
-    return mode === 'student' ? mwbStudentMathFill(answer) : `\\underline{\\color{red}{${answer}}}`;
-  }
-  return mode === 'student'
-    ? mwbStudentFillSpan(answer, false)
-    : `<span class="mwb-teacher-fill-slot" aria-label="填空题参考答案">${escapeHtml(answer)}</span>`;
-}
-
 // Purposefully conservative: do not transform fenced/inline code, escaped delimiters,
 // or a cloze containing a newline. Each ==...== pair is confined to its line.
 function rewriteClozes(source, mode, questionType = '') {
@@ -2471,55 +2281,7 @@ function assertValidQuestionSource(markdown) {
 // Projected print mode only. The raw-document mode intentionally bypasses
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
-function normalizePrintBlanks(source) {
-  let displayMath = false, mathParen = false, mathBracket = false;
-  const output = [];
-  for (const row of mwbMarkdownLines(source)) {
-    const line = row.line;
-    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
-      output.push(line); continue;
-    }
-    let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
-    for (let i = 0; i < line.length;) {
-      const char = line[i];
-      if (char === '\\' && line[i+1]) {
-        const delimiter = line.slice(i, i+2);
-        if (delimiter === '\\(') mathParen = true;
-        if (delimiter === '\\)') mathParen = false;
-        if (delimiter === '\\[') mathBracket = true;
-        if (delimiter === '\\]') mathBracket = false;
-        result += delimiter; i += 2; continue;
-      }
-      if (char === '`' && !displayMath && !mathParen && !mathBracket) {
-        let n=1; while (line[i+n] === '`') n++;
-        if (codeTicks === 0) codeTicks = n;
-        else if (codeTicks === n) codeTicks = 0;
-        result += '`'.repeat(n); i += n; continue;
-      }
-      if (!codeTicks && char === '$' && !mathParen && !mathBracket) {
-        if (line[i+1] === '$') { displayMath = !displayMath; result += '$$'; i+=2; continue; }
-        if (!displayMath) inlineMath = !inlineMath;
-        result += char; i++; continue;
-      }
-      if (!codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket) {
-        if (char === '<') inHtml = true;
-        if (char === '>' && inHtml) { inHtml = false; result += char; i++; continue; }
-      }
-      if (char === '_' && !codeTicks && !displayMath && !inlineMath && !mathParen && !mathBracket && !inHtml) {
-        let j=i+1; while (line[j] === '_') j++;
-        const previous = line[i-1] || '', next = line[j] || '';
-        if (j-i >= 3 && !/[\p{L}\p{N}_]/u.test(previous) && !/[\p{L}\p{N}_]/u.test(next)) {
-          const em = Math.min(12, Math.max(3, Math.round((j-i)*0.8*10)/10));
-          result += `<span class="mwb-fixed-blank" style="width:${em}em" aria-label="填空横线"></span>`;
-          i=j; continue;
-        }
-      }
-      result += char; i++;
-    }
-    output.push(result);
-  }
-  return output.join('\n');
-}
+function normalizePrintBlanks(source) { return mwbNormalizePrintBlanks(source); }
 
 // Rewrite only an explicit edition suffix on the first H1, never an arbitrary
 // occurrence of 教师版 in body text (e.g. a lesson *about* version differences).
@@ -2541,17 +2303,13 @@ function projectHandoutHeading(source, mode) {
 function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
-  // Optional metadata supports choice cards whose answer is not immediately
-  // between parentheses; never overwrite frontmatter or infer subject data.
-  const head = String(markdown).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-  const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
-  const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
+  // Typed choice/fill syntax is independent of optional question metadata.
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
   body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
-module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, isChoiceAnswerSlot, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
+module.exports = { DEFAULTS, stripFrontmatter, pedagogicalCallout, removeSolutionCallouts, rewriteClozes, validateQuestionSource, assertValidQuestionSource, transformQuestion, normalizePrintBlanks, projectHandoutHeading };
 ;return module.exports;})();
 
 const SLOT_PREFIX = 'MWB_SOLUTION_SPACE_ANCHOR_';
@@ -2563,7 +2321,7 @@ function objectiveTypeFromFrontmatter(markdown) {
   if (lines[0]?.trim() !== '---') return false;
   let questionType = '', legacyType = '';
   for (const line of lines.slice(1)) {
-    if (/^(?:---|\.\.)\s*$/.test(line)) break;
+    if (/^(?:---|\.\.\.)\s*$/.test(line)) break;
     const found = line.match(/^(question_type|type):\s*([^#]+)?/i);
     if (!found) continue;
     const value = String(found[2] || '').trim().replace(/^['"]|['"]$/g,'').toLowerCase();
@@ -2817,7 +2575,7 @@ function frontmatterSubset(markdown) {
   const data = {};
   let active = null;
   for (const line of lines.slice(1)) {
-    if (/^(---|\.\.)\s*$/.test(line)) break;
+    if (/^(---|\.\.\.)\s*$/.test(line)) break;
     const key = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
     if (key) {
       active = key[1];
@@ -4190,6 +3948,8 @@ module.exports = class MathTeachingWorkbench extends Plugin {
           当前模式:live?'实时预览':reading?'阅读视图':'源码模式或无法识别',
           视图已标记:!!root?.classList?.contains('mwb-question-note'),
           数学答案槽数量:slots.length,
+          公式内部答案槽数量:answerSlots(markdown).filter(slot=>slot.inMath).length,
+          公式内部答案槽说明:'A4 学生/教师导出支持；原生阅读视图与实时预览尚待宿主适配验收',
           数学答案槽位置:slots.map(s=>({from:s.from,to:s.to})),
           CodeMirror编辑器可访问:!!view.editor?.cm,
           源码模式显示答案属于正常行为:true,

@@ -452,7 +452,7 @@
 /* v0.1.4.7 — answer slots use explicit choice/fill semantics.
  * Choice marks hide the letters but do NOT draw a line beneath the brackets.
  * Fill marks preserve their width and draw a visible blank line. */
-.markdown-preview-view mark.mwb-hover-answer {
+mark.mwb-hover-answer {
   color: transparent;
   -webkit-text-fill-color: transparent;
   background: transparent;
@@ -460,36 +460,34 @@
   cursor: help;
 }
 /* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */
-.markdown-preview-view mark.mwb-hover-answer :is(mjx-container, .MathJax, .katex) {
+mark.mwb-hover-answer :is(mjx-container, .MathJax, .katex) {
   visibility: hidden;
 }
-/* A slot wrapped by ASCII/full-width parentheses is a choice, regardless of its value. */
-.markdown-preview-view mark.mwb-choice-answer {
+/* Explicit !{...} choices remain line-free, independent of surrounding punctuation. */
+mark.mwb-hover-answer.mwb-choice-answer {
   border-bottom: none;
   padding-bottom: 0;
 }
 /* Fill answers preserve a usable writing line even for MathJax elements. */
-.markdown-preview-view mark.mwb-fill-answer {
+mark.mwb-hover-answer.mwb-fill-answer {
   display: inline-block;
   vertical-align: baseline;
   border-bottom: 1px solid var(--text-normal);
   min-width: 2.4em;
   padding-inline: 0.15em;
 }
-.markdown-preview-view mark.mwb-hover-answer:is(:hover,:focus,:focus-within) {
+mark.mwb-hover-answer:is(:hover,:focus,:focus-within) {
   color: #bd2525;
   -webkit-text-fill-color: #bd2525;
-  border-bottom-color: transparent;
 }
 /* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */
-.markdown-preview-view mark.mwb-hover-answer:is(:hover,:focus,:focus-within) :is(mjx-container, .MathJax, .katex) {
+mark.mwb-hover-answer:is(:hover,:focus,:focus-within) :is(mjx-container, .MathJax, .katex) {
   visibility: visible;
   color: #bd2525;
 }
 
-/* v0.1.9: every ==...== span in Live Preview is an atomic CodeMirror
- * widget. Styling never conceals arbitrary .cm-highlight text elsewhere in
- * a mixed handout, preserving teacher notes and explanatory highlights. */
+/* Typed ?{...}/!{...} answers use plugin-owned wrappers in Live Preview.
+ * Native Markdown highlights remain untouched. */
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-text-answer-slot {
   display: inline-flex;
   position: relative;
@@ -517,10 +515,10 @@
   border: 0;
   border-bottom: none;
 }
-/* v0.1.4.8: math fill answer widgets produced from literal ==$...$==
-   positions; independent of Obsidian's .cm-highlight or math node count. */
+/* Outer math answers ?{$...$} get an explicit math wrapper in both views.
+   Do not depend on .mwb-answer-note timing, file metadata or math node order. */
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math {
+mark.mwb-hover-answer.mwb-reading-answer-math {
   display:inline-block;
   position:relative;
   vertical-align:baseline;
@@ -531,24 +529,24 @@
   padding-inline:0.12em;
 }
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-content,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math > .math-inline {
+mark.mwb-hover-answer.mwb-reading-answer-math > .math-inline {
   visibility:hidden;
 }
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within),
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) {
-  border-bottom-color:transparent;
+mark.mwb-hover-answer.mwb-reading-answer-math:is(:hover,:focus,:focus-within) {
+  border-bottom-color: var(--text-normal, #141414);
 }
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) .mwb-cm-math-answer-content,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) > .math-inline {
+mark.mwb-hover-answer.mwb-reading-answer-math:is(:hover,:focus,:focus-within) > .math-inline {
   visibility:visible;
   color:#bd2525;
 }
 
 /* v0.1.4.11: choice answers must remain line-free in BOTH reading and
    Live Preview even if a generic highlight/answer selector also matches. */
-.mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,
+mark.mwb-hover-answer.mwb-choice-answer,
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-choice-answer,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-choice-answer {
+mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
   text-decoration: none;
 }
 
@@ -557,7 +555,7 @@
  * Hover/focus must reveal the answer OVER the same line, not remove the line.
  * Reading View and CodeMirror use their own answer wrappers, but share the
  * same centered slot geometry. Choices are excluded from these selectors. */
-.mwb-answer-note .markdown-preview-view mark.mwb-fill-answer {
+mark.mwb-hover-answer.mwb-fill-answer {
   display: inline-block;
   text-align: center;
   min-width: 3em;
@@ -574,7 +572,7 @@
   border-bottom: 1px solid var(--text-normal, #141414);
 }
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-fill-answer,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-fill-answer {
+mark.mwb-hover-answer.mwb-reading-answer-math.mwb-fill-answer {
   display: inline-flex;
   justify-content: center;
   align-items: center;
@@ -587,7 +585,7 @@
   border-bottom: 1px solid var(--text-normal, #141414);
 }
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-content,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math > .math-inline {
+mark.mwb-hover-answer.mwb-reading-answer-math > .math-inline {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -596,24 +594,24 @@
   white-space: nowrap;
 }
 /* Preserve underline while revealing answers on hover or keyboard focus. */
-.mwb-answer-note .markdown-preview-view mark.mwb-fill-answer:is(:hover,:focus,:focus-within),
+mark.mwb-hover-answer.mwb-fill-answer:is(:hover,:focus,:focus-within),
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-fill-answer:is(:hover,:focus-within),
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-fill-answer:is(:hover,:focus,:focus-within) {
+mark.mwb-hover-answer.mwb-reading-answer-math.mwb-fill-answer:is(:hover,:focus,:focus-within) {
   border-bottom-color: var(--text-normal, #141414);
 }
 /* stylelint-disable selector-type-no-unknown -- Only MathJax-rendered math uses this type selector. */
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) .mwb-cm-math-answer-content,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) > .math-inline,
+mark.mwb-hover-answer.mwb-reading-answer-math:is(:hover,:focus,:focus-within) > .math-inline,
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot:is(:hover,:focus-within) mjx-container,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math:is(:hover,:focus,:focus-within) mjx-container {
+mark.mwb-hover-answer.mwb-reading-answer-math:is(:hover,:focus,:focus-within) mjx-container {
   color: #bd2525;
 }
 /* stylelint-enable selector-type-no-unknown */
 /* Ensure the choice override continues to win when both generic highlights and
  * question-level metadata selectors match. */
-.mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,
+mark.mwb-hover-answer.mwb-choice-answer,
 .markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-choice-answer,
-.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-choice-answer {
+mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
   border: 0;
   border-bottom: none;
   box-shadow: none;

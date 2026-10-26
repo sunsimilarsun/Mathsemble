@@ -1,3 +1,5 @@
+> **0.1.14 开发更新（2026-10-26）**：`styles.css` 为打印 CSS 的唯一编辑来源。`npm run build` 使用 `scripts/print-css.mjs` 提取明确 UI 边界前的内容，仅更新 `src/plugin.js` 中生成的 `typographyCss` 字面量，再写出逐字节相同的 `main.js`；不再要求人工维护第二份 CSS。请同时提交这两个生成结果。`npm run verify` 不执行构建也能发现样式漂移。以下较早记录保留作历史说明。
+
 # Mathsemble CSS 架构与回归约束
 
 状态：2026-10-23 CSS 重构候选（独立分支，未进行 Obsidian 宿主视觉验收）。

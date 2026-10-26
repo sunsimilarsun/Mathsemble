@@ -31,9 +31,9 @@ test('preserve high-impact mathematics/answer/print layout CSS',()=>{
 });
 test('choice border declarations exist only in the final effective override',()=>{
   const target=[
-    '.mwb-answer-note .markdown-preview-view mark.mwb-choice-answer,',
+    'mark.mwb-hover-answer.mwb-choice-answer,',
     '.markdown-source-view.mod-cm6.is-live-preview .mwb-cm-math-answer-slot.mwb-choice-answer,',
-    '.mwb-answer-note .markdown-preview-view .mwb-reading-answer-math.mwb-choice-answer {',
+    'mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {',
     '  border: 0;',
     '  border-bottom: none;',
     '  box-shadow: none;'
