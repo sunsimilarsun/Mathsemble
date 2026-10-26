@@ -35,6 +35,34 @@ test('build replaces stale root main.js without changing synchronized source',()
     assert.equal(readFileSync(join(root,'src/plugin.js'),'utf8'),source);
   });
 });
+
+test('CRLF checkout produces the same source and bundle as LF and stays idempotent',()=>{
+  const crlf = text => text.replace(/\n/g, '\r\n');
+  withPartialCheckout({'src/plugin.js':crlf(source),'styles.css':crlf(css)},(root,first,run)=>{
+    assert.equal(first.status,0,first.stderr);
+    assert.equal(readFileSync(join(root,'src/plugin.js'),'utf8'),source);
+    assert.equal(readFileSync(join(root,'main.js'),'utf8'),source);
+    assert.equal(run().status,0);
+    assert.equal(readFileSync(join(root,'main.js'),'utf8'),source);
+  });
+});
+
+test('publish prerequisite accepts LF and CRLF MIT grants but rejects a changed grant',()=>{
+  const temp=mkdtempSync(join(tmpdir(),'mathsemble-license-check-'));
+  try {
+    mkdirSync(join(temp,'scripts'));
+    copyFileSync(resolve(__dirname,'../scripts/prepublish.mjs'),join(temp,'scripts/prepublish.mjs'));
+    for(const name of ['package.json','manifest.json','README.md']) copyFileSync(resolve(__dirname,'..',name),join(temp,name));
+    const license=readFileSync(resolve(__dirname,'../LICENSE'),'utf8').replace(/\r\n?/g,'\n');
+    const run=()=>spawnSync(process.execPath,[join(temp,'scripts/prepublish.mjs')],{encoding:'utf8'});
+    for(const text of [license,license.replace(/\n/g,'\r\n')]) {
+      writeFileSync(join(temp,'LICENSE'),text);
+      const result=run();assert.equal(result.status,0,result.stderr);
+    }
+    writeFileSync(join(temp,'LICENSE'),license.replace('MIT License','Different License'));
+    const invalid=run();assert.notEqual(invalid.status,0);assert.match(invalid.stderr,/LICENSE does not match/);
+  } finally {rmSync(temp,{recursive:true,force:true});}
+});
 test('scanner may remove all main.js files and source still survives',()=>{
   withPartialCheckout(defaults,(root,run)=>{
     assert.equal(run.status,0,run.stderr);assert.ok(existsSync(join(root,'main.js')));

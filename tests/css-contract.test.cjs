@@ -5,8 +5,8 @@ const path = require('node:path');
 const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
-const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
-const source = fs.readFileSync(path.join(root, 'src/plugin.js'), 'utf8');
+const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8').replace(/\r\n?/g, '\n');
+const source = fs.readFileSync(path.join(root, 'src/plugin.js'), 'utf8').replace(/\r\n?/g, '\n');
 const boundary = "/* Isolate controls and A4 simulation from Obsidian's own note layout. */";
 
 function embeddedPrintCss() {

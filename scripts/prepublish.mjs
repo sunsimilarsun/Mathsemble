@@ -8,7 +8,7 @@ const license=resolve(root,'LICENSE');
 const failures=[];
 if(!existsSync(license)) failures.push('Missing owner-approved LICENSE');
 else {
-  const licenseText=readFileSync(license,'utf8');
+  const licenseText=readFileSync(license,'utf8').replace(/\r\n?/g,'\n');
   if(!licenseText.startsWith('MIT License\n') || !licenseText.includes('Copyright (c) 2026 sunsimilarsun') || !licenseText.includes('Permission is hereby granted')) failures.push('LICENSE does not match the approved MIT grant');
 }
 if(pkg.license !== 'MIT') failures.push('package.json must declare the approved MIT license');

@@ -1,19 +1,19 @@
-# Existing feature assessment — release baseline v0.1.9
+# 当前功能与验收边界
 
-Evidence labels: **M** maintainer reports manual use with no issues; **N** Node/static tests run in release candidate; **B** Chromium layout smoke tests; **U** no independent full Obsidian integration/PDF visual verification.
+对应源码：0.1.15 开发版。代码存在、自动测试通过和真实 Obsidian 验收是不同状态；历史版本记录见 [变更索引](CHANGELOG.md)。
 
-| Subsystem | Functional baseline | Evidence | Remaining optimization |
-| --- | --- | --- | --- |
-| Single Markdown long-handout preview | Original, student, teacher editions | M, N | Mode switching and obsolete measurement cancellation across files (U) |
-| Callout visibility | Any `[!type]+` / `[!type]-` teacher-only; unmarked shared | M, N; 36/36 long-handout mapping | Page-spanning teacher answer visual check (U) |
-| Fill and choice answer slots | Parenthesis-only MC choice; others are fill, with math/Chinese support | M, N | Nested dollar/inline math corner cases (U) |
-| Teacher-height-based response spaces | Default 100% with no minimum height | M; browser unit tests from prior iterations | Cross-OS, A4 overflow and font-specific tolerance (U) |
-| PDF and system printing | Electron BrowserWindow isolated and A4 paginator | M, N (mock); node `printToPDF` output checks | Native printer driver differences, PDF page-content comparison (U) |
-| Partial rendering warnings | Explicit acknowledgement before incomplete export | M, source audit, N blockers | Detect changes after approval, track precise source locations (U) |
-| Question collection | Folder scan grouped by type or primary knowledge node | M, N | Search, filters and baskets are future version features |
-| Read/Live Callout palette | Eight teaching types plus old `solution` alias; not `example` | M, B | User CSS conflicts in less-common themes (U) |
-| Metadata updates | Explicit teaching-role edit only | Source audit | Frontmatter schema/role cross-validation (U) |
-| Network and filesystem | Remote print assets and temporary print HTML supported | Source audit | Documented this round; add offline-only toggle later |
-| Build and release | GitHub was docs-only | N source/export hash parity | Source import, license, Actions run, GitHub Release, Community review pending |
+| 子系统 | 当前实现 | 验证与剩余边界 |
+| --- | --- | --- |
+| 长讲义 | 原文、学生、教师三种投影；H5 整题边界 | 源码与 Chromium 回归；完整宿主长 PDF 待验收 |
+| 答案槽 | `?{}` 填空、`!{}` 选择，原生高亮保留 | 解析与组件回归；公式内部槽的原生阅读适配未全面验收 |
+| Callout | `+/-` 教师专用；answer 留白；solution 独立选项 | 嵌套投影及测量回归；复杂懒续行和第三方扩展需宿主检查 |
+| A4 分页 | 短题整题同页，长题新页起排，留白总高与溢出检查 | Chromium 布局回归；系统字体与打印驱动差异需验收 |
+| 局部渲染警告 | 已知警告确认后可导出，新问题重新确认 | 真实 Modal 方法的同警告／新警告／结构阻断回归 |
+| 题卡组卷 | 当前文件夹按题型或主知识点分组 | 正式元信息字段与模板回归；不递归组卷 |
+| 模板 | 三类题卡、通用／考前／五级讲义 | 自动核对边界、答案投影、字段和链接；数学另行审校 |
+| 阅读样式 | 九类教学 Callout、答案槽交互 | Chromium 样式回归；多主题、用户 CSS 需宿主验收 |
+| 构建 | CSS 单一来源、源码生成 main.js、LF 输出 | 干净构建与 CRLF 回归；CI 配置覆盖 Linux／Windows |
+| 资源处理 | 远程及本地引用内联、临时打印 HTML | 隐私披露与窗口生命周期回归；请求取消／缓存仍待改进 |
+| 搜索与编排 | 未实现题篮、KnowledgeItem 或题族驱动编排 | 后续需求，见 [路线图](ROADMAP.md) |
 
-**Important:** Individual pass/fail figures are automation evidence for the cited cases; they are not an assertion that every page of every future user's math handout has been visually inspected.
+正式交付需记录目标提交及 [Obsidian 宿主验收](OBSIDIAN_HOST_ACCEPTANCE.md)结果，不把模拟宿主或局部测试当作完整产品验收。

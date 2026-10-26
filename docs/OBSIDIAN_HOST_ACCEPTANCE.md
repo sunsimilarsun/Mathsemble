@@ -15,6 +15,9 @@
 - [ ] Ordinary `==...==` highlights stay visible, even in notes containing typed answers.
 - [ ] Clicking a Live Preview answer reveals the source marker for editing without modifying the note automatically.
 - [ ] The fenced-code example and escaped markers display literally, not as answers.
+- [ ] Plain paragraph/list continuation answers are concealed; real indented/fenced code stays literal. After leaving a list with an unclosed inner code fence, following real questions still transform.
+- [ ] Comments and multiline HTML attributes containing `$$` or `?{` cannot affect following teacher-only Callouts; link text and resource addresses stay literal beside real answers.
+- [ ] Change a mathematical fill slot to a choice slot using an edit outside the current selection; confirm the underline disappears.
 - [ ] Repeat in default light, default dark and one third-party theme.
 - [ ] A section mixing escaped and real typed markers may currently skip Reading View decoration; record separately as a known limitation rather than claim it works.
 
@@ -27,6 +30,7 @@
 - [ ] Insert a long solution that crosses a page boundary; make sure lines/formulas/images do not clip and student space is not shortened.
 - [ ] Check at least one image, one wide MathJax expression and a TikZ sample if TikZJax is installed.
 - [ ] If any recoverable render problem is intentionally allowed, verify explicit consent and warning labels on the output.
+- [ ] For a folder exam with one failed image, acknowledgement survives rechecking the same warning. A warning in another question requires fresh acknowledgement; missing questions still block export.
 - [ ] The final page may be entirely blank; **never compress required student answer space just to remove it**.
 
 ## Release gate

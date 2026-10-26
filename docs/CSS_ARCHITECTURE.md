@@ -8,7 +8,7 @@
 
 1. 插件 UI：`.mwb-modal` 作用域内的控件、状态、A4 纸张预览容器，优先使用 Obsidian 主题变量。
 2. 教学排版：`.mwb-typography`；仅对已识别的数学排版正文生效。阅读视图/实时预览的九类具名教学 Callout 例外，必须兼容**普通无 YAML 的笔记**；不可泛化到所有 Callout 或全局 mark。
-3. PDF：`.mwb-print-document`，嵌入 `src/plugin.js` 的导出样式必须与 `styles.css` 在 UI 边界之前的内容逐字一致。独立 HTML 保证黑字白纸，不继承 Obsidian 主题。
+3. PDF：`.mwb-print-document`，嵌入 `src/plugin.js` 的导出样式必须与 `styles.css` 在 UI 边界之前的内容在统一 LF 后逐字一致。独立 HTML 保证黑字白纸，不继承 Obsidian 主题。
 
 ## 重要规则
 
@@ -23,6 +23,8 @@
 ## 构建验收
 
 `npm run check` 与 `npm run prepublish-check`。新测试 `tests/css-contract.test.cjs` 检查外部 CSS 和内嵌 CSS 一致性、作用域边界和选择/填空/Callout 关键选择器。测试为静态合同检查，**不能代替视觉与分页验收**。
+
+仓库用 `.gitattributes` 固定文本 LF；构建对输入换行归一化，CRLF 检出生成相同的打印 CSS 和 JavaScript。`verify` 仍检查源码／bundle 字节一致以及 CSS 内容漂移；换行兼容不放宽样式内容检查。
 
 ## 仍需的人工检查
 

@@ -12,7 +12,7 @@ if (!existsSync(input)) {
 }
 if (!existsSync(resolve(root, 'styles.css'))) throw new Error('Missing styles.css; cannot generate printing stylesheet');
 const original = readFileSync(input, 'utf8');
-const source = synchronizePrintCss(original, readFileSync(resolve(root, 'styles.css'), 'utf8'));
+const source = synchronizePrintCss(original.replace(/\r\n?/g, '\n'), readFileSync(resolve(root, 'styles.css'), 'utf8'));
 if (source !== original) writeFileSync(input, source, 'utf8');
 writeFileSync(output, source, 'utf8');
 console.log('Synchronized printing CSS from styles.css; built main.js from src/plugin.js.');

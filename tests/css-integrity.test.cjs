@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const root=path.resolve(__dirname,'..');
-const css=fs.readFileSync(path.join(root,'styles.css'),'utf8');
+const css=fs.readFileSync(path.join(root,'styles.css'),'utf8').replace(/\r\n?/g,'\n');
 const js=fs.readFileSync(path.join(root,'main.js'),'utf8');
 const workflow=fs.readFileSync(path.join(root,'.github/workflows/release.yml'),'utf8');
 

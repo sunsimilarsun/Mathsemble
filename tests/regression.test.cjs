@@ -419,7 +419,7 @@ test('preview UI passes solution preferences to student and teacher rendering an
 });
 
 test('print Callout full border uses matching accent and solution is blue gray',()=>{
-  const css=fs.readFileSync(path.resolve(__dirname,'../styles.css'),'utf8');
+  const css=fs.readFileSync(path.resolve(__dirname,'../styles.css'),'utf8').replace(/\r\n?/g,'\n');
   const palette=css.slice(css.indexOf('/* Mathsemble mathematics teaching palette'),css.indexOf('/* v0.2.1: optional metadata'));
   assert.match(css,/\.mwb-typography\.mwb-print-document \.callout \{ background: #fff; border-color: #c4c4c4; border-left: 2px solid #999; \}/);
   assert.match(palette,/border-color: var\(--mwb-callout-accent, #999\);/);

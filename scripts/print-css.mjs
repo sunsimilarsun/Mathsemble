@@ -4,6 +4,8 @@ export const printBoundary = "/* Isolate controls and A4 simulation from Obsidia
 const binding = /module\.exports = \{typographyCss:("(?:\\.|[^"\\])*")\};/g;
 export function synchronizePrintCss(source, css) {
   if (typeof source !== 'string' || typeof css !== 'string') throw new TypeError('Source and CSS must be text');
+  // A Windows checkout must generate the same literal as an LF checkout.
+  css = css.replace(/\r\n?/g, '\n');
   const boundary = css.indexOf(printBoundary);
   if (boundary < 0 || css.indexOf(printBoundary, boundary + 1) >= 0)
     throw new Error('Expected one explicit print/UI stylesheet boundary');
