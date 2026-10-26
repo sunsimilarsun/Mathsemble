@@ -213,8 +213,10 @@ test('Reading View invokes the typed DOM decorator, not legacy highlight masking
   assert.doesNotMatch(js,/decorateAnswerMarks\(element,\s*true/);
   assert.doesNotMatch(js,/function decorateAnswerMarks\(/);
 });
-test('Live Preview only starts answer decorations for typed markers',()=>{
-  assert.match(js,/if \(!source\.includes\('\?\{'\) && !source\.includes\('!\{'\)\)/);
+test('Live Preview indexes typed answers and reuses cache on non-document updates',()=>{
+  assert.match(js,/this\.slots = answerSlots\(view\.state\.doc\.toString\(\)\)/);
+  assert.match(js,/mwbMapUnchangedAnswerSlots\(this\.slots, update\)/);
+  assert.match(js,/mwbVisibleAnswerSlots\(slots, view\.visibleRanges\)/);
   assert.doesNotMatch(js,/if \(!source\.includes\('=='\)\)/);
 });
 test('diagnostic version comes from actual plugin manifest rather than fixed v0.1.9',()=>{
