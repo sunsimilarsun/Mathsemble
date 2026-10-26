@@ -264,7 +264,7 @@ function pedagogicalCallout(line) {
   return { kind, type, title, teacherOnly };
 }
 
-function removeSolutionCallouts(source, mode) {
+function removeSolutionCallouts(source, mode, options = {}) {
   const lines = source.split('\n');
   const output = [];
   let suppress = false;
@@ -288,7 +288,8 @@ function removeSolutionCallouts(source, mode) {
     if (fence) { output.push(line); continue; }
     const callout = pedagogicalCallout(line);
     if (callout) {
-      suppress = mode === 'student' && callout.teacherOnly;
+      suppress = (mode === 'student' && callout.teacherOnly) ||
+        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
       if (!suppress) {
         // Preview/PDF callouts are always expanded, without editing source.
         output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
@@ -426,7 +427,7 @@ function projectHandoutHeading(source, mode) {
   return lines.join('\n');
 }
 
-function transformQuestion(markdown, mode) {
+function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
   // Optional metadata supports choice cards whose answer is not immediately
@@ -435,7 +436,7 @@ function transformQuestion(markdown, mode) {
   const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
   const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
-  body = removeSolutionCallouts(body, mode);
+  body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
@@ -1094,7 +1095,7 @@ function pedagogicalCallout(line) {
   return { kind, type, title, teacherOnly };
 }
 
-function removeSolutionCallouts(source, mode) {
+function removeSolutionCallouts(source, mode, options = {}) {
   const lines = source.split('\n');
   const output = [];
   let suppress = false;
@@ -1118,7 +1119,8 @@ function removeSolutionCallouts(source, mode) {
     if (fence) { output.push(line); continue; }
     const callout = pedagogicalCallout(line);
     if (callout) {
-      suppress = mode === 'student' && callout.teacherOnly;
+      suppress = (mode === 'student' && callout.teacherOnly) ||
+        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
       if (!suppress) {
         // Preview/PDF callouts are always expanded, without editing source.
         output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
@@ -1256,7 +1258,7 @@ function projectHandoutHeading(source, mode) {
   return lines.join('\n');
 }
 
-function transformQuestion(markdown, mode) {
+function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
   // Optional metadata supports choice cards whose answer is not immediately
@@ -1265,7 +1267,7 @@ function transformQuestion(markdown, mode) {
   const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
   const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
-  body = removeSolutionCallouts(body, mode);
+  body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
@@ -1308,7 +1310,7 @@ function pedagogicalCallout(line) {
   return { kind, type, title, teacherOnly };
 }
 
-function removeSolutionCallouts(source, mode) {
+function removeSolutionCallouts(source, mode, options = {}) {
   const lines = source.split('\n');
   const output = [];
   let suppress = false;
@@ -1332,7 +1334,8 @@ function removeSolutionCallouts(source, mode) {
     if (fence) { output.push(line); continue; }
     const callout = pedagogicalCallout(line);
     if (callout) {
-      suppress = mode === 'student' && callout.teacherOnly;
+      suppress = (mode === 'student' && callout.teacherOnly) ||
+        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
       if (!suppress) {
         // Preview/PDF callouts are always expanded, without editing source.
         output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
@@ -1470,7 +1473,7 @@ function projectHandoutHeading(source, mode) {
   return lines.join('\n');
 }
 
-function transformQuestion(markdown, mode) {
+function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
   // Optional metadata supports choice cards whose answer is not immediately
@@ -1479,7 +1482,7 @@ function transformQuestion(markdown, mode) {
   const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
   const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
-  body = removeSolutionCallouts(body, mode);
+  body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
@@ -1506,12 +1509,12 @@ function objectiveTypeFromFrontmatter(markdown) {
   return /^(?:choice|singlechoice|single|multiplechoice|multichoice|multiselect|fillblank|fillin|blank|truefalse|judgment|objective|select|单选题?|多选题?|选择题?|填空题?|判断题?)$/.test(type);
 }
 
-function studentSpacePlan(markdown) {
-  return stripSolutionsToMarkers(markdown);
+function studentSpacePlan(markdown, options = {}) {
+  return stripSolutionsToMarkers(markdown, options);
 }
 
 
-function stripSolutionsToMarkers(markdown) {
+function stripSolutionsToMarkers(markdown, options = {}) {
   const lines = stripFrontmatter(String(markdown)).replace(/\u00a0/g, ' ').split('\n');
   const out = [];
   let count = 0;
@@ -1544,7 +1547,8 @@ function stripSolutionsToMarkers(markdown) {
         out.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
       } else {
         if (out.length && out[out.length - 1] !== '') out.push('');
-        out.push(`${SLOT_PREFIX}${count++}_END`, '');
+        if (callout.type !== 'solution' || options.solutionSpaces === true)
+          out.push(`${SLOT_PREFIX}${count++}_END`, '');
       }
       continue;
     }
@@ -1555,7 +1559,7 @@ function stripSolutionsToMarkers(markdown) {
 
 // Every Obsidian callout appears in the teacher DOM, while only +/- headers
 // create student spaces. Map by full callout ordinal, never by its type.
-function teacherOnlyCalloutIndices(markdown) {
+function teacherOnlyCalloutIndices(markdown, options = {}) {
   const lines = stripFrontmatter(String(markdown)).split('\n');
   const indices = [];
   let seen = 0, fence = null;
@@ -1570,7 +1574,7 @@ function teacherOnlyCalloutIndices(markdown) {
     if (fence) continue;
     const callout = pedagogicalCallout(line);
     if (callout) {
-      if (callout.teacherOnly) indices.push(seen);
+      if (callout.teacherOnly && (callout.type !== 'solution' || options.solutionSpaces === true)) indices.push(seen);
       seen++;
     }
   }
@@ -1724,7 +1728,7 @@ module.exports = {
 return module.exports; })();
 const MAX_DOCUMENT_CHARS = 1000000;
 const HANDOUT_MODES = Object.freeze(['document', 'student', 'teacher']);
-function handoutPlan(markdown, mode = 'document') {
+function handoutPlan(markdown, mode = 'document', options = {}) {
   if (!HANDOUT_MODES.includes(mode)) throw new Error('不支持的讲义导出模式');
   if (typeof markdown !== 'string') throw new TypeError('讲义 Markdown 必须是文本');
   if (markdown.length > MAX_DOCUMENT_CHARS) throw new Error('文档大于 100 万字符，建议分册导出');
@@ -1735,13 +1739,13 @@ function handoutPlan(markdown, mode = 'document') {
     if (issues.length) throw new Error('讲义答案槽预检失败：' + issues.join('；'));
   }
   if (mode === 'student') {
-    const plan = stripSolutionsToMarkers(markdown);
+    const plan = stripSolutionsToMarkers(markdown, options);
     return { markdown: projectHandoutHeading(plan.markdown, mode), solutionCount: plan.count, skipSpaces: plan.skipSpaces, mode };
   }
   const body = stripFrontmatter(markdown).replace(/\u00a0/g, ' ');
   if (mode === 'document') return {markdown: body, solutionCount:0, mode};
   return {
-    markdown: projectHandoutHeading(normalizePrintBlanks(rewriteClozes(removeSolutionCallouts(body, 'teacher'), 'teacher')), mode),
+    markdown: projectHandoutHeading(normalizePrintBlanks(rewriteClozes(removeSolutionCallouts(body, 'teacher', options), 'teacher')), mode),
     solutionCount: 0,
     mode,
   };
@@ -1970,7 +1974,7 @@ function pedagogicalCallout(line) {
   return { kind, type, title, teacherOnly };
 }
 
-function removeSolutionCallouts(source, mode) {
+function removeSolutionCallouts(source, mode, options = {}) {
   const lines = source.split('\n');
   const output = [];
   let suppress = false;
@@ -1994,7 +1998,8 @@ function removeSolutionCallouts(source, mode) {
     if (fence) { output.push(line); continue; }
     const callout = pedagogicalCallout(line);
     if (callout) {
-      suppress = mode === 'student' && callout.teacherOnly;
+      suppress = (mode === 'student' && callout.teacherOnly) ||
+        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
       if (!suppress) {
         // Preview/PDF callouts are always expanded, without editing source.
         output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
@@ -2132,7 +2137,7 @@ function projectHandoutHeading(source, mode) {
   return lines.join('\n');
 }
 
-function transformQuestion(markdown, mode) {
+function transformQuestion(markdown, mode, options = {}) {
   if (!['student', 'teacher'].includes(mode)) throw new Error('Invalid export mode');
   assertValidQuestionSource(markdown);
   // Optional metadata supports choice cards whose answer is not immediately
@@ -2141,7 +2146,7 @@ function transformQuestion(markdown, mode) {
   const frontmatter = /^---\n([\s\S]*?)\n(?:---|\.\.\.)\s*(?:\n|$)/.exec(head)?.[1] || '';
   const questionType = /^(?:question_type|type):\s*["']?([^\n"'#]+)["']?\s*$/m.exec(frontmatter)?.[1]?.trim() || '';
   let body = stripFrontmatter(markdown).replace(/\u00A0/g, ' ');
-  body = removeSolutionCallouts(body, mode);
+  body = removeSolutionCallouts(body, mode, options);
   return normalizePrintBlanks(rewriteClozes(body, mode));
 }
 
@@ -2168,12 +2173,12 @@ function objectiveTypeFromFrontmatter(markdown) {
   return /^(?:choice|singlechoice|single|multiplechoice|multichoice|multiselect|fillblank|fillin|blank|truefalse|judgment|objective|select|单选题?|多选题?|选择题?|填空题?|判断题?)$/.test(type);
 }
 
-function studentSpacePlan(markdown) {
-  return stripSolutionsToMarkers(markdown);
+function studentSpacePlan(markdown, options = {}) {
+  return stripSolutionsToMarkers(markdown, options);
 }
 
 
-function stripSolutionsToMarkers(markdown) {
+function stripSolutionsToMarkers(markdown, options = {}) {
   const lines = stripFrontmatter(String(markdown)).replace(/\u00a0/g, ' ').split('\n');
   const out = [];
   let count = 0;
@@ -2206,7 +2211,8 @@ function stripSolutionsToMarkers(markdown) {
         out.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
       } else {
         if (out.length && out[out.length - 1] !== '') out.push('');
-        out.push(`${SLOT_PREFIX}${count++}_END`, '');
+        if (callout.type !== 'solution' || options.solutionSpaces === true)
+          out.push(`${SLOT_PREFIX}${count++}_END`, '');
       }
       continue;
     }
@@ -2217,7 +2223,7 @@ function stripSolutionsToMarkers(markdown) {
 
 // Every Obsidian callout appears in the teacher DOM, while only +/- headers
 // create student spaces. Map by full callout ordinal, never by its type.
-function teacherOnlyCalloutIndices(markdown) {
+function teacherOnlyCalloutIndices(markdown, options = {}) {
   const lines = stripFrontmatter(String(markdown)).split('\n');
   const indices = [];
   let seen = 0, fence = null;
@@ -2232,7 +2238,7 @@ function teacherOnlyCalloutIndices(markdown) {
     if (fence) continue;
     const callout = pedagogicalCallout(line);
     if (callout) {
-      if (callout.teacherOnly) indices.push(seen);
+      if (callout.teacherOnly && (callout.type !== 'solution' || options.solutionSpaces === true)) indices.push(seen);
       seen++;
     }
   }
@@ -3165,6 +3171,7 @@ class PreviewModal extends Modal {
     this.ready = false;
     this.generation = 0;
     this.spaceSettings = { ...DEFAULT_SPACE_SETTINGS };
+    this.solutionOptions = { solutionSpaces: false, showSolution: true };
     this.renderQueue = Promise.resolve();
     this.solutionHeights = [];
     this.spaceDiagnostics = [];
@@ -3209,6 +3216,24 @@ class PreviewModal extends Modal {
       option.value = String(amount);
       if (amount === this.spaceSettings.minimumCm) option.selected = true;
     }
+    // Both options are presentation-only; never rewrite the source note.
+    const studentSolutionLabel = controls.createEl('label', { cls: 'mwb-setting-label', text: 'solution 留白 ' });
+    const studentSolutionCheckbox = studentSolutionLabel.createEl('input', { type: 'checkbox' });
+    studentSolutionCheckbox.checked = this.solutionOptions.solutionSpaces;
+    studentSolutionCheckbox.setAttribute('aria-label', '学生版为 solution 预留答题空白');
+    studentSolutionCheckbox.onchange = () => {
+      this.solutionOptions.solutionSpaces = !!studentSolutionCheckbox.checked;
+      if (this.mode === 'student') void this.renderMode('student');
+    };
+    const teacherSolutionLabel = controls.createEl('label', { cls: 'mwb-setting-label', text: '显示 solution ' });
+    const teacherSolutionCheckbox = teacherSolutionLabel.createEl('input', { type: 'checkbox' });
+    teacherSolutionCheckbox.checked = this.solutionOptions.showSolution;
+    teacherSolutionCheckbox.setAttribute('aria-label', '教师版显示 solution 解题思路');
+    teacherSolutionCheckbox.onchange = () => {
+      this.solutionOptions.showSolution = !!teacherSolutionCheckbox.checked;
+      if (this.mode === 'teacher') void this.renderMode('teacher');
+    };
+    this.solutionModeLabels = { student: studentSolutionLabel, teacher: teacherSolutionLabel };
     if (this.documentMode) { ratioLabel.style.display = ''; minimumLabel.style.display = ''; }
     if (this.exam) {
       const groupingLabel = controls.createEl('label', {cls:'mwb-setting-label', text:'分组依据'});
@@ -3328,6 +3353,10 @@ class PreviewModal extends Modal {
     // outdated MarkdownRenderer invocation corrupt the current preview.
     const generation = ++this.generation;
     this.mode = mode;
+    if (this.solutionModeLabels) {
+      this.solutionModeLabels.student.style.display = mode === 'student' ? '' : 'none';
+      this.solutionModeLabels.teacher.style.display = mode === 'teacher' ? '' : 'none';
+    }
     this.ready = false;
     this.spaceDiagnostics = [];
     this.renderWarnings = [];
@@ -3346,7 +3375,7 @@ class PreviewModal extends Modal {
       this.rendered.empty();
       try {
         if (this.documentMode) {
-          const plan = handoutPlan(this.markdown, mode);
+          const plan = handoutPlan(this.markdown, mode, this.solutionOptions);
           let heights = [];
           if (mode === 'student' && plan.solutionCount) {
             this.status.setText(`正在测量长讲义的 ${plan.solutionCount} 个教师专用块…`);
@@ -3369,7 +3398,7 @@ class PreviewModal extends Modal {
         } else if (this.exam) {
           await this.renderExam(mode, generation);
         } else if (mode === 'student') {
-          const plan = studentSpacePlan(this.markdown);
+          const plan = studentSpacePlan(this.markdown, this.solutionOptions);
           let heights = [];
           if (plan.count > 0) {
             this.status.setText('正在测量教师专用块的学生卷等高留白…');
@@ -3386,7 +3415,7 @@ class PreviewModal extends Modal {
             metadataOf({markdown:this.markdown,metadata:this.app.metadataCache.getFileCache(this.file)?.frontmatter}),
             this.metaSelections.student,this.metaPosition);
         } else {
-          const content = transformQuestion(this.markdown, mode);
+          const content = transformQuestion(this.markdown, mode, this.solutionOptions);
           await MarkdownRenderer.render(this.app, content, this.rendered, this.file.path, this.plugin);
           if (generation !== this.generation) return;
           this.addRenderWarnings('教师版预览', await waitForStableRender(this.rendered, content));
@@ -3473,7 +3502,7 @@ class PreviewModal extends Modal {
       if (generation !== this.generation) return [];
       assertMeasurementWidth(this.rendered, measure);
       layoutOptionGrids(measure);
-      return teacherSolutionHeights(measure, expectedCount, teacherOnlyCalloutIndices(this.markdown));
+      return teacherSolutionHeights(measure, expectedCount, teacherOnlyCalloutIndices(this.markdown, this.solutionOptions));
     } finally {
       this.removeMeasurement();
     }
@@ -3510,7 +3539,7 @@ class PreviewModal extends Modal {
       const content = wrapper.createDiv({cls:'mwb-exam-question-content'});
       let source;
       if (mode === 'student') {
-        const plan = studentSpacePlan(item.markdown);
+        const plan = studentSpacePlan(item.markdown, this.solutionOptions);
         source = plan.markdown;
         await MarkdownRenderer.render(this.app, source, content, item.file.path, this.plugin);
         if (generation !== this.generation) return;
@@ -3521,7 +3550,7 @@ class PreviewModal extends Modal {
           spaces += heights.length - (plan.skipSpaces?.length || 0);
         }
       } else {
-        source = transformQuestion(item.markdown, 'teacher');
+        source = transformQuestion(item.markdown, 'teacher', this.solutionOptions);
         await MarkdownRenderer.render(this.app, source, content, item.file.path, this.plugin);
       }
       insertQuestionNumber(content, item.number);
@@ -3546,7 +3575,7 @@ class PreviewModal extends Modal {
 
   async measureExamSolutions(items) {
     this.removeMeasurement();
-    const plans = items.map(item => ({item, plan:studentSpacePlan(item.markdown)})).filter(x=>x.plan.count>0);
+    const plans = items.map(item => ({item, plan:studentSpacePlan(item.markdown, this.solutionOptions)})).filter(x=>x.plan.count>0);
     if (!plans.length) return new Map();
     this.status.setText(`正在测量 ${plans.length} 道题的教师专用块高度…`);
     const page = this.page.createDiv({cls:'mwb-measure-layer mwb-typography mwb-print-document'});
@@ -3565,7 +3594,7 @@ class PreviewModal extends Modal {
       layoutOptionGrids(page);
       const map = new Map();
       for (const {item,plan,content} of contexts) {
-        map.set(item.file.path, teacherSolutionHeights(content,plan.count,teacherOnlyCalloutIndices(item.markdown)));
+        map.set(item.file.path, teacherSolutionHeights(content,plan.count,teacherOnlyCalloutIndices(item.markdown, this.solutionOptions)));
       }
       return map;
     } finally {
@@ -3583,7 +3612,7 @@ class PreviewModal extends Modal {
       this.addRenderWarnings('教师专用块高度测量', await waitForStableRender(teacher, source));
       assertMeasurementWidth(this.rendered, teacher);
       layoutOptionGrids(teacher);
-      return teacherSolutionHeights(teacher, count, teacherOnlyCalloutIndices(this.markdown));
+      return teacherSolutionHeights(teacher, count, teacherOnlyCalloutIndices(this.markdown, this.solutionOptions));
     } finally {
       this.removeMeasurement();
     }
@@ -3599,8 +3628,8 @@ class PreviewModal extends Modal {
     // Recheck immediately before cloning: an editor change/theme layout or
     // asynchronous TikZ could invalidate the geometry seen earlier.
     const source = this.documentMode ? this.documentRenderSource : this.exam
-      ? this.exam.items.map(item => this.mode === 'student' ? studentSpacePlan(item.markdown).markdown : transformQuestion(item.markdown, 'teacher')).join('\n\n')
-      : this.mode === 'student' ? studentSpacePlan(this.markdown).markdown : transformQuestion(this.markdown, this.mode);
+      ? this.exam.items.map(item => this.mode === 'student' ? studentSpacePlan(item.markdown, this.solutionOptions).markdown : transformQuestion(item.markdown, 'teacher', this.solutionOptions)).join('\n\n')
+      : this.mode === 'student' ? studentSpacePlan(this.markdown, this.solutionOptions).markdown : transformQuestion(this.markdown, this.mode, this.solutionOptions);
     if (this.documentMode && typeof source !== 'string') throw new Error('讲义渲染状态已过期，请重新预览');
     // Reuse the same axis-aware geometry audit as the preview. Avoid a
     // second generic check that loses the offending formula's identity.
@@ -3626,7 +3655,7 @@ class PreviewModal extends Modal {
     if (this.exam) {
       const nodes = [...this.rendered.querySelectorAll('.mwb-exam-question-content')];
       if (nodes.length !== this.exam.items.length) throw new Error('组卷题数与预览节点数不匹配，已阻止导出');
-      this.validateExamContexts(nodes.map((content,i) => ({content, source: this.mode === 'student' ? studentSpacePlan(this.exam.items[i].markdown).markdown : transformQuestion(this.exam.items[i].markdown, 'teacher'), path:this.exam.items[i].file.path})));
+      this.validateExamContexts(nodes.map((content,i) => ({content, source: this.mode === 'student' ? studentSpacePlan(this.exam.items[i].markdown, this.solutionOptions).markdown : transformQuestion(this.exam.items[i].markdown, 'teacher', this.solutionOptions), path:this.exam.items[i].file.path})));
     }
     if (this.renderWarnings.length > warningsBeforeExamAudit && this.partialWarning) {
       this.partialExportApproved = false;
