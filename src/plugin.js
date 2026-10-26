@@ -2695,7 +2695,7 @@ module.exports = { GROUPS, GROUPING_MODES, TEACHING_ROLES, normalizeTeachingRole
 
 return module.exports; })();
 
-const { normalizedQuestionType, createMathAnswerEditorExtension, refreshQuestionEditors, syncQuestionViewClasses, answerSlots, mathAnswerSlots } = (() => { const module = {exports:{}};
+const { normalizedQuestionType, createMathAnswerEditorExtension, refreshQuestionEditors, syncQuestionViewClasses, answerSlots, mathAnswerSlots, mwbMapUnchangedAnswerSlots, mwbVisibleAnswerSlots, buildMathAnswerDecorations } = (() => { const module = {exports:{}};
 'use strict';
 
 // Reading View uses MarkdownPostProcessor; Live Preview uses CodeMirror DOM.
@@ -2919,6 +2919,7 @@ function refreshQuestionEditors(leaves) {
 module.exports = {
   QUESTION_VIEW_CLASS, normalizedQuestionType, syncQuestionViewClasses,
   answerSlots, mathAnswerSlots, overlapsSelection, buildMathAnswerDecorations,
+  mwbMapUnchangedAnswerSlots, mwbVisibleAnswerSlots,
   createMathAnswerEditorExtension, refreshQuestionEditors
 };
 
