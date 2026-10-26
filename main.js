@@ -501,6 +501,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   const pages = [];
   let page, body;
   let atomicCount = 0, spaceChunks = 0, splitCallouts = 0;
+  let intactQuestions = 0, splitQuestions = 0, keptPromptOptions = 0, keptPromptSpace = 0;
   let lastRejectedHeight = 0;
   let lastSectionName = '';
   let questionPart = null;
@@ -599,6 +600,89 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   };
   const isDisplayNode = el => el && (el.matches?.('div.math, .math-block, .block-language-tikz, .block-language-tikzjax, pre, figure') ||
       !!el.querySelector?.('mjx-container[display="true"], .math.math-block'));
+  const isOptionsBlock = node => !!node?.matches?.('ul.mwb-options, ol.mwb-options');
+  const isSpaceBlock = node => !!node?.classList?.contains('mwb-answer-space');
+
+  // Trial-layout on a real A4-width sheet before committing a keep-together
+  // unit. The temporary sheet is never counted or exported. Unlike comparing
+  // heights from a detached node, this includes margins and heading layout.
+  const fitsOnFreshPage = (nodes, question = null, heading = null) => {
+    const trial = doc.createElement('div');
+    trial.className = 'mwb-paper';
+    const trialBody = doc.createElement('div');
+    trialBody.className = 'mwb-paper-body';
+    trial.appendChild(trialBody);
+    root.appendChild(trial);
+    try {
+      if (heading) trialBody.appendChild(heading);
+      let target = trialBody;
+      if (question) {
+        const questionClone = question.cloneNode(false);
+        const content = doc.createElement('div');
+        content.className = 'mwb-exam-question-content';
+        questionClone.appendChild(content);
+        trialBody.appendChild(questionClone);
+        target = content;
+      }
+      for (const node of nodes) target.appendChild(node);
+      const rect = trialBody.getBoundingClientRect();
+      let usedHeight = 0;
+      for (const child of trialBody.children) {
+        const r = child.getBoundingClientRect();
+        const style = doc.defaultView.getComputedStyle(child);
+        usedHeight = Math.max(usedHeight, r.bottom - rect.top + (parseFloat(style.marginBottom) || 0));
+      }
+      return usedHeight <= rect.height + 1.25;
+    } finally {
+      for (const node of nodes) node.remove();
+      if (heading) heading.remove();
+      trial.remove();
+    }
+  };
+
+  // Keep one *real* handwriting chunk with its prompt. Never add artificial
+  // padding or shorten the measured space; the remaining chunks still go
+  // through the existing audited page splitter.
+  const placeWithFirstSpace = (prompt, space, question = null, heading = null) => {
+    const chunk = space.querySelector(':scope > .mwb-answer-space-chunk');
+    if (!chunk) throw new Error('答题留白没有可打印的起始分段');
+    const starter = space.cloneNode(false);
+    starter.removeAttribute('data-mwb-space-px');
+    starter.appendChild(chunk);
+    const unit = [...prompt, starter];
+    if (!fitsOnFreshPage(unit, question, heading)) {
+      space.insertBefore(chunk, space.firstChild);
+      return false;
+    }
+    placeUnit(unit, question, heading);
+    spaceChunks++;
+    keptPromptSpace++;
+    return true;
+  };
+
+  // Short questions are tested as a complete printed unit. Only move to a
+  // new page when the full question fits there; oversized questions fall back
+  // to the semantic split rules and do not waste an entire current sheet.
+  const tryWholeQuestion = (question, heading) => {
+    const attempt = () => {
+      if (heading) body.appendChild(heading);
+      if (!commit(question)) {
+        if (heading) heading.remove();
+        return false;
+      }
+      if (heading) { active().meaningful++; atomicCount++; }
+      spaceChunks += question.querySelectorAll('.mwb-answer-space-chunk').length;
+      intactQuestions++;
+      questionPart = null;
+      return true;
+    };
+    if (attempt()) return true;
+    if (active().meaningful && fitsOnFreshPage([question], null, heading)) {
+      nextPage();
+      if (attempt()) return true;
+    }
+    return false;
+  };
 
   // Callouts are atomic if short; only truly over-height callouts split into
   // per-paragraph blocks with a fresh "（续）" title after each page break.
@@ -696,7 +780,11 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   makePage();
   const pending = [];
   const documentHeadings = [];
-  for (const node of inputNodes) {
+  const consumed = new Set();
+  for (let index = 0; index < inputNodes.length; index++) {
+    const node = inputNodes[index];
+    if (consumed.has(node)) continue;
+    const next = inputNodes[index + 1];
     if (node.classList?.contains('mwb-exam-section')) {
       if (pendingHeading) appendItem(pendingHeading);
       pendingHeading = node; lastSectionName = node.textContent || '';
@@ -704,15 +792,27 @@ function paginatePrintDocument(root, allowPartialMath = false) {
       continue;
     }
     if (!node.classList?.contains('mwb-exam-question')) {
-      // Heading+following short paragraph should remain on one printed page.
-      // A long table/list is laid out separately to keep its split points.
+      // The long-handout path has no question wrapper. Keep heading/prompt
+      // with nearby choice options or the first actual handwriting chunk.
       if (node.matches?.('h1, h2, h3, h4') && !node.classList.contains('mwb-exam-title') && !node.classList.contains('mwb-exam-section')) {
         documentHeadings.push(node);
         continue;
       }
       if (documentHeadings.length) {
-        if (node.matches?.('p, blockquote') && node.getBoundingClientRect().height < capacity()*0.5) {
-          placeUnit([...documentHeadings.splice(0),node]);
+        if (node.matches?.('p, blockquote')) {
+          const lead = [...documentHeadings.splice(0), node];
+          if (isSpaceBlock(next) && placeWithFirstSpace(lead, next)) {
+            // The first chunk has been placed; remaining chunks, if any,
+            // retain their original height and print in the normal loop.
+            continue;
+          }
+          if (isOptionsBlock(next) && fitsOnFreshPage([...lead, next])) {
+            placeUnit([...lead, next]);
+            keptPromptOptions++;
+            consumed.add(next);
+            continue;
+          }
+          placeUnit(lead);
           continue;
         }
         for (const header of documentHeadings.splice(0)) appendItem(header);
@@ -723,8 +823,14 @@ function paginatePrintDocument(root, allowPartialMath = false) {
       }
       if (node.classList?.contains('mwb-exam-title') || node.classList?.contains('mwb-exam-edition')) {
         pending.push(node); if (node.classList.contains('mwb-exam-edition')) placeUnit(pending.splice(0));
+      } else if (node.matches?.('p, blockquote') && isSpaceBlock(next) && placeWithFirstSpace([node],next)) {
+        continue;
+      } else if (node.matches?.('p, blockquote') && isOptionsBlock(next) && fitsOnFreshPage([node,next])) {
+        placeUnit([node,next]); keptPromptOptions++; consumed.add(next);
       } else if (node.classList?.contains('callout')) placeCallout(node,null);
-      else if (node.classList?.contains('mwb-answer-space')) placeSpace(node,null);
+      else if (isSpaceBlock(node)) {
+        if (node.querySelector(':scope > .mwb-answer-space-chunk')) placeSpace(node,null);
+      }
       else if (node.matches?.('ol, ul')) placeLongList(node,null);
       else appendItem(node);
       continue;
@@ -734,16 +840,31 @@ function paginatePrintDocument(root, allowPartialMath = false) {
     if (!content) throw new Error('缺少组卷题目正文');
     const blocks = [...content.children];
     if (!blocks.length) throw new Error('试题为空：' + node.getAttribute('data-mwb-source-path'));
-    // Keep a short first paragraph (question number + instruction) with its
-    // following display formula, e.g. "解方程组" + array.
+    // Try a whole question first, including options and writing space.
+    // If it is longer than A4, keep the existing per-block splitting path.
+    if (blocks.length <= 64 && tryWholeQuestion(node, pendingHeading)) {
+      pendingHeading = null;
+      continue;
+    }
+    splitQuestions++;
+    // Keep the prompt with its first display formula and choice grid when
+    // that unit fits on a fresh sheet. Otherwise allow a natural split.
     const first = [blocks.shift()];
     if (blocks.length && isDisplayNode(blocks[0]) && first[0].textContent.trim().length < 130) {
       first.push(blocks.shift());
     }
-    placeUnit(first,node,pendingHeading);
+    if (isOptionsBlock(blocks[0]) && fitsOnFreshPage([...first, blocks[0]], node, pendingHeading)) {
+      first.push(blocks.shift());
+      keptPromptOptions++;
+    }
+    if (!(isSpaceBlock(blocks[0]) && placeWithFirstSpace(first, blocks[0], node, pendingHeading))) {
+      placeUnit(first,node,pendingHeading);
+    }
     pendingHeading = null;
     for (const block of blocks) {
-      if (block.classList?.contains('mwb-answer-space')) placeSpace(block,node);
+      if (isSpaceBlock(block)) {
+        if (block.querySelector(':scope > .mwb-answer-space-chunk')) placeSpace(block,node);
+      }
       else if (block.classList?.contains('callout')) placeCallout(block,node);
       else if (block.matches?.('ol, ul')) placeLongList(block,node);
       else appendItem(block,node);
@@ -802,6 +923,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   }
   return {
     pages: pages.length, blocks: atomicCount, answerSpaceChunks: spaceChunks, splitCallouts,
+    intactQuestions, splitQuestions, keptPromptOptions, keptPromptSpace,
     answerSpaceExpectedPx: Number(expectedSpacePx.toFixed(2)),
     answerSpacePlacedPx: Number(placedSpacePx.toFixed(2)),
     answerSpaceDeltaPx: Number(spaceDeltaPx.toFixed(2)),
