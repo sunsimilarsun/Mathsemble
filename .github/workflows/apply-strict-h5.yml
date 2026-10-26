@@ -41,6 +41,10 @@ jobs:
           for name, content in bundle['files'].items():
               p=Path(name);assert not p.exists(), 'Refuse to overwrite additions'
               p.parent.mkdir(parents=True,exist_ok=True);p.write_text(content)
+          p=Path('package.json');pkg=json.loads(p.read_text())
+          assert pkg['scripts']['test']=='node --test tests/*.test.cjs'
+          pkg['scripts']['test']='node --test --test-concurrency=1 tests/*.test.cjs'
+          p.write_text(json.dumps(pkg,ensure_ascii=False,indent=2)+'\n')
           p=Path('README.md');text=p.read_text()
           old='**Source version:** `0.1.14`';assert text.count(old)==1
           text=text.replace(old,'**Source version:** `0.1.15`')
