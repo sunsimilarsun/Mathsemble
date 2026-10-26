@@ -2,7 +2,11 @@
 
 Mathsemble is a **desktop-only Obsidian plugin** for creating mathematics handouts, question cards, and A4 student/teacher PDF exports from Markdown notes. It works locally with your Obsidian vault and MathJax.
 
-**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). **Source version:** `0.1.14` (development only; not a GitHub Release). The release retains `(==B==)` / `==42==` answers; development source uses `!{B}` / `?{42}`. Do not combine the two installations or treat a development manifest as a published release. The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
+**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). **Source version:** `0.1.15` (development only; not a GitHub Release). The release retains `(==B==)` / `==42==` answers; development source uses `!{B}` / `?{42}`. Do not combine the two installations or treat a development manifest as a published release. The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
+
+## 0.1.15 development: strict question boundaries
+
+Use a top-level `##### 例1`, `##### 变式1`, `##### 练习1`, `##### 检测1`, or `##### 第1题` for each handout question. The next H1–H5 ends it; H6 headings and interleaved subquestions/answers remain inside. Short questions stay on one page; long questions start a fresh page, without shortening student writing space. Existing H3 labels are not automatically rewritten or treated as complete questions. See [Markdown 规范](docs/MARKDOWN_SPEC.md), [五级题目模板](templates/讲义_五级题目标题.md), and [implementation and acceptance](docs/STRICT_H5_PAGINATION.md). This is a development build, not a new Release.
 
 ## Installation
 
