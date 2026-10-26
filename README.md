@@ -2,7 +2,7 @@
 
 Mathsemble is a **desktop-only Obsidian plugin** for creating mathematics handouts, question cards, and A4 student/teacher PDF exports from Markdown notes. It works locally with your Obsidian vault and MathJax.
 
-**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
+**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). **Source version:** `0.1.11` (development only; not a GitHub Release). The release retains `(==B==)` / `==42==` answers; development source uses `!{B}` / `?{42}`. Do not combine the two installations or treat a development manifest as a published release. The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
 
 ## Installation
 
@@ -53,7 +53,7 @@ Reading View deliberately skips a section containing escaped typed markers until
 
 Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，用于将 Markdown 题卡、讲义或题目集合转成可预览、可打印的 A4 学生版／教师版。当前优先确保 **一份 Markdown 源码、两份教学输出、数学公式与答题留白可核验**。
 
-> **当前状态（2026-10-23）**：本地实验安装包为 **v0.1.10**（局部渲染警告、经确认可继续 PDF／打印）。已有代码级与局部浏览器测试记录，但**尚未完成真实 Obsidian 中整份长讲义、双版本 PDF 的最终视觉／分页验收**。GitHub 已提交 MIT 许可的完整 v0.1.10 源码、测试及构建工作流，**正式 [0.1.10 GitHub Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10) 已发布**，三个独立安装文件的 SHA-256 已核对一致。Obsidian Community 目录**尚未提交审核或上架**；用户报告手动测试未发现问题，但跨主题、跨系统的完整 PDF 视觉验收尚未独立完成。
+> **当前状态（2026-10-23 发布记录）**：本地实验安装包为 **v0.1.10**（局部渲染警告、经确认可继续 PDF／打印）。已有代码级与局部浏览器测试记录，但**尚未完成真实 Obsidian 中整份长讲义、双版本 PDF 的最终视觉／分页验收**。GitHub 已提交 MIT 许可的完整 v0.1.10 源码、测试及构建工作流，**正式 [0.1.10 GitHub Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10) 已发布**，三个独立安装文件的 SHA-256 已核对一致。Obsidian Community 目录**尚未提交审核或上架**；用户报告手动测试未发现问题，但跨主题、跨系统的完整 PDF 视觉验收尚未独立完成。
 
 - [详细功能需求与验收标准](docs/REQUIREMENTS.md)
 - [版本路线图与风险清单](docs/ROADMAP.md)
@@ -177,3 +177,10 @@ Mathsemble 采用 [MIT License](LICENSE)（Copyright © 2026 sunsimilarsun）。
 Mathsemble is local-first and has no built-in analytics, telemetry or account service. When exporting a document that references remote HTTP(S) images or fonts, the plugin may request those resources; those servers can see the normal requests.
 
 The plugin may read explicitly referenced `file://` image and font resources **outside the vault**. To generate PDF output it temporarily writes print-ready HTML to the operating system's temporary directory and removes it after the printing process. Exported PDF/HTML is saved to the vault's `ExamExports/` folder. Review linked resources before exporting sensitive documents. See [Privacy details](docs/PRIVACY.md).
+
+## 2026-10-26 · v0.1.11 开发分支说明（尚未发布）
+
+- `manifest.json`、`package.json` 和锁文件的开发版本同步为 `0.1.11`；公开 GitHub Release 仍为 `0.1.10`。未经真实 Obsidian 验收和发布流程，不得把 `0.1.11` 视为已发行安装包。
+- 开发版选择答案统一写成 `!{B}`，填空写成 `?{答案}`，`==内容==` 一律是 Markdown 高亮。旧版文件需人工迁移，程序不自动重写笔记。
+- 长讲义实时预览使用 CodeMirror 视图级答案槽索引。普通正文编辑采用安全的索引偏移更新；编辑答案槽、公式或 Markdown 结构时重新扫描；选区和滚动仅刷新可视区域的答案装饰，避免重复扫描整份源文档。
+- 这项性能改动专门针对实时预览的反复扫描，并**不**代表长讲义 PDF 分页或真实 Obsidian 宿主性能已完成验收。
