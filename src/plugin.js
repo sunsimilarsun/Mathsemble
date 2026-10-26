@@ -529,7 +529,51 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     return max;
   };
   const capacity = () => body.getBoundingClientRect().height;
-  const overflowed = () => used() > capacity() + 1.25;
+
+  // A block can have a legal outer height while its MathJax, image, inline
+  // span, positioned content, or clipped child paints OUTSIDE that height.
+  // Checking only top-level section rectangles let such content disappear
+  // behind .mwb-paper {overflow:hidden} without triggering an export error.
+  // Check candidates during placement and all final page content afterwards.
+  const contentSpills = (candidate, printable = body, checkText = false) => {
+    if (!candidate) return false;
+    const region = printable.getBoundingClientRect();
+    const tolerance = 2.5;
+    const outside = rect => rect && rect.width > 0 && rect.height > 0 && (
+      rect.top < region.top - tolerance || rect.bottom > region.bottom + tolerance ||
+      rect.left < region.left - tolerance || rect.right > region.right + tolerance);
+    const stack = Array.isArray(candidate) ? [...candidate] : [candidate];
+    while (stack.length) {
+      const current = stack.pop();
+      if (!current) continue;
+      if (current.nodeType === 3) {
+        if (!checkText || !doc.createRange || !current.nodeValue?.trim()) continue;
+        try {
+          const range = doc.createRange();
+          range.selectNodeContents(current);
+          for (const rect of range.getClientRects()) {
+            if (outside(rect)) return true;
+          }
+          range.detach?.();
+        } catch (_) { /* MathJax/SVG may not support browser text ranges. */ }
+        continue;
+      }
+      if (current.nodeType !== 1 && current.nodeType !== undefined) continue;
+      const style = doc.defaultView.getComputedStyle(current);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') continue;
+      if (outside(current.getBoundingClientRect())) return true;
+      if ((/^(hidden|clip)$/.test(style.overflowX || '') &&
+           current.clientWidth > 0 && current.scrollWidth > current.clientWidth + tolerance) ||
+          (/^(hidden|clip)$/.test(style.overflowY || '') &&
+           current.clientHeight > 0 && current.scrollHeight > current.clientHeight + tolerance)) {
+        return true;
+      }
+      for (const child of current.childNodes || current.children || []) stack.push(child);
+    }
+    return false;
+  };
+  const overflowed = (candidate = null) =>
+    used() > capacity() + 1.25 || !!(candidate && contentSpills(candidate));
   const newQuestionPart = (q) => {
     const section = doc.createElement('section');
     section.className = 'mwb-exam-question mwb-question-fragment';
@@ -556,7 +600,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   const commit = (node, q = null) => {
     const parent = targetFor(q);
     parent.appendChild(node);
-    const fits = !overflowed();
+    const fits = !overflowed(node);
     if (fits) { active().meaningful++; atomicCount++; return true; }
     lastRejectedHeight = node.getBoundingClientRect().height;
     parent.removeChild(node); removeEmptyPart();
@@ -586,7 +630,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       if (sectionHeading) body.appendChild(sectionHeading);
       const content = targetFor(q);
       for (const node of nodes) content.appendChild(node);
-      if (overflowed()) {
+      if (overflowed(nodes.concat(sectionHeading ? [sectionHeading] : []))) {
         for (const node of nodes) content.removeChild(node);
         removeEmptyPart();
         if (sectionHeading) sectionHeading.remove();
@@ -634,7 +678,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
         const style = doc.defaultView.getComputedStyle(child);
         usedHeight = Math.max(usedHeight, r.bottom - rect.top + (parseFloat(style.marginBottom) || 0));
       }
-      return usedHeight <= rect.height + 1.25;
+      return usedHeight <= rect.height + 1.25 && !contentSpills([...nodes, ...(heading ? [heading] : [])], trialBody);
     } finally {
       for (const node of nodes) node.remove();
       if (heading) heading.remove();
@@ -718,7 +762,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     // moved to the next sheet if the first solution step does not fit.
     for (const block of blocks) {
       current.inner.appendChild(block);
-      if (overflowed()) {
+      if (overflowed(current.fragment)) {
         current.inner.removeChild(block);
         if (!current.inner.children.length) {
           current.fragment.remove();
@@ -729,7 +773,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
         current = buildFragment();
         appendItem(current.fragment,q);
         current.inner.appendChild(block);
-        if (overflowed()) overflowError(block);
+        if (overflowed(current.fragment)) overflowError(block);
       }
       atomicCount++;
     }
@@ -752,7 +796,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     openPart();
     for (const child of children) {
       part.appendChild(child);
-      if (overflowed()) {
+      if (overflowed(part)) {
         part.removeChild(child);
         if (!part.children.length) {
           part.remove();
@@ -762,7 +806,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
         } else nextPage();
         openPart();
         part.appendChild(child);
-        if (overflowed()) overflowError(child);
+        if (overflowed(part)) overflowError(child);
       }
       placed++;
       atomicCount++;
@@ -901,7 +945,8 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     footer.className='mwb-paper-footer';
     footer.textContent = `${i+1}/${pages.length}`;
     item.paper.appendChild(footer);
-    if (item.body.scrollHeight > item.body.clientHeight + 2 || usedIsOverflow(item.body)) {
+    if (item.body.scrollHeight > item.body.clientHeight + 2 || usedIsOverflow(item.body) ||
+        contentSpills(item.body, item.body, true)) {
       throw new Error(`第 ${i+1} 页仍然溢出，已阻止生成 PDF`);
     }
     if (!item.body.children.length && i !== pages.length - 1) throw new Error(`第 ${i+1} 页为空白页`);
