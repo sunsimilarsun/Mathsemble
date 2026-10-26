@@ -10,7 +10,7 @@ const vm = require('node:vm');
 // the *real* paginator control flow, chunk counting, and content preservation.
 class E {
   constructor(tag, doc) {
-    this.tagName=tag.toUpperCase(); this.ownerDocument=doc;
+    this.tagName=tag.toUpperCase(); this.ownerDocument=doc; this.nodeType=1;
     this.parentElement=null; this.children=[]; this.className='';
     this.style={}; this._height=null; this._text='';
     this._attrs={};
@@ -21,6 +21,7 @@ class E {
     add:x=>{if(!this.className.split(/\s+/).includes(x))this.className+=' '+x;}
   }; }
   get attributes(){return Object.entries(this._attrs).map(([name,value])=>({name,value}));}
+  get childNodes(){return this.children;}
   setAttribute(name,value){this._attrs[name]=String(value);}
   getAttribute(name){return this._attrs[name]??null;}
   removeAttribute(name){delete this._attrs[name];}
@@ -68,9 +69,24 @@ class E {
   get clientHeight(){return this.height();}
   hasChildNodes(){return !!(this.children.length||this._text);}
 }
+class T {
+  constructor(value,doc){this.nodeType=3;this.nodeValue=value;this.ownerDocument=doc;this.parentElement=null;this.children=[];}
+  get textContent(){return this.nodeValue;}
+  set textContent(v){this.nodeValue=v;}
+  matches(){return false;}
+  cloneNode(){return new T(this.nodeValue,this.ownerDocument);}
+  remove(){if(this.parentElement)this.parentElement.removeChild(this);}
+  height(){return Math.ceil(Array.from(this.nodeValue).length/10)*10;}
+  getBoundingClientRect(){
+    let top=this.parentElement?this.parentElement.getBoundingClientRect().top:0;
+    if(this.parentElement)for(const sibling of this.parentElement.children){if(sibling===this)break;top+=sibling.height();}
+    const h=this.height();return {top,bottom:top+h,height:h,left:0,right:100,width:100};
+  }
+}
 function doc(){
   const d={defaultView:{getComputedStyle:()=>({marginBottom:'0'})}};
   d.createElement=tag=>new E(tag,d);
+  d.createTextNode=value=>new T(value,d);
   d.head=d.createElement('head');
   return d;
 }
@@ -205,4 +221,33 @@ test('paginated preview uses the PDF page algorithm without altering Obsidian gl
   assert.equal(root.ownerDocument.head.children.length,0,'preview must not inject PDF html/body width reset');
   assert.equal(pages[0].querySelectorAll('.mwb-question-index').length,1);
   assert.equal(pages[1].querySelectorAll('.mwb-question-index').length,0);
+});
+
+test('long handout paragraph is split across A4 sheets without losing a single character',()=>{
+  const d=doc();const sentence='数学题目需要完整保留文字、公式与每一步条件。'.repeat(12);
+  const p=d.createElement('p');p.appendChild(d.createTextNode(sentence));
+  const {pages,result}=run([p]);
+  assert.ok(result.pages>=2);
+  const fragments=pages.flatMap(page=>page.querySelectorAll('p'));
+  assert.equal(fragments.map(el=>el.textContent).join(''),sentence);
+  assert.ok(fragments.every(el=>el.height()<=100),'no paragraph fragment exceeds the A4 body');
+});
+test('long exam prompt splits cleanly while keeping original question number once',()=>{
+  const d=doc(),q=d.createElement('section');q.className='mwb-exam-question';
+  q.setAttribute('data-mwb-source-path','long.md');
+  const content=d.createElement('div');content.className='mwb-exam-question-content';q.appendChild(content);
+  const p=d.createElement('p');const label=d.createElement('span');label.className='mwb-question-index';label.textContent='1.';
+  p.appendChild(label);const text='已知函数满足给定条件，求取值范围。'.repeat(30);
+  p.appendChild(d.createTextNode(text));content.appendChild(p);
+  const {pages,result}=run([q]);
+  assert.ok(result.pages>=2);
+  assert.equal(result.splitQuestions,1);
+  assert.equal(pages.flatMap(pg=>pg.querySelectorAll('.mwb-question-index')).length,1);
+  const all=pages.flatMap(pg=>pg.querySelectorAll('p')).map(el=>el.textContent).join('');
+  assert.equal(all,'1.'+text,'all question text preserved in correct order');
+});
+test('nested content extending outside short parent is rejected, never hidden by A4 clipping',()=>{
+  const d=doc(),p=block(d,'p',20);
+  p.appendChild(block(d,'span',140));
+  assert.throws(()=>run([p]),/超过 A4|不可拆分/);
 });
