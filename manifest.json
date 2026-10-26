@@ -1,7 +1,7 @@
 {
   "id": "math-teaching-workbench",
   "name": "Mathsemble",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "minAppVersion": "1.5.0",
   "description": "Create math question sheets and handouts, with student and teacher PDF exports and printing.",
   "author": "sunsimilarsun",
