@@ -434,3 +434,35 @@ test('print Callout full border uses matching accent and solution is blue gray',
   assert.ok(typographyCss.includes('--mwb-callout-accent: #8794ad;'));
   assert.ok(typographyCss.includes('--mwb-callout-accent: #e67e22;'));
 });
+
+test('opening a saved PDF checks vault file identity and uses system default viewer',async()=>{
+  vm.runInNewContext('globalThis.mwbOpenExportedPdf = openExportedPdf;',ctx);
+  const opened=[];
+  const app={vault:{
+    getAbstractFileByPath:filename=>filename==='ExamExports/valid.pdf'?{extension:'pdf'}:null,
+    adapter:{getFullPath:filename=>'/vault/'+filename}
+  }};
+  const shell={openPath:async full=>{opened.push(full);return '';}};
+  await ctx.mwbOpenExportedPdf(app,'ExamExports/valid.pdf',shell);
+  assert.deepEqual(opened,['/vault/ExamExports/valid.pdf']);
+  await assert.rejects(ctx.mwbOpenExportedPdf(app,'../secrets.pdf',shell),/仅支持打开/);
+  await assert.rejects(ctx.mwbOpenExportedPdf(app,'ExamExports/missing.pdf',shell),/不存在/);
+  await assert.rejects(ctx.mwbOpenExportedPdf(app,'ExamExports/valid.pdf',{openPath:async()=> 'No PDF reader'}),/No PDF reader/);
+  assert.equal(opened.length,1,'invalid files must never invoke the OS opener');
+});
+test('A4 preview maintains source geometry and PDF export path independently',()=>{
+  assert.match(js,/const \{ pdfBufferFromHtml, paginatePreviewDocument \} =/);
+  assert.match(js,/function paginatePrintDocument\(root, allowPartialMath = false, preview = false\)/);
+  assert.match(js,/if \(!preview\) doc\.head\.appendChild\(paper\);/);
+  assert.match(js,/const view = this\.rendered\.cloneNode\(true\);/);
+  assert.match(js,/paginatePreviewDocument\(view, false, true\)/);
+  assert.match(js,/this\.page\.classList\.add\('mwb-preview-source'\)/);
+  assert.match(js,/this\.page\.classList\.remove\('mwb-preview-source'\)/);
+  assert.match(js,/return await exportHtml\(this\.rendered, title, typographyCss, document/);
+  assert.match(js,/this\.lastSavedPdfPath = savedPath;/);
+  assert.match(js,/openPdfButton\.onclick = async/);
+  const css=fs.readFileSync(path.resolve(__dirname,'../styles.css'),'utf8');
+  assert.match(css,/\.mwb-modal \.mwb-preview-pages \.mwb-paper \{/);
+  assert.match(css,/\.mwb-modal \.mwb-preview-pages \.mwb-paper-footer \{/);
+  assert.match(css,/\.mwb-modal \.mwb-page\.mwb-preview-source \{/);
+});

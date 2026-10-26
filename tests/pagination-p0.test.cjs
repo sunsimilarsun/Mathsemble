@@ -109,10 +109,10 @@ assert.ok(start>0&&end>start,'page script must be discoverable');
 const context={};
 vm.runInNewContext(js.slice(start,end)+'\n;globalThis.paginate = paginatePrintDocument;',context);
 function pages(root){return root.children.filter(e=>e.classList.contains('mwb-paper'));}
-function run(children){
+function run(children, preview=false){
   const d=doc(),root=d.createElement('main');root.className='mwb-export-doc';
   for(const item of children)root.appendChild(item);
-  const result=context.paginate(root);
+  const result=context.paginate(root,false,preview);
   return {root,result,pages:pages(root)};
 }
 test('P0 short exam questions move intact rather than split across pages',()=>{
@@ -195,4 +195,14 @@ test('P0 handout keeps a question paragraph with its full small choice grid',()=
   assert.equal(result.keptPromptOptions,1);
   assert.ok(pages[1].querySelectorAll('p').includes(prompt));
   assert.ok(pages[1].querySelectorAll('.mwb-options').includes(choices));
+});
+
+test('paginated preview uses the PDF page algorithm without altering Obsidian global styles',()=>{
+  const d=doc(),q=question(d,[['prompt',60],['other',70]],'1');
+  const {root,pages,result}=run([q],true);
+  assert.equal(result.pages,2);
+  assert.equal(pages.length,2);
+  assert.equal(root.ownerDocument.head.children.length,0,'preview must not inject PDF html/body width reset');
+  assert.equal(pages[0].querySelectorAll('.mwb-question-index').length,1);
+  assert.equal(pages[1].querySelectorAll('.mwb-question-index').length,0);
 });
