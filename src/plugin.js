@@ -2695,7 +2695,7 @@ module.exports = { GROUPS, GROUPING_MODES, TEACHING_ROLES, normalizeTeachingRole
 
 return module.exports; })();
 
-const { normalizedQuestionType, createMathAnswerEditorExtension, refreshQuestionEditors, syncQuestionViewClasses, answerSlots, mathAnswerSlots } = (() => { const module = {exports:{}};
+const { normalizedQuestionType, createMathAnswerEditorExtension, refreshQuestionEditors, syncQuestionViewClasses, answerSlots, mathAnswerSlots, mwbMapUnchangedAnswerSlots, mwbVisibleAnswerSlots, buildMathAnswerDecorations } = (() => { const module = {exports:{}};
 'use strict';
 
 // Reading View uses MarkdownPostProcessor; Live Preview uses CodeMirror DOM.
@@ -2727,13 +2727,12 @@ function syncQuestionViewClasses(leaves, getFrontmatter, isQuestion) {
       .test(String(frontmatter?.note_type || '').trim());
     view.containerEl.classList.toggle('mwb-math-material', mathMaterial);
     view.containerEl.classList.toggle(QUESTION_VIEW_CLASS, question);
-    // A long handout has no per-question YAML. Only explicitly typed answer slots
-    // enable the answer-scoped CSS, never native Markdown highlights.
-    // Only scoped answer styles are enabled; general handout typography stays
-    // governed by the user's theme.
-    let raw = '';
-    try { raw = view.editor?.getValue?.() || ''; } catch (_) { /* view not ready */ }
-    const hasAnswers = (raw.includes('?{') || raw.includes('!{')) && answerSlots(raw).length > 0;
+    // The Reading View postprocessor marks typed answers after rendering.
+    // Metadata updates may fire on each keystroke: never read and rescan the
+    // entire editor just to toggle a cosmetic CSS scope. Live Preview widget
+    // styles do not need this class and are managed by CodeMirror directly.
+    const hasAnswers = !!view.containerEl.querySelector?.(
+      'mark.mwb-hover-answer, .mwb-reading-answer-math, .mwb-cm-math-answer-slot, .mwb-cm-text-answer-slot');
     view.containerEl.classList.toggle('mwb-answer-note', hasAnswers);
     view.containerEl.classList.toggle('mwb-question-choice', question && normalizedQuestionType(frontmatter) === 'choice');
     view.containerEl.classList.toggle('mwb-question-fill', question && normalizedQuestionType(frontmatter) === 'fill');
@@ -2765,28 +2764,69 @@ function overlapsSelection(selection,from,to) {
   });
 }
 
-function buildMathAnswerDecorations(view, engine) {
-  // Per-slot rules are valid for whole handouts too, even without frontmatter.
-  // The CodeMirror view plugin reads source ranges; the reading CSS class is
-  // scoped separately to avoid changing the user's stored Markdown.
-  if (!isLivePreviewEditor(view)) return engine.Decoration.none;
-  const source=view.state.doc.toString();
-  if (!source.includes('?{') && !source.includes('!{')) return engine.Decoration.none;
-  const ranges=[];
-  for (const slot of answerSlots(source)) {
-    if (overlapsSelection(view.state.selection,slot.from,slot.to)) continue;
-    if (slot.latex !== undefined) {
-      const widget=new engine.MathAnswerWidget(slot,engine);
-      ranges.push(engine.Decoration.replace({widget}).range(slot.from,slot.to));
-    } else {
-      // Use an atomic source-position widget for literal answers as well.
-      // Broad .cm-highlight rules would inadvertently conceal unrelated
-      // highlights in long handouts (including notes and explanations).
-      const widget=new engine.TextAnswerWidget(slot);
-      ranges.push(engine.Decoration.replace({widget}).range(slot.from,slot.to));
+// Reuse the answer index for non-structural edits outside existing tokens.
+// Markup, math, callout, fence, indentation and token edits all trigger a
+// complete rescan to preserve the existing conservative Markdown semantics.
+function mwbMapUnchangedAnswerSlots(slots, update) {
+  if (!Array.isArray(slots) || !update?.changes?.iterChanges ||
+      !update?.changes?.mapPos || !update?.startState?.doc || !update?.state?.doc) return null;
+  let reusable = true, changed = false;
+  const structural = /[\x60~$\\?!{}\[\]<>+\-.\r\n]/;
+  const specialLine = /^\s*(?:>|---|\.\.\.|[\x60~]{3,})/;
+  update.changes.iterChanges((fromA, toA, fromB, _toB, inserted) => {
+    if (!reusable) return;
+    changed = true;
+    const removed = update.startState.doc.sliceString(fromA, toA);
+    const added = inserted.toString();
+    if (structural.test(removed + added)) { reusable = false; return; }
+    const oldLine = update.startState.doc.lineAt(fromA);
+    const newLine = update.state.doc.lineAt(fromB);
+    if (specialLine.test(oldLine.text) || specialLine.test(newLine.text) ||
+        (/\s/.test(removed + added) &&
+          (fromA - oldLine.from < 4 || fromB - newLine.from < 4))) {
+      reusable = false; return;
+    }
+    // Editing inside (or immediately at the edge of) a token changes the
+    // answer width/widget even when no delimiter was typed.
+    if (slots.some(slot => fromA <= slot.to && toA >= slot.from)) reusable = false;
+  });
+  if (!reusable || !changed) return null;
+  return slots.map(slot => ({
+    ...slot,
+    from: update.changes.mapPos(slot.from, -1),
+    to: update.changes.mapPos(slot.to, 1),
+  }));
+}
+
+function mwbVisibleAnswerSlots(slots, visibleRanges) {
+  if (!visibleRanges?.length) return slots;
+  const visible = [];
+  let i = 0;
+  for (const range of visibleRanges) {
+    while (i < slots.length && slots[i].to < range.from) i++;
+    for (let k = i; k < slots.length && slots[k].from <= range.to; k++) {
+      const slot = slots[k];
+      if (slot.to >= range.from && !visible.includes(slot)) visible.push(slot);
     }
   }
-  return engine.Decoration.set(ranges,true);
+  return visible;
+}
+
+function buildMathAnswerDecorations(view, engine, cachedSlots = null) {
+  if (!isLivePreviewEditor(view)) return engine.Decoration.none;
+  // The CodeMirror ViewPlugin keeps the full-document index. Scrolling and
+  // cursor movement reuse it without allocating or rescanning source text.
+  const slots = cachedSlots === null ? answerSlots(view.state.doc.toString()) : cachedSlots;
+  if (!slots.length) return engine.Decoration.none;
+  const ranges = [];
+  for (const slot of mwbVisibleAnswerSlots(slots, view.visibleRanges)) {
+    if (overlapsSelection(view.state.selection, slot.from, slot.to)) continue;
+    const widget = slot.latex !== undefined
+      ? new engine.MathAnswerWidget(slot, engine)
+      : new engine.TextAnswerWidget(slot);
+    ranges.push(engine.Decoration.replace({widget}).range(slot.from, slot.to));
+  }
+  return engine.Decoration.set(ranges, true);
 }
 
 // A real CodeMirror ViewPlugin registered through Obsidian's public plugin API.
@@ -2850,10 +2890,17 @@ function createMathAnswerEditorExtension(cmModule, renderMath, finishRenderMath,
   }
   const engine={Decoration,MathAnswerWidget,TextAnswerWidget};
   return ViewPlugin.fromClass(class {
-    constructor(view) {this.decorations=buildMathAnswerDecorations(view,engine);}
+    constructor(view) {
+      this.slots = answerSlots(view.state.doc.toString());
+      this.decorations = buildMathAnswerDecorations(view, engine, this.slots);
+    }
     update(update) {
-      if (update.docChanged || update.viewportChanged || update.selectionSet || options.refreshEveryUpdate)
-        this.decorations=buildMathAnswerDecorations(update.view,engine);
+      if (update.docChanged) {
+        this.slots = mwbMapUnchangedAnswerSlots(this.slots, update) ||
+          answerSlots(update.state.doc.toString());
+      }
+      if (update.docChanged || update.viewportChanged || update.selectionSet)
+        this.decorations = buildMathAnswerDecorations(update.view, engine, this.slots);
     }
   },{decorations:v=>v.decorations});
 }
@@ -2871,6 +2918,7 @@ function refreshQuestionEditors(leaves) {
 module.exports = {
   QUESTION_VIEW_CLASS, normalizedQuestionType, syncQuestionViewClasses,
   answerSlots, mathAnswerSlots, overlapsSelection, buildMathAnswerDecorations,
+  mwbMapUnchangedAnswerSlots, mwbVisibleAnswerSlots,
   createMathAnswerEditorExtension, refreshQuestionEditors
 };
 
@@ -3786,7 +3834,7 @@ module.exports = class MathTeachingWorkbench extends Plugin {
     try {
       const cmRuntime = require('@codemirror/view'); // Obsidian's external CM6 runtime
       this.registerEditorExtension(createMathAnswerEditorExtension(
-        cmRuntime, renderMath, finishRenderMath, {refreshEveryUpdate:true}));
+        cmRuntime, renderMath, finishRenderMath));
     } catch (e) {
       console.error('[Math Teaching Workbench] CodeMirror 6 答案隐藏扩展加载失败', e);
       new Notice('数学填空实时预览扩展未加载，请查看开发者控制台错误',10000);
@@ -3795,7 +3843,8 @@ module.exports = class MathTeachingWorkbench extends Plugin {
       const leaves=this.app.workspace.getLeavesOfType?.('markdown') || [];
       syncQuestionViewClasses(leaves,
         file => this.app.metadataCache.getFileCache(file)?.frontmatter, isQuestion);
-      refreshQuestionEditors(leaves);
+      // CodeMirror tracks edits and slot visibility itself. An empty dispatch
+      // for every metadata update would repeatedly refresh all open editors.
     };
     if (typeof this.app.workspace.onLayoutReady === 'function')
       this.app.workspace.onLayoutReady(syncAnswerViews);
@@ -3807,7 +3856,8 @@ module.exports = class MathTeachingWorkbench extends Plugin {
     listen(this.app.workspace, 'file-open');
     listen(this.app.workspace, 'active-leaf-change');
     listen(this.app.workspace, 'layout-change');
-    listen(this.app.workspace, 'editor-change');
+    // Live Preview follows CodeMirror doc changes directly; refreshing every
+    // editor-change would rescan the whole document and dispatch another update.
     listen(this.app.metadataCache, 'changed');
   }
 };
