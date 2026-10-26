@@ -91,6 +91,129 @@ function mwbStudentMathFill(answer) {
   return result;
 }
 
+// Shared source context for edition projection, measuring and answer tokens.
+// Quote depth is structural; fenced/indented code is never teaching syntax.
+function mwbMarkdownLines(markdown) {
+  const lines = String(markdown).replace(/\r\n?/g, '\n').split('\n');
+  let yaml = lines[0]?.replace(/^\uFEFF/, '').trim() === '---', fence = null, offset = 0;
+  return lines.map((line, index) => {
+    let body = line, depth = 0, prefix = '';
+    for (;;) {
+      const quote = /^( {0,3}>[ \t]?)/.exec(body);
+      if (!quote) break;
+      prefix += quote[1]; body = body.slice(quote[1].length); depth++;
+    }
+    const record = {line, body, depth, prefix, index, offset, yaml, code:false};
+    offset += line.length + 1;
+    if (yaml) {
+      if (index > 0 && /^(?:---|\.\.\.)\s*$/.test(line)) yaml = false;
+      return record;
+    }
+    // A fenced block inside a quote ends when that quote ends.
+    if (fence && depth < fence.depth) fence = null;
+    if (fence) {
+      record.code = true;
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(body);
+      if (depth === fence.depth && close && close[1][0] === fence.token[0] && close[1].length >= fence.token.length) fence = null;
+      return record;
+    }
+    if (/^(?: {4}| {0,3}\t)/.test(body)) { record.code = true; return record; }
+    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(body);
+    if (open && !(open[1][0] === '`' && open[2].includes('`'))) {
+      fence = {token:open[1],depth}; record.code = true; return record;
+    }
+    const header = depth && /^ {0,3}\[!([\w-]+)\]([+-])?(?:[ \t]+(.*))?\s*$/.exec(body);
+    if (header) record.callout = {type:header[1].toLowerCase(), title:(header[3] || '').trim(), teacherOnly:!!header[2]};
+    return record;
+  });
+}
+function mwbCalloutDocument(markdown) {
+  const lines = mwbMarkdownLines(markdown), blocks = [], stack = [];
+  for (const row of lines) {
+    if (row.yaml) continue;
+    while (stack.length && (row.depth < stack.at(-1).depth ||
+      (!row.code && row.callout && row.depth <= stack.at(-1).depth))) {
+      stack.pop().end = row.index;
+    }
+    if (!row.code && row.callout) {
+      const parent = stack.at(-1) || null;
+      const block = {...row.callout, id:'mwb-callout-' + (row.index + 1), start:row.index,
+        end:lines.length, depth:row.depth, parentId:parent?.id || null, parent};
+      blocks.push(block); stack.push(block);
+    }
+  }
+  return {lines, blocks};
+}
+function mwbSpaceTargets(blocks, options = {}) {
+  return blocks.filter(block => {
+    if (!block.teacherOnly || (block.type === 'solution' && options.solutionSpaces !== true)) return false;
+    for (let parent = block.parent; parent; parent = parent.parent) if (parent.teacherOnly) return false;
+    return true;
+  });
+}
+function mwbProjectCallouts(markdown, mode, options = {}, spaces = false, measurement = false) {
+  const parsed = mwbCalloutDocument(markdown), targets = mwbSpaceTargets(parsed.blocks, options);
+  const headers = new Map(parsed.blocks.map(block => [block.start, block]));
+  const targetIndex = new Map(targets.map((block,index) => [block.id,index]));
+  const output = [], visible = [];
+  for (let i = 0; i < parsed.lines.length; i++) {
+    const row = parsed.lines[i], block = headers.get(i);
+    if (!block) { output.push(row.line); continue; }
+    const omitted = mode === 'student' ? block.teacherOnly : measurement
+      ? block.type === 'solution' && block.teacherOnly && options.solutionSpaces !== true
+      : block.type === 'solution' && options.showSolution === false;
+    if (omitted) {
+      if (spaces && targetIndex.has(block.id)) {
+        // Preserve the containing shared quote; the placeholder is a child
+        // paragraph of that container, not a new nested Callout.
+        const quote = '> '.repeat(block.depth - 1);
+        output.push(quote.trimEnd(), quote + 'MWB_SOLUTION_SPACE_ANCHOR_' + targetIndex.get(block.id) + '_END', quote.trimEnd());
+      }
+      i = block.end - 1;
+      continue;
+    }
+    visible.push(block);
+    output.push(row.line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
+  }
+  return {markdown:output.join('\n'), targets, blocks:visible};
+}
+function mwbStudentSpacePlan(markdown, options = {}) {
+  const projected = mwbProjectCallouts(markdown, 'student', options, true);
+  return {markdown:normalizePrintBlanks(mwbRewriteTypedAnswers(stripFrontmatter(projected.markdown), 'student')),
+    count:projected.targets.length, targets:projected.targets.map(mwbCalloutDescriptor), skipSpaces:[]};
+}
+function mwbCalloutDescriptor(block) {
+  return {id:block.id, type:block.type, parentId:block.parentId, line:block.start + 1};
+}
+function mwbTeacherMeasurementPlan(markdown, options = {}) {
+  const projected = mwbProjectCallouts(markdown, 'teacher', options, false, true);
+  return {markdown:normalizePrintBlanks(mwbRewriteTypedAnswers(stripFrontmatter(projected.markdown), 'teacher')),
+    blocks:projected.blocks.map(mwbCalloutDescriptor), targets:projected.targets.map(mwbCalloutDescriptor)};
+}
+function mwbResolveMeasuredCallouts(root, plan) {
+  if (!Array.isArray(plan?.blocks) || !Array.isArray(plan?.targets)) throw new Error('缺少源码 Callout 测量映射');
+  const rendered = Array.from(root.querySelectorAll('.callout'));
+  if (rendered.length !== plan.blocks.length) throw new Error('Callout 源码/渲染结构不匹配，已停止留白测量');
+  const byId = new Map(), byElement = new Map();
+  for (let i = 0; i < rendered.length; i++) {
+    const element = rendered[i], expected = plan.blocks[i];
+    const parent = element.parentElement?.closest?.('.callout') || null;
+    if (element.getAttribute('data-callout')?.toLowerCase() !== expected.type ||
+        (parent ? byElement.get(parent) : null) !== expected.parentId || byId.has(expected.id)) {
+      throw new Error('第 ' + expected.line + ' 行 Callout 层级/类型不匹配，已停止留白测量');
+    }
+    byId.set(expected.id, element); byElement.set(element, expected.id);
+  }
+  // Assign source identities only AFTER validating the full rendered tree.
+  for (const [id,element] of byId) element.setAttribute('data-mwb-source-id',id);
+  return plan.targets.map(target => {
+    const element = byId.get(target.id);
+    if (!element || element.getAttribute('data-callout')?.toLowerCase() !== target.type)
+      throw new Error('教师解答块标识不匹配：' + target.id);
+    return element;
+  });
+}
+
 // Explicit answer-slot tokenizer. Obsidian's ==highlight== is untouched.
 function mwbScanTypedLine(line,displayMath=false){
   const slots=[];let code=0,inlineMath=false;
@@ -125,20 +248,14 @@ function mwbScanTypedLine(line,displayMath=false){
   return {slots,displayMath};
 }
 function mwbTypedSlots(markdown){
-  const lines=String(markdown).replace(/\r\n?/g,'\n').split('\n'),slots=[];
-  let yaml=lines[0]?.replace(/^\uFEFF/,'').trim()==='---',fence=null,displayMath=false,pos=0,solution=false;
-  for(let n=0;n<lines.length;n++){
-    const line=lines[n];
-    if(yaml){if(n>0&&/^(?:---|\.\.\.)\s*$/.test(line))yaml=false;pos+=line.length+1;continue;}
-    const f=line.match(/^\s{0,3}(\x60{3,}|~{3,})/);
-    if(f){if(!fence)fence=f[1];else if(f[1][0]===fence[0]&&f[1].length>=fence.length)fence=null;pos+=line.length+1;continue;}
-    if(fence){pos+=line.length+1;continue;}
-    if(/^\s*>\s*\[!(?:answer|solution|success|info)\]/i.test(line))solution=true;
-    else if(!/^\s*>/.test(line))solution=false;
-    const scan=mwbScanTypedLine(line,displayMath);displayMath=scan.displayMath;
-    if(!solution&&!/^\s{4,}\S/.test(line))
-      for(const slot of scan.slots)if(!slot.invalid)slots.push({...slot,from:pos+slot.from,to:pos+slot.to,choice:slot.kind==='choice'});
-    pos+=line.length+1;
+  const slots=[];let displayMath=false;const active=[];
+  for(const row of mwbMarkdownLines(markdown)){
+    if(row.yaml||row.code)continue;
+    while(active.length&&(row.depth<active.at(-1).depth||(row.callout&&row.depth<=active.at(-1).depth)))active.pop();
+    if(row.callout)active.push({...row.callout,depth:row.depth});
+    const scan=mwbScanTypedLine(row.line,displayMath);displayMath=scan.displayMath;
+    if(!active.some(block=>/^(?:answer|solution|success|info)$/.test(block.type)))
+      for(const slot of scan.slots)if(!slot.invalid)slots.push({...slot,from:row.offset+slot.from,to:row.offset+slot.to,choice:slot.kind==='choice'});
   }
   return slots;
 }
@@ -157,11 +274,10 @@ function mwbTypedFormat(slot,mode){
     '<span class="mwb-teacher-fill-slot" aria-label="填空题参考答案">'+esc(answer)+'</span>';
 }
 function mwbRewriteTypedAnswers(source,mode){
-  const out=[];let fence=null,displayMath=false;
-  for(const line of String(source).split('\n')){
-    const f=line.match(/^\s{0,3}(\x60{3,}|~{3,})/);
-    if(f){if(!fence)fence=f[1];else if(f[1][0]===fence[0]&&f[1].length>=fence.length)fence=null;out.push(line);continue;}
-    if(fence){out.push(line);continue;}
+  const out=[];let displayMath=false;
+  for(const row of mwbMarkdownLines(source)){
+    const line=row.line;
+    if(row.yaml||row.code){out.push(line);continue;}
     const scan=mwbScanTypedLine(line,displayMath);displayMath=scan.displayMath;
     let output='',cursor=0;
     for(const slot of scan.slots){
@@ -176,16 +292,11 @@ function mwbValidateTypedAnswers(markdown){
   const source=String(markdown),issues=[];
   for(const c of new Set([...source.matchAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g)].map(m=>m[0])))
     issues.push('正文包含不可见控制字符 U+'+c.charCodeAt(0).toString(16).toUpperCase().padStart(4,'0'));
-  const lines=source.replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n').split('\n');
-  let yaml=lines[0]?.trim()==='---',fence=null,displayMath=false;
-  for(let n=0;n<lines.length;n++){
-    const line=lines[n];
-    if(yaml){if(n>0&&/^(?:---|\.\.\.)\s*$/.test(line))yaml=false;continue;}
-    const f=line.match(/^\s{0,3}(\x60{3,}|~{3,})/);
-    if(f){if(!fence)fence=f[1];else if(f[1][0]===fence[0]&&f[1].length>=fence.length)fence=null;continue;}
-    if(fence)continue;
-    const scan=mwbScanTypedLine(line,displayMath);displayMath=scan.displayMath;
-    for(const slot of scan.slots)if(slot.invalid)issues.push('第 '+(n+1)+' 行：'+slot.invalid);
+  let displayMath=false;
+  for(const row of mwbMarkdownLines(source)){
+    if(row.yaml||row.code)continue;
+    const scan=mwbScanTypedLine(row.line,displayMath);displayMath=scan.displayMath;
+    for(const slot of scan.slots)if(slot.invalid)issues.push('第 '+(row.index+1)+' 行：'+slot.invalid);
   }
   return [...new Set(issues)];
 }
@@ -232,7 +343,7 @@ function mwbDecorateReadingTypedSlots(element,source){
   return count;
 }
 
-const { DEFAULTS, transformQuestion, assertValidQuestionSource } = (() => { const module = {exports:{}};
+const { DEFAULTS, transformQuestion, assertValidQuestionSource, stripFrontmatter, normalizePrintBlanks } = (() => { const module = {exports:{}};
 'use strict';
 
 const DEFAULTS = Object.freeze({ stableMs: 650, timeoutMs: 15000 });
@@ -265,40 +376,7 @@ function pedagogicalCallout(line) {
 }
 
 function removeSolutionCallouts(source, mode, options = {}) {
-  const lines = source.split('\n');
-  const output = [];
-  let suppress = false;
-  let fence = null;
-  for (const line of lines) {
-    if (suppress && /^\s*>/.test(line)) {
-      const nextCallout = pedagogicalCallout(line);
-      if (!nextCallout) continue;
-      suppress = false;
-    } else if (suppress) {
-      suppress = false;
-    }
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line);
-      continue;
-    }
-    if (fence) { output.push(line); continue; }
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      suppress = (mode === 'student' && callout.teacherOnly) ||
-        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
-      if (!suppress) {
-        // Preview/PDF callouts are always expanded, without editing source.
-        output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
-      }
-      continue;
-    }
-    output.push(line);
-  }
-  return output.join('\n');
+  return mwbProjectCallouts(source, mode, options).markdown;
 }
 
 function escapeHtml(s) {
@@ -354,18 +432,11 @@ function assertValidQuestionSource(markdown) {
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
 function normalizePrintBlanks(source) {
-  const lines = source.split('\n');
-  let fence = null, displayMath = false, mathParen = false, mathBracket = false;
+  let displayMath = false, mathParen = false, mathBracket = false;
   const output = [];
-  for (const line of lines) {
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line); continue;
-    }
-    if (fence || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
+  for (const row of mwbMarkdownLines(source)) {
+    const line = row.line;
+    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
       output.push(line); continue;
     }
     let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
@@ -828,6 +899,34 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     }
   };
 
+  // Shared by first-step binding and subsequent Callout pagination. A colon
+  // introducing a list binds only its first item, never the entire list.
+  const calloutSteps = content => {
+    const blocks = Array.from(content.children), steps = [];
+    const listBlock = block => block?.matches?.('ol, ul') && !isOptionsBlock(block) && block.children.length;
+    const appendList = (list, leading = []) => {
+      let value = Number.parseInt(list.getAttribute('start') || '1',10) || 1;
+      for (const item of Array.from(list.children)) {
+        const explicit = Number.parseInt(item.getAttribute('value'),10);
+        if (Number.isFinite(explicit)) value = explicit;
+        steps.push({nodes:[item], list, start:value++, leading});
+        leading = [];
+      }
+    };
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      if (listBlock(block)) { appendList(block); continue; }
+      const nodes = [block];
+      if (/^H[1-6]$/.test(block.tagName || '') && blocks[i+1] && !listBlock(blocks[i+1])) nodes.push(blocks[++i]);
+      const lead = nodes.at(-1), next = blocks[i+1];
+      const introduction = /^H[1-6]$/.test(lead.tagName || '') || (lead.matches?.('p') && /[:：]\s*$/.test(lead.textContent || ''));
+      if (listBlock(next) && introduction) { appendList(next,nodes); i++; continue; }
+      if (next && (isDisplayNode(next) || introduction)) nodes.push(blocks[++i]);
+      steps.push({nodes,leading:[]});
+    }
+    return steps;
+  };
+
   // Callouts are atomic if short; only truly over-height callouts split into
   // per-paragraph blocks with a fresh "（续）" title after each page break.
   const placeCallout = (callout, q, continuation = false, initial = null) => {
@@ -838,27 +937,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     const title = callout.querySelector(':scope > .callout-title');
     const content = callout.querySelector(':scope > .callout-content');
     if (!content || !content.children.length) return overflowError(callout);
-    const blocks = [...content.children], steps = [];
-    // A list item is one complete solution step, not the entire <ol>.
-    // Preserve explicit numbering/value attributes when rebuilding each page.
-    for (let i = 0; i < blocks.length; i++) {
-      const block = blocks[i];
-      if (block.matches?.('ol, ul') && !isOptionsBlock(block) && block.children.length) {
-        let value = Number.parseInt(block.getAttribute('start') || '1', 10) || 1;
-        for (const item of Array.from(block.children)) {
-          const explicit = Number.parseInt(item.getAttribute('value'), 10);
-          if (Number.isFinite(explicit)) value = explicit;
-          steps.push({nodes:[item], list:block, start:value++});
-        }
-      } else {
-        const nodes = [block];
-        if (/^H[1-6]$/.test(block.tagName || '') && blocks[i+1]) nodes.push(blocks[++i]);
-        const lead = nodes[nodes.length-1];
-        if (blocks[i+1] && (isDisplayNode(blocks[i+1]) ||
-            (lead.matches?.('p') && /[:：]\s*$/.test(lead.textContent || '')))) nodes.push(blocks[++i]);
-        steps.push({nodes});
-      }
-    }
+    const steps = calloutSteps(content);
     const titleText = (title?.textContent?.trim() || '解答').replace(/（续）$/, '');
     let continued = continuation;
     const buildFragment = () => {
@@ -874,6 +953,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     let current = initial || buildFragment(), fragmentCount = 1;
     if (!initial) appendItem(current.fragment,q);
     const appendStep = step => {
+      for (const lead of step.leading) current.inner.appendChild(lead);
       let holder = current.inner;
       if (step.list) {
         if (!current.listPart || current.listPart.source !== step.list) {
@@ -890,6 +970,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       const holder=appendStep(step);
       if (overflowed(current.fragment)) {
         for (const node of step.nodes) holder.removeChild(node);
+        for (const lead of step.leading) lead.remove();
         if (step.list && !holder.children.length) { holder.remove(); current.listPart=null; }
         if (!current.inner.children.length) {
           current.fragment.remove();
@@ -903,7 +984,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
         appendStep(step);
         if (overflowed(current.fragment)) overflowError(step.nodes[0]);
       }
-      atomicCount+=step.nodes.length;
+      atomicCount+=step.nodes.length + step.leading.length;
     }
     if (fragmentCount > 1) splitCallouts++;
   };
@@ -1018,41 +1099,35 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   // with that equation. Existing MathJax/figure nodes are moved, not retyped.
   const takeAnswerStart = answer => {
     const inner = answer.querySelector(':scope > .callout-content');
-    const original = inner ? Array.from(inner.children) : [];
-    if (!original.length) return null;
-    const fragment = answer.cloneNode(false);
-    fragment.removeAttribute?.('id');
+    if (!inner?.children.length) return null;
+    const original = Array.from(inner.childNodes || inner.children);
+    const step = calloutSteps(inner)[0];
+    if (!step) return null;
+    const fragment = answer.cloneNode(false); fragment.removeAttribute?.('id');
     const title = answer.querySelector(':scope > .callout-title');
-    if (title) { const copy = title.cloneNode(true); copy.removeAttribute?.('id'); fragment.appendChild(copy); }
-    const piece = inner.cloneNode(false); piece.removeAttribute?.('id'); fragment.appendChild(piece);
-    const first = original[0];
-    let restore, listPart = null;
-    if (first.matches?.('ol, ul') && first.children.length > 1 && !isOptionsBlock(first)) {
-      const list = first.cloneNode(false); list.removeAttribute?.('id');
-      const item = first.children[0];
-      const startAttribute = first.getAttribute('start');
-      list.appendChild(item); piece.appendChild(list);
-      listPart = {source:first, element:list};
-      if (first.tagName === 'OL') {
-        const effective = Number.parseInt(item.getAttribute('value') || startAttribute || '1', 10);
-        first.setAttribute('start', String((Number.isFinite(effective) ? effective : 1) + 1));
+    if (title) { const copy=title.cloneNode(true);copy.removeAttribute?.('id');fragment.appendChild(copy); }
+    const piece=inner.cloneNode(false);piece.removeAttribute?.('id');fragment.appendChild(piece);
+    let listPart=null, listChildren=null, startAttribute=null;
+    for (const lead of step.leading) piece.appendChild(lead);
+    if (step.list) {
+      listChildren=Array.from(step.list.childNodes || step.list.children);
+      startAttribute=step.list.getAttribute('start');
+      const list=step.list.cloneNode(false);list.removeAttribute?.('id');
+      if (list.tagName==='OL') list.setAttribute('start',String(step.start));
+      for (const item of step.nodes) list.appendChild(item);
+      piece.appendChild(list);listPart={source:step.list,element:list};
+      if (step.list.children.length) {
+        if (step.list.tagName==='OL') step.list.setAttribute('start',String(step.start+step.nodes.length));
+      } else step.list.remove();
+    } else for (const node of step.nodes) piece.appendChild(node);
+    const restore = () => {
+      if (step.list) {
+        step.list.replaceChildren(...listChildren);
+        if (startAttribute===null) step.list.removeAttribute('start'); else step.list.setAttribute('start',startAttribute);
       }
-      restore = () => {
-        first.insertBefore(item, first.firstChild);
-        if (startAttribute === null) first.removeAttribute('start'); else first.setAttribute('start', startAttribute);
-      };
-    } else {
-      let take = 1;
-      // Keep subheadings with their first real step too.
-      if (isHeading(first) && original[1]) take++;
-      const lead = original[take - 1];
-      if (original[take] && (isDisplayNode(original[take]) ||
-          (lead.matches?.('p') && /[:：]\s*$/.test(lead.textContent || '')))) take++;
-      const moved = original.slice(0, take);
-      for (const node of moved) piece.appendChild(node);
-      restore = () => { for (const node of moved.slice().reverse()) inner.insertBefore(node, inner.firstChild); };
-    }
-    return {fragment, inner:piece, listPart, restore, hasRest: () => inner.children.length > 0};
+      inner.replaceChildren(...original);
+    };
+    return {fragment,inner:piece,listPart,restore,hasRest:()=>inner.children.length>0};
   };
 
   const tryPromptAnswer = (stem, answer, q, heading) => {
@@ -1587,40 +1662,7 @@ function pedagogicalCallout(line) {
 }
 
 function removeSolutionCallouts(source, mode, options = {}) {
-  const lines = source.split('\n');
-  const output = [];
-  let suppress = false;
-  let fence = null;
-  for (const line of lines) {
-    if (suppress && /^\s*>/.test(line)) {
-      const nextCallout = pedagogicalCallout(line);
-      if (!nextCallout) continue;
-      suppress = false;
-    } else if (suppress) {
-      suppress = false;
-    }
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line);
-      continue;
-    }
-    if (fence) { output.push(line); continue; }
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      suppress = (mode === 'student' && callout.teacherOnly) ||
-        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
-      if (!suppress) {
-        // Preview/PDF callouts are always expanded, without editing source.
-        output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
-      }
-      continue;
-    }
-    output.push(line);
-  }
-  return output.join('\n');
+  return mwbProjectCallouts(source, mode, options).markdown;
 }
 
 function escapeHtml(s) {
@@ -1676,18 +1718,11 @@ function assertValidQuestionSource(markdown) {
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
 function normalizePrintBlanks(source) {
-  const lines = source.split('\n');
-  let fence = null, displayMath = false, mathParen = false, mathBracket = false;
+  let displayMath = false, mathParen = false, mathBracket = false;
   const output = [];
-  for (const line of lines) {
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line); continue;
-    }
-    if (fence || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
+  for (const row of mwbMarkdownLines(source)) {
+    const line = row.line;
+    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
       output.push(line); continue;
     }
     let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
@@ -1802,40 +1837,7 @@ function pedagogicalCallout(line) {
 }
 
 function removeSolutionCallouts(source, mode, options = {}) {
-  const lines = source.split('\n');
-  const output = [];
-  let suppress = false;
-  let fence = null;
-  for (const line of lines) {
-    if (suppress && /^\s*>/.test(line)) {
-      const nextCallout = pedagogicalCallout(line);
-      if (!nextCallout) continue;
-      suppress = false;
-    } else if (suppress) {
-      suppress = false;
-    }
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line);
-      continue;
-    }
-    if (fence) { output.push(line); continue; }
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      suppress = (mode === 'student' && callout.teacherOnly) ||
-        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
-      if (!suppress) {
-        // Preview/PDF callouts are always expanded, without editing source.
-        output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
-      }
-      continue;
-    }
-    output.push(line);
-  }
-  return output.join('\n');
+  return mwbProjectCallouts(source, mode, options).markdown;
 }
 
 function escapeHtml(s) {
@@ -1891,18 +1893,11 @@ function assertValidQuestionSource(markdown) {
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
 function normalizePrintBlanks(source) {
-  const lines = source.split('\n');
-  let fence = null, displayMath = false, mathParen = false, mathBracket = false;
+  let displayMath = false, mathParen = false, mathBracket = false;
   const output = [];
-  for (const line of lines) {
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line); continue;
-    }
-    if (fence || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
+  for (const row of mwbMarkdownLines(source)) {
+    const line = row.line;
+    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
       output.push(line); continue;
     }
     let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
@@ -2006,70 +2001,15 @@ function studentSpacePlan(markdown, options = {}) {
 
 
 function stripSolutionsToMarkers(markdown, options = {}) {
-  const lines = stripFrontmatter(String(markdown)).replace(/\u00a0/g, ' ').split('\n');
-  const out = [];
-  let count = 0;
-  let skipping = false;
-  let fence = null;
-  for (const line of lines) {
-    if (skipping && /^\s*>/.test(line)) {
-      if (!pedagogicalCallout(line)) continue;
-      skipping = false;
-    } else if (skipping) {
-      skipping = false;
-    }
-    const found = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (found) {
-      const token = found[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      out.push(line);
-      continue;
-    }
-    if (fence) { out.push(line); continue; }
-    // Every +/- callout is teacher-only and gets one matching blank in the
-    // student edition. This takes precedence over the old space=none hint.
-    if (/^\s*<!--\s*mathsemble:space=none\s*-->\s*$/i.test(line)) continue;
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      skipping = callout.teacherOnly;
-      if (!skipping) {
-        // An unmarked callout is shared, even if its type is answer/scaffold.
-        out.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
-      } else {
-        if (out.length && out[out.length - 1] !== '') out.push('');
-        if (callout.type !== 'solution' || options.solutionSpaces === true)
-          out.push(`${SLOT_PREFIX}${count++}_END`, '');
-      }
-      continue;
-    }
-    out.push(line);
-  }
-  return { markdown: normalizePrintBlanks(rewriteClozes(out.join('\n'), 'student')), count, skipSpaces: [] };
+  return mwbStudentSpacePlan(markdown, options);
 }
 
 // Every Obsidian callout appears in the teacher DOM, while only +/- headers
 // create student spaces. Map by full callout ordinal, never by its type.
 function teacherOnlyCalloutIndices(markdown, options = {}) {
-  const lines = stripFrontmatter(String(markdown)).split('\n');
-  const indices = [];
-  let seen = 0, fence = null;
-  for (const line of lines) {
-    const found = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (found) {
-      const token = found[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      continue;
-    }
-    if (fence) continue;
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      if (callout.teacherOnly && (callout.type !== 'solution' || options.solutionSpaces === true)) indices.push(seen);
-      seen++;
-    }
-  }
-  return indices;
+  // Compatibility helper only. Production measurement uses verified source IDs.
+  const {blocks}=mwbCalloutDocument(markdown), targets=new Set(mwbSpaceTargets(blocks,options).map(b=>b.id));
+  return blocks.flatMap((block,index)=>targets.has(block.id)?[index]:[]);
 }
 
 function clampSettings({ ratio = 100, minimumCm = 2 } = {}) {
@@ -2114,7 +2054,8 @@ function outerHeightPx(element, getStyle = (el) => getComputedStyle(el)) {
 
 function teacherSolutionHeights(root, expectedCount, calloutIndices, getStyle) {
   const blocks = Array.from(root.querySelectorAll('.callout'));
-  const selected = calloutIndices == null ? blocks : calloutIndices.map(i => blocks[i]);
+  const selected = calloutIndices == null ? blocks : Array.isArray(calloutIndices)
+    ? calloutIndices.map(i => blocks[i]) : mwbResolveMeasuredCallouts(root, calloutIndices);
   if (selected.length !== expectedCount || selected.some(block => !block)) {
     throw new Error(`教师专用 Callout 匹配失败：应测量 ${expectedCount} 个，实际选中 ${selected.filter(Boolean).length} 个（教师版全部 ${blocks.length} 个）`);
   }
@@ -2128,7 +2069,7 @@ function teacherSolutionHeights(root, expectedCount, calloutIndices, getStyle) {
 
 // Replace only unambiguous marker paragraphs; reject content that unexpectedly
 // merged with another paragraph or contains HTML from unsafe input.
-function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = []) {
+function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = [], sourceTargets = []) {
   const matches = [];
   for (const p of root.querySelectorAll('p')) {
     const match = p.textContent.trim().match(/^MWB_SOLUTION_SPACE_ANCHOR_(\d+)_END$/);
@@ -2138,6 +2079,7 @@ function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = 
       matches.some(m => m.index >= heights.length || m.index < 0)) {
     throw new Error(`学生答题区域定位失败：预期 ${heights.length} 个，实际 ${matches.length} 个`);
   }
+  if (sourceTargets.length && sourceTargets.length !== heights.length) throw new Error('学生留白标识数量不匹配');
   const omitted = new Set(skipSpaces);
   if (omitted.size !== skipSpaces.length || [...omitted].some(x => !Number.isInteger(x) || x < 0 || x >= heights.length)) {
     throw new Error('无留白标记索引不合法');
@@ -2155,6 +2097,7 @@ function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = 
     space.className = 'mwb-answer-space';
     space.setAttribute('aria-label', `第 ${index + 1} 个教师专用块对应的等高留白`);
     space.setAttribute('data-mwb-space-index', String(index));
+    if (sourceTargets[index]) space.setAttribute('data-mwb-source-id', sourceTargets[index].id);
     space.setAttribute('data-mwb-space-px', height.toFixed(3));
     space.setAttribute('data-mwb-solution-px', heights[index].toFixed(3));
     space.setAttribute('data-mwb-space-ratio', String(clampSettings(settings).ratio));
@@ -2231,7 +2174,7 @@ function handoutPlan(markdown, mode = 'document', options = {}) {
   }
   if (mode === 'student') {
     const plan = stripSolutionsToMarkers(markdown, options);
-    return { markdown: projectHandoutHeading(plan.markdown, mode), solutionCount: plan.count, skipSpaces: plan.skipSpaces, mode };
+    return { markdown: projectHandoutHeading(plan.markdown, mode), solutionCount: plan.count, targets: plan.targets, skipSpaces: plan.skipSpaces, mode };
   }
   const body = stripFrontmatter(markdown).replace(/\u00a0/g, ' ');
   if (mode === 'document') return {markdown: body, solutionCount:0, mode};
@@ -2466,40 +2409,7 @@ function pedagogicalCallout(line) {
 }
 
 function removeSolutionCallouts(source, mode, options = {}) {
-  const lines = source.split('\n');
-  const output = [];
-  let suppress = false;
-  let fence = null;
-  for (const line of lines) {
-    if (suppress && /^\s*>/.test(line)) {
-      const nextCallout = pedagogicalCallout(line);
-      if (!nextCallout) continue;
-      suppress = false;
-    } else if (suppress) {
-      suppress = false;
-    }
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line);
-      continue;
-    }
-    if (fence) { output.push(line); continue; }
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      suppress = (mode === 'student' && callout.teacherOnly) ||
-        (mode === 'teacher' && options.showSolution === false && callout.type === 'solution');
-      if (!suppress) {
-        // Preview/PDF callouts are always expanded, without editing source.
-        output.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
-      }
-      continue;
-    }
-    output.push(line);
-  }
-  return output.join('\n');
+  return mwbProjectCallouts(source, mode, options).markdown;
 }
 
 function escapeHtml(s) {
@@ -2555,18 +2465,11 @@ function assertValidQuestionSource(markdown) {
 // all conversions. Conservative lexer: never replace underscores in code,
 // math delimiters, HTML, escaped text, or nonblank identifier tokens.
 function normalizePrintBlanks(source) {
-  const lines = source.split('\n');
-  let fence = null, displayMath = false, mathParen = false, mathBracket = false;
+  let displayMath = false, mathParen = false, mathBracket = false;
   const output = [];
-  for (const line of lines) {
-    const fenced = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (fenced) {
-      const token = fenced[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      output.push(line); continue;
-    }
-    if (fence || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
+  for (const row of mwbMarkdownLines(source)) {
+    const line = row.line;
+    if (row.yaml || row.code || /^\s*_{3,}\s*$/.test(line) || /<!--|https?:\/\/|\]\(/.test(line)) {
       output.push(line); continue;
     }
     let codeTicks = 0, inlineMath = false, inHtml = false, result = '';
@@ -2670,70 +2573,15 @@ function studentSpacePlan(markdown, options = {}) {
 
 
 function stripSolutionsToMarkers(markdown, options = {}) {
-  const lines = stripFrontmatter(String(markdown)).replace(/\u00a0/g, ' ').split('\n');
-  const out = [];
-  let count = 0;
-  let skipping = false;
-  let fence = null;
-  for (const line of lines) {
-    if (skipping && /^\s*>/.test(line)) {
-      if (!pedagogicalCallout(line)) continue;
-      skipping = false;
-    } else if (skipping) {
-      skipping = false;
-    }
-    const found = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (found) {
-      const token = found[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      out.push(line);
-      continue;
-    }
-    if (fence) { out.push(line); continue; }
-    // Every +/- callout is teacher-only and gets one matching blank in the
-    // student edition. This takes precedence over the old space=none hint.
-    if (/^\s*<!--\s*mathsemble:space=none\s*-->\s*$/i.test(line)) continue;
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      skipping = callout.teacherOnly;
-      if (!skipping) {
-        // An unmarked callout is shared, even if its type is answer/scaffold.
-        out.push(line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
-      } else {
-        if (out.length && out[out.length - 1] !== '') out.push('');
-        if (callout.type !== 'solution' || options.solutionSpaces === true)
-          out.push(`${SLOT_PREFIX}${count++}_END`, '');
-      }
-      continue;
-    }
-    out.push(line);
-  }
-  return { markdown: normalizePrintBlanks(rewriteClozes(out.join('\n'), 'student')), count, skipSpaces: [] };
+  return mwbStudentSpacePlan(markdown, options);
 }
 
 // Every Obsidian callout appears in the teacher DOM, while only +/- headers
 // create student spaces. Map by full callout ordinal, never by its type.
 function teacherOnlyCalloutIndices(markdown, options = {}) {
-  const lines = stripFrontmatter(String(markdown)).split('\n');
-  const indices = [];
-  let seen = 0, fence = null;
-  for (const line of lines) {
-    const found = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-    if (found) {
-      const token = found[1];
-      if (!fence) fence = token;
-      else if (token[0] === fence[0] && token.length >= fence.length) fence = null;
-      continue;
-    }
-    if (fence) continue;
-    const callout = pedagogicalCallout(line);
-    if (callout) {
-      if (callout.teacherOnly && (callout.type !== 'solution' || options.solutionSpaces === true)) indices.push(seen);
-      seen++;
-    }
-  }
-  return indices;
+  // Compatibility helper only. Production measurement uses verified source IDs.
+  const {blocks}=mwbCalloutDocument(markdown), targets=new Set(mwbSpaceTargets(blocks,options).map(b=>b.id));
+  return blocks.flatMap((block,index)=>targets.has(block.id)?[index]:[]);
 }
 
 function clampSettings({ ratio = 100, minimumCm = 2 } = {}) {
@@ -2778,7 +2626,8 @@ function outerHeightPx(element, getStyle = (el) => getComputedStyle(el)) {
 
 function teacherSolutionHeights(root, expectedCount, calloutIndices, getStyle) {
   const blocks = Array.from(root.querySelectorAll('.callout'));
-  const selected = calloutIndices == null ? blocks : calloutIndices.map(i => blocks[i]);
+  const selected = calloutIndices == null ? blocks : Array.isArray(calloutIndices)
+    ? calloutIndices.map(i => blocks[i]) : mwbResolveMeasuredCallouts(root, calloutIndices);
   if (selected.length !== expectedCount || selected.some(block => !block)) {
     throw new Error(`教师专用 Callout 匹配失败：应测量 ${expectedCount} 个，实际选中 ${selected.filter(Boolean).length} 个（教师版全部 ${blocks.length} 个）`);
   }
@@ -2792,7 +2641,7 @@ function teacherSolutionHeights(root, expectedCount, calloutIndices, getStyle) {
 
 // Replace only unambiguous marker paragraphs; reject content that unexpectedly
 // merged with another paragraph or contains HTML from unsafe input.
-function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = []) {
+function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = [], sourceTargets = []) {
   const matches = [];
   for (const p of root.querySelectorAll('p')) {
     const match = p.textContent.trim().match(/^MWB_SOLUTION_SPACE_ANCHOR_(\d+)_END$/);
@@ -2802,6 +2651,7 @@ function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = 
       matches.some(m => m.index >= heights.length || m.index < 0)) {
     throw new Error(`学生答题区域定位失败：预期 ${heights.length} 个，实际 ${matches.length} 个`);
   }
+  if (sourceTargets.length && sourceTargets.length !== heights.length) throw new Error('学生留白标识数量不匹配');
   const omitted = new Set(skipSpaces);
   if (omitted.size !== skipSpaces.length || [...omitted].some(x => !Number.isInteger(x) || x < 0 || x >= heights.length)) {
     throw new Error('无留白标记索引不合法');
@@ -2819,6 +2669,7 @@ function injectSpaceNodes(root, heights, settings, doc = document, skipSpaces = 
     space.className = 'mwb-answer-space';
     space.setAttribute('aria-label', `第 ${index + 1} 个教师专用块对应的等高留白`);
     space.setAttribute('data-mwb-space-index', String(index));
+    if (sourceTargets[index]) space.setAttribute('data-mwb-source-id', sourceTargets[index].id);
     space.setAttribute('data-mwb-space-px', height.toFixed(3));
     space.setAttribute('data-mwb-solution-px', heights[index].toFixed(3));
     space.setAttribute('data-mwb-space-ratio', String(clampSettings(settings).ratio));
@@ -3278,6 +3129,9 @@ function mwbMapUnchangedAnswerSlots(slots, update) {
     if (structural.test(removed + added)) { reusable = false; return; }
     const oldLine = update.startState.doc.lineAt(fromA);
     const newLine = update.state.doc.lineAt(fromB);
+    // Ordinary deletion can join '?' and '{' (or a fence/quote delimiter).
+    // Such a line must be rescanned even though the removed text was plain.
+    if (structural.test(oldLine.text + newLine.text)) { reusable = false; return; }
     if (specialLine.test(oldLine.text) || specialLine.test(newLine.text) ||
         (/\s/.test(removed + added) &&
           (fromA - oldLine.from < 4 || fromB - newLine.from < 4))) {
@@ -3776,7 +3630,7 @@ class PreviewModal extends Modal {
       titleInput.value = this.examTitle;
       titleInput.addEventListener('change', () => {
         this.examTitle = titleInput.value.trim().slice(0, 100) || '数学试卷';
-        if (this.titleElement) this.titleElement.setText(this.examTitle);
+        void this.renderMode(this.mode);
       });
     }
     if (!this.documentMode) {
@@ -3912,7 +3766,7 @@ class PreviewModal extends Modal {
           await this.renderDocumentSource(plan.markdown, this.rendered, generation);
           if (generation !== this.generation) return;
           if (mode === 'student' && plan.solutionCount) {
-            injectSpaceNodes(this.rendered, heights, this.spaceSettings, this.rendered.ownerDocument, plan.skipSpaces);
+            injectSpaceNodes(this.rendered, heights, this.spaceSettings, this.rendered.ownerDocument, plan.skipSpaces, plan.targets);
           }
           this.solutionHeights = heights.filter((_, index) => !plan.skipSpaces?.includes(index));
           this.addRenderWarnings('讲义预览', await waitForStableRender(this.rendered, plan.markdown));
@@ -3934,7 +3788,7 @@ class PreviewModal extends Modal {
           }
           await MarkdownRenderer.render(this.app, plan.markdown, this.rendered, this.file.path, this.plugin);
           if (generation !== this.generation) return;
-          injectSpaceNodes(this.rendered, heights, this.spaceSettings, this.rendered.ownerDocument, plan.skipSpaces);
+          injectSpaceNodes(this.rendered, heights, this.spaceSettings, this.rendered.ownerDocument, plan.skipSpaces, plan.targets);
           this.solutionHeights = heights.filter((_, index) => !plan.skipSpaces?.includes(index));
           this.addRenderWarnings('学生版预览', await waitForStableRender(this.rendered, plan.markdown));
           layoutOptionGrids(this.rendered);
@@ -4063,7 +3917,8 @@ class PreviewModal extends Modal {
     const measure = this.page.createDiv({cls:'mwb-measure-layer mwb-typography mwb-print-document'});
     this.measurePage = measure;
     try {
-      const source = handoutPlan(this.markdown, 'teacher').markdown;
+      const measurement = mwbTeacherMeasurementPlan(this.markdown, this.solutionOptions);
+      const source = measurement.markdown;
       await this.renderDocumentSource(source, measure, generation);
       if (generation !== this.generation) return [];
       try {
@@ -4074,7 +3929,7 @@ class PreviewModal extends Modal {
       if (generation !== this.generation) return [];
       assertMeasurementWidth(this.rendered, measure);
       layoutOptionGrids(measure);
-      return teacherSolutionHeights(measure, expectedCount, teacherOnlyCalloutIndices(this.markdown, this.solutionOptions));
+      return teacherSolutionHeights(measure, expectedCount, measurement);
     } finally {
       this.removeMeasurement();
     }
@@ -4118,7 +3973,7 @@ class PreviewModal extends Modal {
         if (plan.count > 0) {
           const heights = teacherHeightMap.get(item.file.path);
           if (!heights || heights.length !== plan.count) throw new Error('教师专用块高度数量与题卡不匹配：' + item.file.path);
-          injectSpaceNodes(content, heights, this.spaceSettings, content.ownerDocument, plan.skipSpaces);
+          injectSpaceNodes(content, heights, this.spaceSettings, content.ownerDocument, plan.skipSpaces, plan.targets);
           spaces += heights.length - (plan.skipSpaces?.length || 0);
         }
       } else {
@@ -4156,17 +4011,18 @@ class PreviewModal extends Modal {
     try {
       for (const {item,plan} of plans) {
         const holder = page.createDiv({cls:'mwb-exam-question-content'});
-        const source = transformQuestion(item.markdown, 'teacher');
+        const measurement = mwbTeacherMeasurementPlan(item.markdown, this.solutionOptions);
+        const source = measurement.markdown;
         await MarkdownRenderer.render(this.app, source, holder, item.file.path, this.plugin);
-        contexts.push({item,plan,content:holder,source,path:item.file.path});
+        contexts.push({item,plan,measurement,content:holder,source,path:item.file.path});
       }
       this.addRenderWarnings('整卷教师高度测量', await waitForStableRender(page, contexts.map(x=>x.source).join('\n\n')));
       assertMeasurementWidth(this.rendered, page);
       this.validateExamContexts(contexts, '教师高度测量');
       layoutOptionGrids(page);
       const map = new Map();
-      for (const {item,plan,content} of contexts) {
-        map.set(item.file.path, teacherSolutionHeights(content,plan.count,teacherOnlyCalloutIndices(item.markdown, this.solutionOptions)));
+      for (const {item,plan,measurement,content} of contexts) {
+        map.set(item.file.path, teacherSolutionHeights(content,plan.count,measurement));
       }
       return map;
     } finally {
@@ -4179,12 +4035,13 @@ class PreviewModal extends Modal {
     this.measurePage = this.page.createDiv({ cls: 'mwb-measure-layer mwb-typography mwb-print-document' });
     const teacher = this.measurePage;
     try {
-      const source = transformQuestion(this.markdown, 'teacher');
+      const measurement = mwbTeacherMeasurementPlan(this.markdown, this.solutionOptions);
+      const source = measurement.markdown;
       await MarkdownRenderer.render(this.app, source, teacher, this.file.path, this.plugin);
       this.addRenderWarnings('教师专用块高度测量', await waitForStableRender(teacher, source));
       assertMeasurementWidth(this.rendered, teacher);
       layoutOptionGrids(teacher);
-      return teacherSolutionHeights(teacher, count, teacherOnlyCalloutIndices(this.markdown, this.solutionOptions));
+      return teacherSolutionHeights(teacher, count, measurement);
     } finally {
       this.removeMeasurement();
     }

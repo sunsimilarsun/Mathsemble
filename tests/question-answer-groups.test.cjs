@@ -46,48 +46,7 @@ test('real Chromium: question-answer grouping, long steps and unchanged writing 
 
 // Chrome DevTools over anonymous pipes: no downloaded browser driver,
 // no network service, no new plugin dependency. Also works in sandboxed CI.
-async function runChromeDocument(executable, input, profile){
- const proc=spawn(executable,['--headless','--no-sandbox','--disable-dev-shm-usage',
-  '--disable-background-networking','--disable-extensions','--disable-component-update',
-  '--disable-features=Translate,MediaRouter,OptimizationHints','--no-first-run','--no-default-browser-check',
-  '--remote-debugging-pipe','--no-startup-window','--user-data-dir='+profile],
-  {stdio:['ignore','ignore','pipe','pipe','pipe']});
- let stderr='',received='';const pending=new Map();let id=0;
- proc.stderr.on('data',chunk=>{stderr=(stderr+chunk).slice(-4000);});
- proc.stdio[4].on('data',chunk=>{
-  received+=chunk.toString();let end;
-  while((end=received.indexOf('\0'))>=0){
-   const packet=received.slice(0,end);received=received.slice(end+1);if(!packet)continue;
-   const msg=JSON.parse(packet),entry=pending.get(msg.id);if(!entry)continue;
-   pending.delete(msg.id);clearTimeout(entry.timer);
-   if(msg.error)entry.reject(Error(msg.error.message));else entry.resolve(msg.result);
-  }
- });
- const send=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
-  const key=++id,timer=setTimeout(()=>{pending.delete(key);reject(Error('Chrome timeout: '+method+' '+stderr));},20000);
-  pending.set(key,{resolve,reject,timer});proc.stdio[3].write(JSON.stringify({id:key,method,params,sessionId})+'\0');
- });
- const rejectAll=error=>{for(const entry of pending.values()){clearTimeout(entry.timer);entry.reject(error);}pending.clear();};
- proc.on('error',rejectAll);
- proc.stdio[3].on('error',rejectAll);
- try{
-  const {targetId}=await send('Target.createTarget',{url:'about:blank'});
-  const {sessionId}=await send('Target.attachToTarget',{targetId,flatten:true});
-  const {frameTree}=await send('Page.getFrameTree',{},sessionId);
-  await send('Page.setDocumentContent',{frameId:frameTree.frame.id,html:fs.readFileSync(input,'utf8')},sessionId);
-  const deadline=Date.now()+25000;
-  while(Date.now()<deadline){
-   const response=await send('Runtime.evaluate',{expression:"document.getElementById('mwb-test-results')?.textContent",returnByValue:true},sessionId);
-   if(response.result?.value)return JSON.parse(response.result.value);
-   await new Promise(r=>setTimeout(r,50));
-  }
-  throw Error('Browser layout tests did not finish: '+stderr);
- }finally{
-  for(const entry of pending.values())clearTimeout(entry.timer);
-  proc.kill('SIGKILL');
-  await new Promise(resolve=>{if(proc.exitCode!==null)resolve();else proc.once('exit',resolve);});
- }
-}
+const {runChromeDocument}=require('./helpers/run-chromium.cjs');
 
 async function runCases(math,cssAll){
  const results=[];
@@ -192,6 +151,34 @@ async function runCases(math,cssAll){
  await check('unsafe over-height first step reports an error rather than hiding/cropping content',()=>{
   let failure;try{layout(heading()+p('s',20)+answer(['<figure data-key="giant" style="height:400mm">unsplittable illustration</figure>']));}catch(e){failure=e.message;}
   assert(failure&&/超过 A4|不可拆分|溢出/.test(failure),'oversized first step silently cropped');
+ });
+ for (const tag of ['ol','ul']) for (const intro of ['按如下步骤解答：','Proceed as follows:','小节标题']) {
+  await check('audit F03: '+tag+' with '+intro+' binds only first list item',()=>{
+   const lead=intro==='小节标题'?'<h4 data-key="intro">'+intro+'</h4>':p('intro',5,intro);
+   const list='<'+tag+(tag==='ol'?' start="3"':'')+'>'+Array.from({length:8},(_,i)=>`<li data-key="step${i}" ${tag==='ol'&&i===3?'value="11"':''} style="min-height:40mm">第 ${i+1} 步</li>`).join('')+'</'+tag+'>';
+   const r=layout(filler+heading()+p('s',25)+answer([lead,list]));
+   assert(r.pageOf('s')===r.pageOf('intro')&&r.pageOf('intro')===r.pageOf('step0'),'intro/first step separated');
+   assert(r.pageOf('step7')>r.pageOf('step0'),'long list not continued');
+   if(tag==='ol'){
+    const values=[];
+    for(const ol of r.root.querySelectorAll('.callout-content > ol')){
+     let value=Number(ol.getAttribute('start')||1);
+     for(const li of ol.children){if(li.hasAttribute('value'))value=Number(li.getAttribute('value'));values.push(value++);}
+    }
+    assert(JSON.stringify(values)==='[3,4,5,11,12,13,14,15]','explicit list numbering changed: '+JSON.stringify(values));
+   }
+  });
+ }
+ await check('audit F03: failed prefix binding restores intro and list before relaxed placement',()=>{
+  const list='<ol start="4">'+Array.from({length:8},(_,i)=>`<li data-key="li${i}" style="height:40mm">item${i}</li>`).join('')+'</ol>';
+  const r=layout(heading()+p('s1',140)+p('s2',110)+answer([p('intro',5,'先计算：'),list]));
+  assert(r.report.relaxedGroupBindings.length===1,'expected relaxed binding');
+  assert(r.pageOf('s2')===r.pageOf('intro')&&r.pageOf('intro')===r.pageOf('li0'),'last stem/first step lost binding');
+ });
+ await check('audit F03: natural long list with colon no longer fails',()=>{
+  const list='<ol>'+Array.from({length:8},(_,i)=>`<li data-key="n${i}">${'利用条件逐步计算并整理代数表达式。'.repeat(20)}</li>`).join('')+'</ol>';
+  const r=layout(heading()+p('s',10)+answer([p('intro',5,'按如下步骤解答：'),list]));
+  assert(r.report.pages>=2&&r.pageOf('n7')>r.pageOf('n0'),'natural long list should continue');
  });
  if(host)host.remove();
  const result=document.createElement('pre');result.id='mwb-test-results';result.textContent=JSON.stringify(results);document.body.appendChild(result);

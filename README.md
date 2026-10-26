@@ -2,7 +2,7 @@
 
 Mathsemble is a **desktop-only Obsidian plugin** for creating mathematics handouts, question cards, and A4 student/teacher PDF exports from Markdown notes. It works locally with your Obsidian vault and MathJax.
 
-**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). **Source version:** `0.1.12` (development only; not a GitHub Release). The release retains `(==B==)` / `==42==` answers; development source uses `!{B}` / `?{42}`. Do not combine the two installations or treat a development manifest as a published release. The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
+**Current release:** [Mathsemble 0.1.10 on GitHub](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10). **Source version:** `0.1.13` (development only; not a GitHub Release). The release retains `(==B==)` / `==42==` answers; development source uses `!{B}` / `?{42}`. Do not combine the two installations or treat a development manifest as a published release. The plugin has not yet been confirmed as approved for the Obsidian Community directory. Visual results should be checked before printing mathematics materials.
 
 ## Installation
 
@@ -203,3 +203,7 @@ The plugin may read explicitly referenced `file://` image and font resources **o
 ## 2026-10-26 · 0.1.12 开发候选：题干与答案成组分页
 
 短题（含 answer）优先整组同页；长答案绑定题干与首个完整步骤后按段落或列表项续页；学生版绑定首段真实留白且不减少总高度。单文件讲义识别明确题标与相邻答案，文件夹组卷沿用既有题目容器。预览与 PDF 共用规则。详见 [分组规则、边界及验证](docs/GROUP_PAGINATION.md)。0.1.12 尚未发布正式 Release；公开 0.1.10 安装包不变。
+
+## 2026-10-26 · 0.1.13 开发候选：审核缺陷修复
+
+按显式引用层级投影嵌套 Callout；学生版移除教师子树且避免重复留白。留白测量校验完整 Callout 树的数量、类型与父子关系，建立稳定源码标识；默认不为 solution 留白时，从测量投影排除相应教师专用 solution。修复冒号引导长列表、增量编辑形成新答案槽、缩进／引用代码保护及标题变更后分页预览刷新。详见 [七项审核修复与验证边界](docs/AUDIT_FIX_0.1.13.md)。开发安装包不等同正式 Release；公开 0.1.10 Release 不变。
