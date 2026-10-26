@@ -501,6 +501,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   const pages = [];
   let page, body;
   let atomicCount = 0, spaceChunks = 0, splitCallouts = 0;
+  let intactQuestions = 0, splitQuestions = 0, keptPromptOptions = 0, keptPromptSpace = 0;
   let lastRejectedHeight = 0;
   let lastSectionName = '';
   let questionPart = null;
@@ -655,6 +656,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
     }
     placeUnit(unit, question, heading);
     spaceChunks++;
+    keptPromptSpace++;
     return true;
   };
 
@@ -670,6 +672,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
       }
       if (heading) { active().meaningful++; atomicCount++; }
       spaceChunks += question.querySelectorAll('.mwb-answer-space-chunk').length;
+      intactQuestions++;
       questionPart = null;
       return true;
     };
@@ -805,6 +808,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
           }
           if (isOptionsBlock(next) && fitsOnFreshPage([...lead, next])) {
             placeUnit([...lead, next]);
+            keptPromptOptions++;
             consumed.add(next);
             continue;
           }
@@ -822,7 +826,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
       } else if (node.matches?.('p, blockquote') && isSpaceBlock(next) && placeWithFirstSpace([node],next)) {
         continue;
       } else if (node.matches?.('p, blockquote') && isOptionsBlock(next) && fitsOnFreshPage([node,next])) {
-        placeUnit([node,next]); consumed.add(next);
+        placeUnit([node,next]); keptPromptOptions++; consumed.add(next);
       } else if (node.classList?.contains('callout')) placeCallout(node,null);
       else if (isSpaceBlock(node)) {
         if (node.querySelector(':scope > .mwb-answer-space-chunk')) placeSpace(node,null);
@@ -842,6 +846,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
       pendingHeading = null;
       continue;
     }
+    splitQuestions++;
     // Keep the prompt with its first display formula and choice grid when
     // that unit fits on a fresh sheet. Otherwise allow a natural split.
     const first = [blocks.shift()];
@@ -850,6 +855,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
     }
     if (isOptionsBlock(blocks[0]) && fitsOnFreshPage([...first, blocks[0]], node, pendingHeading)) {
       first.push(blocks.shift());
+      keptPromptOptions++;
     }
     if (!(isSpaceBlock(blocks[0]) && placeWithFirstSpace(first, blocks[0], node, pendingHeading))) {
       placeUnit(first,node,pendingHeading);
@@ -917,6 +923,7 @@ function paginatePrintDocument(root, allowPartialMath = false) {
   }
   return {
     pages: pages.length, blocks: atomicCount, answerSpaceChunks: spaceChunks, splitCallouts,
+    intactQuestions, splitQuestions, keptPromptOptions, keptPromptSpace,
     answerSpaceExpectedPx: Number(expectedSpacePx.toFixed(2)),
     answerSpacePlacedPx: Number(placedSpacePx.toFixed(2)),
     answerSpaceDeltaPx: Number(spaceDeltaPx.toFixed(2)),
