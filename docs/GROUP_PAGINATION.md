@@ -32,3 +32,10 @@
 `tests/question-answer-groups.test.cjs` 使用真实 Chrome/Chromium 与实际打印 CSS，覆盖短题整组、长答案、长 solution、学生留白、多题边界、列表续号、MathJax SVG、预览/打印分配一致性与不可拆分对象错误。通过 `CHROME_PATH` 可以指定浏览器；CI 不允许无浏览器而静默跳过。
 
 自动回归和独立 Chromium PDF 验证不等于真实 Obsidian 跨主题、跨系统验收。0.1.12 仍为开发候选，不创建正式 Release。
+
+### 2026-10-26 验证记录
+
+- GitHub Actions `40297883224` 对实际应用后的源码执行 `npm run prepublish-check`：79 项通过、0 失败、0 跳过，包含 14 个真实 Chromium 布局子场景。
+- 从该工作流下载完整源码归档后，本地再次执行全量检查，结果相同。源码与生成的 `main.js` SHA-256 均为 `33ce997f7546091809fd3452f9d78e217614a4d8961963210bd8da7e06b4fad5`。
+- 独立 Chromium 生成 10 组分页样例 PDF，检查实际页数与分页报告一致；对长解答续页渲染图进行视觉检查。这些是测试样例，不是用户实际 Obsidian 文档的宿主验收。
+- 安装产物 `12638623450` 仅含 `main.js`、`styles.css`、`manifest.json`；ZIP 完整性通过，三文件与经过回归的源码归档逐字节一致。该归档为 0.1.12 开发候选，不是正式 Release。
