@@ -11,6 +11,9 @@ for (const name of required) if (!existsSync(resolve(root,name))) throw new Erro
 if (manifest.id !== 'math-teaching-workbench') throw new Error('Plugin ID mismatch');
 if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) throw new Error('Non-semver manifest version');
 if (pkg.version !== manifest.version) throw new Error('Package/manifest versions differ');
+const lock = JSON.parse(read('package-lock.json').toString('utf8'));
+if (lock.version !== pkg.version || lock.packages?.['']?.version !== pkg.version)
+  throw new Error('Package-lock/package versions differ');
 if (manifest.isDesktopOnly !== true) throw new Error('Node/Electron requires desktopOnly=true');
 if (!manifest.description.endsWith('.') || manifest.description.length>250) throw new Error('Invalid manifest description');
 if (!read('main.js').equals(read('src/plugin.js'))) throw new Error('Build differs from source');
