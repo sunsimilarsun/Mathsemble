@@ -413,7 +413,7 @@ test('preview UI passes solution preferences to student and teacher rendering an
   assert.match(js,/handoutPlan\(this\.markdown, mode, this\.solutionOptions\)/);
   assert.match(js,/studentSpacePlan\(item\.markdown, this\.solutionOptions\)/);
   assert.match(js,/transformQuestion\(item\.markdown, 'teacher', this\.solutionOptions\)/);
-  assert.match(js,/teacherOnlyCalloutIndices\(this\.markdown, this\.solutionOptions\)/);
+  assert.match(js,/mwbTeacherMeasurementPlan\(this\.markdown, this\.solutionOptions\)/);
   assert.match(js,/this\.solutionModeLabels\.student\.style\.display = mode === 'student'/);
   assert.match(js,/this\.solutionModeLabels\.teacher\.style\.display = mode === 'teacher'/);
 });
