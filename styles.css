@@ -111,7 +111,7 @@
   print-color-adjust: exact;
   -webkit-print-color-adjust: exact;
 }
-/* Print-oriented teacher solutions: no gray fills; identical in preview/PDF. */
+/* White print background; unthemed callouts retain a gray fallback border. */
 .mwb-typography.mwb-print-document .callout { background: #fff; border-color: #c4c4c4; border-left: 2px solid #999; }
 /* Teacher solutions must occupy the same geometry in preview and isolated PDF. */
 .mwb-print-document .callout-title { display: block; font-weight: 600; line-height: 1.5; padding: 0; margin: 0 0 0.35em; }
@@ -232,7 +232,8 @@
   [data-callout="solution"]
 ) {
   background-color: transparent;
-  border-left-color: var(--mwb-callout-accent, #999);
+  /* Match all four edge colors without changing the existing border widths. */
+  border-color: var(--mwb-callout-accent, #999);
 }
 /* A visual accent that does not add border width or change printed heights.
  * The paper layout retains its existing 2px physical left border. */
@@ -312,10 +313,10 @@
   --mwb-callout-title-ink: #684b91;
 }
 :is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout="solution"] {
-  --callout-color: 230, 126, 34;
+  --callout-color: 135, 148, 173;
   --callout-icon: list-ordered;
-  --mwb-callout-accent: #e67e22;
-  --mwb-callout-title-ink: #a44f06;
+  --mwb-callout-accent: #8794ad;
+  --mwb-callout-title-ink: #53637e;
 }
 
 /* v0.2.1: optional metadata is always separate from math/answer DOM. */
