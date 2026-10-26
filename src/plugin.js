@@ -730,6 +730,89 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     return false;
   };
 
+  // A single long Markdown paragraph can exceed one entire sheet.
+  // Split after rendering, preserving text verbatim and treating MathJax,
+  // images and other inline elements as indivisible DOM units. Never clip it.
+  // Text is divided at a measured Unicode code-point boundary only when a
+  // whole inline text node cannot fit; no source Markdown is rewritten.
+  const placeParagraph = (paragraph, q = null, heading = null) => {
+    if (!heading && commit(paragraph, q)) return;
+    if (fitsOnFreshPage([paragraph], q, heading)) {
+      if (heading) placeUnit([paragraph], q, heading);
+      else appendItem(paragraph, q);
+      return;
+    }
+    const items = [...(paragraph.childNodes || [])];
+    if (paragraph.tagName !== 'P' || !items.length) return overflowError(paragraph);
+    let firstHeading = heading;
+    let part = null;
+    const openPart = () => {
+      part = paragraph.cloneNode(false);
+      // Continued fragments must not duplicate explicit author HTML ids.
+      part.removeAttribute?.('id');
+      if (firstHeading) placeUnit([part], q, firstHeading);
+      else appendItem(part, q);
+    };
+    const discardEmptyPart = () => {
+      part.remove();
+      active().meaningful = Math.max(0, active().meaningful - 1);
+      atomicCount = Math.max(0, atomicCount - 1);
+      if (firstHeading?.parentElement) {
+        firstHeading.remove();
+        active().meaningful = Math.max(0, active().meaningful - 1);
+      }
+      removeEmptyPart();
+    };
+    openPart();
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      part.appendChild(item);
+      if (!overflowed(part)) {
+        firstHeading = null;
+        continue;
+      }
+      part.removeChild(item);
+      if (item.nodeType === 3 && item.nodeValue) {
+        const characters = Array.from(item.nodeValue);
+        if (characters.length > 1) {
+          let low = 0, high = characters.length;
+          // At most log2(N) layout probes per fragment. A later fragment
+          // carries precisely the remaining text, without truncation.
+          while (low < high) {
+            const mid = Math.ceil((low + high) / 2);
+            item.nodeValue = characters.slice(0, mid).join('');
+            part.appendChild(item);
+            const fits = !overflowed(part);
+            part.removeChild(item);
+            if (fits) low = mid; else high = mid - 1;
+          }
+          if (low > 0) {
+            const remaining = characters.slice(low).join('');
+            item.nodeValue = characters.slice(0, low).join('');
+            part.appendChild(item);
+            if (remaining) items.splice(i + 1, 0, doc.createTextNode(remaining));
+            firstHeading = null;
+            continue;
+          }
+          item.nodeValue = characters.join('');
+        }
+      }
+      if (part.childNodes.length > 0) {
+        nextPage();
+        openPart();
+        i--;
+      } else {
+        // A title-only page or an empty <p> is not meaningful content.
+        discardEmptyPart();
+        if (active().meaningful > 0) {
+          nextPage();
+          openPart();
+          i--;
+        } else overflowError(item);
+      }
+    }
+  };
+
   // Callouts are atomic if short; only truly over-height callouts split into
   // per-paragraph blocks with a fresh "（续）" title after each page break.
   const placeCallout = (callout, q) => {
@@ -878,6 +961,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
         if (node.querySelector(':scope > .mwb-answer-space-chunk')) placeSpace(node,null);
       }
       else if (node.matches?.('ol, ul')) placeLongList(node,null);
+      else if (node.matches?.('p')) placeParagraph(node,null);
       else appendItem(node);
       continue;
     }
@@ -904,7 +988,9 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       keptPromptOptions++;
     }
     if (!(isSpaceBlock(blocks[0]) && placeWithFirstSpace(first, blocks[0], node, pendingHeading))) {
-      placeUnit(first,node,pendingHeading);
+      if (first.length === 1 && first[0].matches?.('p') && !fitsOnFreshPage(first,node,pendingHeading)) {
+        placeParagraph(first[0],node,pendingHeading);
+      } else placeUnit(first,node,pendingHeading);
     }
     pendingHeading = null;
     for (const block of blocks) {
@@ -913,6 +999,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       }
       else if (block.classList?.contains('callout')) placeCallout(block,node);
       else if (block.matches?.('ol, ul')) placeLongList(block,node);
+      else if (block.matches?.('p')) placeParagraph(block,node);
       else appendItem(block,node);
     }
     questionPart = null;
