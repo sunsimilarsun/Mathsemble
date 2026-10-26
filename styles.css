@@ -24,7 +24,9 @@
 .mwb-typography h1,
 .mwb-typography h2,
 .mwb-typography h3,
-.mwb-typography h4 {
+.mwb-typography h4,
+.mwb-typography h5,
+.mwb-typography h6 {
   line-height: 1.45;
   margin-block: 0.85em 0.4em;
   break-after: avoid;
@@ -33,6 +35,8 @@
 .mwb-typography h2 { font-size: 1.27em; }
 .mwb-typography h3 { font-size: 1.13em; }
 .mwb-typography h4 { font-size: 1.03em; }
+.mwb-typography h5 { font-size: 1.03em; font-weight: 700; }
+.mwb-typography h6 { font-size: 1em; font-weight: 600; }
 .mwb-typography img {
   max-width: 100%; height: auto; filter: none;
   object-fit: contain;
@@ -341,6 +345,10 @@
   .mwb-print-document .mwb-fixed-blank { border-bottom-color:#333; }
 }
 
+/* Source-mapped question containers add no padding or extra height. */
+.mwb-print-document .mwb-handout-question { display: flow-root; margin: 0; padding: 0; }
+.mwb-print-document .mwb-section-leaders { display: flow-root; margin: 0; padding: 0; }
+
 /* Modal-only UI rules below are excluded from export CSS. */
 /* Isolate controls and A4 simulation from Obsidian's own note layout. */
 .mwb-modal {
@@ -635,4 +643,18 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
   box-sizing: border-box;
   min-width: 3em;
   padding-inline: 0.18em;
+}
+
+/* Debug outlines live only in the preview clone; no layout change or PDF ink. */
+.mwb-modal .mwb-show-question-bounds :is(.mwb-handout-question,.mwb-exam-question) {
+  outline: 1px dashed #627ea8;
+  outline-offset: -1px;
+}
+.mwb-modal .mwb-question-boundary-report {
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 8em;
+  overflow-y: auto;
+  margin: .5em 0;
 }

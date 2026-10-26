@@ -1,3 +1,5 @@
+> 0.1.15 当前题目边界与分页规则以 [Markdown 规范](MARKDOWN_SPEC.md) 和 [严格五级标题分页](STRICT_H5_PAGINATION.md) 为准：五级题目标注、六级题内标题、短题不拆、长题新页起排。下文旧版推断规则仅保留历史记录，不再作为新讲义识别标准。
+
 > 0.1.12 开发补充：题干—答案成组分页按 [GROUP_PAGINATION.md](GROUP_PAGINATION.md) 执行；不能用减少学生留白或裁切内容换取同页。以下旧版验收记录保留。
 
 # Mathsemble 功能需求规格说明（FRD）
