@@ -941,7 +941,12 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
             consumed.add(next);
             continue;
           }
-          placeUnit(lead);
+          if (node.matches?.('p') && !fitsOnFreshPage(lead)) {
+            // Keep the nearest heading with the first printable paragraph
+            // fragment; do not fail just because a single prompt is long.
+            for (const header of lead.slice(0, -2)) appendItem(header);
+            placeParagraph(node, null, lead.length > 1 ? lead[lead.length - 2] : null);
+          } else placeUnit(lead);
           continue;
         }
         for (const header of documentHeadings.splice(0)) appendItem(header);
