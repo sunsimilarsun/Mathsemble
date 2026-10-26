@@ -142,7 +142,7 @@
 
 核心类型为 `definition`、`theorem`、`method`、`conclusion`、`attention`、`thinking`、`answer`、`scaffold`。旧 `solution` 兼容 `answer` 配色；`example` 不提供专用主题，例题使用普通 Markdown。颜色与图标只表达语义，新 `solution` 输出规则在转换层实现，不由 CSS 配色判断。
 
-打印 Callout 透明背景、彩色左边框和彩色标题；正文、加粗推导保持标准前景色。阅读视图采用 Obsidian 原有图标，打印版隐藏图标以统一实际测量与 PDF 几何。作用范围包括标准 Obsidian 阅读视图、实时预览及 Mathsemble 打印/测量 DOM，无需 YAML 或额外添加 `mwb-*` 类；语义匹配仅针对八类核心 Callout 和历史 `solution` 兼容类型。禁止全局干预 `mark`、`strong`、MathJax SVG 的布局、学生填空线、教师答案与学生响应留白。
+打印 Callout 在白色纸张上采用四周同色边框和彩色标题（左边框 2px，上/右/下 1px，保持原有盒模型与留白测量）；`answer` 橙色 `#e67e22`，`solution` 淡蓝灰色 `#8794ad`（标题 `#53637e`），其余教学 Callout 四边同各自主题色；正文、加粗推导保持标准前景色。阅读视图采用 Obsidian 原有图标，打印版隐藏图标以统一实际测量与 PDF 几何。作用范围包括标准 Obsidian 阅读视图、实时预览及 Mathsemble 打印/测量 DOM，无需 YAML 或额外添加 `mwb-*` 类；语义匹配仅针对八类核心 Callout 和历史 `solution` 兼容类型。禁止全局干预 `mark`、`strong`、MathJax SVG 的布局、学生填空线、教师答案与学生响应留白。
 
 **验收**：八类核心加旧 `solution`、普通 `example`/ `student-note`，短长解析、数学公式、折叠与非折叠混用；检查阅读与 PDF 同类配色，以及教师内容高度到学生留白的映射。当前仅完成静态、转换和 Chromium 局部浏览器测试；宿主真实 PDF 验收待完成。黑白打印和自定义主题属于后续 P1，不在本次引入复杂开关。
 

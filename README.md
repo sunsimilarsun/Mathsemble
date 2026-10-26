@@ -153,7 +153,7 @@ Mathsemble 是一款 **local-first 的 Obsidian 桌面端数学教学插件**，
 
 本地实验包新增八类数学教学 Callout 配色（仅外观）：`definition` 定义绿 `#2EA44F`、`theorem` 定理蓝 `#2F81F7`、`method` 方法紫 `#9B59B6`、`conclusion` 结论青 `#00A896`、`attention` 注意黄 `#F1C40F`、`thinking` 思考灰蓝 `#636E72`、`answer` 答案深橙 `#E67E22`、`scaffold` 脚手架淡紫 `#8F70B5`。原 `solution` 为 `answer` 配色兼容别名；例题直接使用普通 Markdown 标题和题干，插件不给 `example` 赋专门配色。
 
-打印采用透明背景、细左彩边与彩色标题，正文及 `strong` 不整段染色。阅读视图保留 Obsidian 图标，打印版为一致排版隐藏图标。作用于 Mathsemble A4 预览/PDF/HTML，以及 **所有普通 Obsidian Markdown 阅读视图和实时预览**（无需 YAML、题卡识别或异步加类）。仅指定的八类 Callout 与历史 `solution` 兼容类型受影响；不全局修改 `mark`、`strong`、`example` 等普通样式。
+打印在白色纸张上采用**四周同色边框**（左 2px，上/右/下 1px）与彩色标题，正文及 `strong` 不整段染色。`answer` 保留橙色 `#e67e22`，`solution` 改为淡蓝灰色 `#8794ad`（标题 `#53637e`）；其余教学 Callout 也采用各自主题色的四周边框。阅读视图保留 Obsidian 图标，打印版为一致排版隐藏图标。作用于 Mathsemble A4 预览/PDF/HTML，以及 **所有普通 Obsidian Markdown 阅读视图和实时预览**（无需 YAML、题卡识别或异步加类）。仅指定的八类 Callout 与历史 `solution` 兼容类型受影响；不全局修改 `mark`、`strong`、`example` 等普通样式。
 
 颜色与导出逻辑严格分离：该段描述的是旧版本，当前开发版的 `solution` 已增加独立留白及教师显隐选项。选择/填空语法及填空宽度不变。Chromium 11 类 Callout 测试中外部高度差 0px；完整 Obsidian PDF 验收仍待完成。已启用旧版同类 CSS 片段时建议停用避免重复。黑白/彩色主题切换列入后续规划。
 

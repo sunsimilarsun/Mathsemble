@@ -417,3 +417,20 @@ test('preview UI passes solution preferences to student and teacher rendering an
   assert.match(js,/this\.solutionModeLabels\.student\.style\.display = mode === 'student'/);
   assert.match(js,/this\.solutionModeLabels\.teacher\.style\.display = mode === 'teacher'/);
 });
+
+test('print Callout full border uses matching accent and solution is blue gray',()=>{
+  const css=fs.readFileSync(path.resolve(__dirname,'../styles.css'),'utf8');
+  const palette=css.slice(css.indexOf('/* Mathsemble mathematics teaching palette'),css.indexOf('/* v0.2.1: optional metadata'));
+  assert.match(css,/\.mwb-typography\.mwb-print-document \.callout \{ background: #fff; border-color: #c4c4c4; border-left: 2px solid #999; \}/);
+  assert.match(palette,/border-color: var\(--mwb-callout-accent, #999\);/);
+  assert.doesNotMatch(palette,/border-left-color: var\(--mwb-callout-accent, #999\);/);
+  const answer=palette.slice(palette.indexOf('.callout[data-callout="answer"] {'),palette.indexOf('.callout[data-callout="scaffold"] {'));
+  const solution=palette.slice(palette.indexOf('.callout[data-callout="solution"] {'));
+  assert.match(answer,/--mwb-callout-accent: #e67e22;/);
+  assert.match(solution,/--mwb-callout-accent: #8794ad;/);
+  assert.match(solution,/--mwb-callout-title-ink: #53637e;/);
+  assert.equal(css.slice(0,typographyCss.length),typographyCss,'PDF embedded print CSS matches styles.css');
+  assert.ok(typographyCss.includes('border-color: var(--mwb-callout-accent, #999);'));
+  assert.ok(typographyCss.includes('--mwb-callout-accent: #8794ad;'));
+  assert.ok(typographyCss.includes('--mwb-callout-accent: #e67e22;'));
+});
