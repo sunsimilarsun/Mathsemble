@@ -8,6 +8,12 @@ on:
       - styles.css
       - manifest.json
       - .github/workflows/install-zip.yml
+  pull_request:
+    paths:
+      - main.js
+      - styles.css
+      - manifest.json
+      - .github/workflows/install-zip.yml
   workflow_dispatch:
 
 permissions:
