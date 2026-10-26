@@ -41,7 +41,7 @@ test('real Chromium: question-answer grouping, long steps and unchanged writing 
   const input=path.join(dir,'cases.html');fs.writeFileSync(input,html);
   const results=await runChromeDocument(chrome,input,path.join(dir,'profile'));
   for(const result of results) await t.test(result.name,()=>assert.equal(result.ok,true,result.error||''));
- }finally{fs.rmSync(dir,{recursive:true,force:true});}
+ }finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
 
 // Chrome DevTools over anonymous pipes: no downloaded browser driver,

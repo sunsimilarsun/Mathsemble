@@ -76,6 +76,15 @@ test('F06 quoted fence does not consume following real answers or alter math sta
  const output=a.handoutPlan(source,'student').markdown;
  assert.match(output,/\$\$ \?\{BROKEN/);assert.match(output,/mwb-answer-slot/);
 });
+test('F06 indented lines inside display math remain mathematics, not literal code',()=>{
+ for(const source of ['$$\n    x=?{42}\n$$','> [!note] Formula\n> $$\n>     x=?{42}\n> $$']){
+  assert.equal(a.answerSlots(source).length,1);
+  const student=a.handoutPlan(source,'student').markdown;
+  assert.doesNotMatch(student,/42/);assert.match(student,/\\underline/);assert.doesNotMatch(student,/<span/);
+  assert.match(a.handoutPlan(source,'teacher').markdown,/42/);
+ }
+ assert.ok(a.mwbValidateTypedAnswers('$$\n    x=?{\n$$').length>0);
+});
 test('multiple bundled editions use one projection implementation, not divergent copies',()=>{
  assert.equal((js.match(/return mwbProjectCallouts\(source, mode, options\)\.markdown;/g)||[]).length,4);
  assert.equal((js.match(/return mwbStudentSpacePlan\(markdown, options\);/g)||[]).length,2);
@@ -90,7 +99,7 @@ test('real Chromium: nested mapping, solution measurement isolation, title refre
  const html='<!doctype html><meta charset="utf-8"><style>'+css+'</style><div id="mount"></div><script>'+(load+'\n('+browserCases.toString()+')();').replace(/<\/script/gi,'<\\/script')+'</script>';
  const input=path.join(temp,'test.html');fs.writeFileSync(input,html);
  try{for(const r of await runChromeDocument(chrome,input,path.join(temp,'profile')))await t.test(r.name,()=>assert.equal(r.ok,true,r.error||''));}
- finally{fs.rmSync(temp,{recursive:true,force:true});}
+ finally{fs.rmSync(temp,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
 async function browserCases(){
  const results=[],a=audit,mount=document.getElementById('mount');

@@ -26,6 +26,8 @@
 
 ## 验证
 
-运行 `CHROME_PATH=/usr/bin/chromium npm run prepublish-check`。本次本地全量结果：105 项通过、0 失败、0 跳过；保留原有 79 项，新增/扩展七项审核反例。真实 Chromium 布局与界面子场景共 31 个（22 个分页场景、9 个测量/UI 场景）。
+运行 `CHROME_PATH=/usr/bin/chromium npm run prepublish-check`。本次本地全量结果：106 项通过、0 失败、0 跳过；保留原有 79 项，新增/扩展七项审核反例。真实 Chromium 布局与界面子场景共 31 个（22 个分页场景、9 个测量/UI 场景）。
 
 上述浏览器测试使用真实 CSS 排版、当前分页器和当前测量/UI 方法，但 Obsidian API / MarkdownRenderer 使用受控替身，不等于完整 Obsidian 宿主验收。仍需用户真实讲义、实际 MathJax/图片、跨主题及系统 PDF 阅读器验收；不能据自动测试宣称所有打印问题已经消除。
+
+补充防回归：`$$` 公式内的缩进行仍视为数学，而非代码；其中答案槽继续转换为 TeX 留白，不把答案原文留给学生。

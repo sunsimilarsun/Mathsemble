@@ -7,6 +7,7 @@ async function runChromeDocument(executable, input, profile){
   '--disable-features=Translate,MediaRouter,OptimizationHints','--no-first-run','--no-default-browser-check',
   '--remote-debugging-pipe','--no-startup-window','--user-data-dir='+profile],
   {stdio:['ignore','ignore','pipe','pipe','pipe']});
+ const closed=new Promise(resolve=>proc.once('close',resolve));
  let stderr='',received='';const pending=new Map();let id=0;
  proc.stderr.on('data',chunk=>{stderr=(stderr+chunk).slice(-4000);});
  proc.stdio[4].on('data',chunk=>{
@@ -38,9 +39,21 @@ async function runChromeDocument(executable, input, profile){
   }
   throw Error('Browser layout tests did not finish: '+stderr);
  }finally{
-  for(const entry of pending.values())clearTimeout(entry.timer);
-  proc.kill('SIGKILL');
-  await new Promise(resolve=>{if(proc.exitCode!==null)resolve();else proc.once('exit',resolve);});
+  // Let Chromium stop its renderer/profile writers before deleting the
+  // temporary profile. Killing only the parent raced with child writes in CI.
+  let shutdownTimer;
+  try {
+   if(proc.exitCode===null && proc.signalCode===null){
+    void send('Browser.close').catch(()=>{});
+    await Promise.race([closed,new Promise(resolve=>{shutdownTimer=setTimeout(resolve,2000);})]);
+    if(proc.exitCode===null && proc.signalCode===null)proc.kill('SIGKILL');
+   }
+   await closed;
+  } finally {
+   clearTimeout(shutdownTimer);
+   for(const entry of pending.values())clearTimeout(entry.timer);
+   pending.clear();
+  }
  }
 }
 

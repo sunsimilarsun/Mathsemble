@@ -95,7 +95,7 @@ function mwbStudentMathFill(answer) {
 // Quote depth is structural; fenced/indented code is never teaching syntax.
 function mwbMarkdownLines(markdown) {
   const lines = String(markdown).replace(/\r\n?/g, '\n').split('\n');
-  let yaml = lines[0]?.replace(/^\uFEFF/, '').trim() === '---', fence = null, offset = 0;
+  let yaml = lines[0]?.replace(/^\uFEFF/, '').trim() === '---', fence = null, displayMath = false, offset = 0;
   return lines.map((line, index) => {
     let body = line, depth = 0, prefix = '';
     for (;;) {
@@ -117,6 +117,12 @@ function mwbMarkdownLines(markdown) {
       if (depth === fence.depth && close && close[1][0] === fence.token[0] && close[1].length >= fence.token.length) fence = null;
       return record;
     }
+    // Indentation inside a display equation is TeX, not a Markdown code block.
+    if (displayMath) {
+      record.math = true;
+      displayMath = mwbScanTypedLine(body, true).displayMath;
+      return record;
+    }
     if (/^(?: {4}| {0,3}\t)/.test(body)) { record.code = true; return record; }
     const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(body);
     if (open && !(open[1][0] === '`' && open[2].includes('`'))) {
@@ -124,6 +130,7 @@ function mwbMarkdownLines(markdown) {
     }
     const header = depth && /^ {0,3}\[!([\w-]+)\]([+-])?(?:[ \t]+(.*))?\s*$/.exec(body);
     if (header) record.callout = {type:header[1].toLowerCase(), title:(header[3] || '').trim(), teacherOnly:!!header[2]};
+    displayMath = mwbScanTypedLine(body, false).displayMath;
     return record;
   });
 }
