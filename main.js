@@ -3909,10 +3909,11 @@ class PreviewModal extends Modal {
           if (generation!==this.generation) throw new Error('打印前预览内容已变化，取消保存');
           await ensureExportFolder(this.app);
           const bytes=buffer.buffer.slice(buffer.byteOffset,buffer.byteOffset+buffer.byteLength);
-          savedPath=`${OUTPUT_DIR}/${name}`;
-          await this.app.vault.createBinary(savedPath,bytes);
-           this.lastSavedPdfPath = savedPath;
-           if (this.openPdfButton) this.openPdfButton.style.display = '';
+          const targetPath=`${OUTPUT_DIR}/${name}`;
+          await this.app.vault.createBinary(targetPath,bytes);
+          savedPath=targetPath;
+          this.lastSavedPdfPath = savedPath;
+          if (this.openPdfButton) this.openPdfButton.style.display = '';
         } : undefined,
       });
       const printOutcome=pdf.mwbPrintOutcome;
