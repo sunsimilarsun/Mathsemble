@@ -24,15 +24,15 @@
 
 ### FR-01 Callout 的显隐与留白
 
-解析规则：`> [!type]` 后紧贴 `+` 或 `-` 的整个 Callout 为**教师专用**；**不带** `+/-` 的整个 Callout 为**双版共用**；无论 `type` 是 `answer`、`scaffold`、`note`、`success` 或自定义名称，规则相同。
+解析规则：`> [!type]` 后紧贴 `+` 或 `-` 的整个 Callout 为**教师专用**；无 `+/-` 的为双版共用。`solution` 额外具有独立留白和教师显隐选项；`answer` 保留标准答案语义及原有等高留白。
 
-- 教师版：显示所有教师专用及共用 Callout 的完整内容。
-- 学生版：按原顺序把每个教师专用 Callout 替换为**对应高度留白**，保留共用 Callout。
+- 教师版：默认显示全部 Callout；关闭“显示 solution”时隐藏所有 `solution` 块（无论是否带 `+/-`），不隐藏 `answer`。
+- 学生版：`answer` 和其他非 `solution` 教师专用 Callout 默认等高留白；教师专用 `solution` 默认隐藏且不留白，勾选“solution 留白”后按实际渲染高度生成空白。无 `+/-` 的 `solution` 在学生版仍为普通可见块。
 - 原文预览：不转换答案和内容；用于检查 Markdown 原有呈现。打印副本可临时展开 Callout，不回写源文件。
 - `+/-` 不再被赋予两种不同的打印权限；Obsidian 正常阅读时的展开／折叠表现不受 Mathsemble 强制更改。
-- 教师块计数与学生留白槽按**全部 Callout 的出现顺序**建立可靠映射；不能只按 `answer` 类型匹配。
+- 教师块计数与学生留白槽按**全部 Callout 的出现顺序**建立映射，仅选取需留白的块；排除 `solution` 时不得造成后续 `answer` 索引错位。
 
-**验收**：同一讲义混合 `answer-`、`scaffold+`、`note-`、`student-note`、无标记 `answer`，检查两版每块可见性、顺序、位置、数量；教师 4 个专用块 → 学生 4 个留白槽；共用 Callout 在两版中完整显示。
+**验收**：同一讲义混合 `answer-`、`solution-`、`scaffold+`、`note-` 和无标记 Callout；分别验证学生留白开/关、教师显示开/关四种组合。学生留白数应排除未勾选的 `solution`，保留其他教师块及顺序；教师隐藏思路时 `answer` 必须完整。
 
 ### FR-02 等高留白与分页
 
@@ -140,7 +140,7 @@
 
 ### FR-10 内置数学 Callout 主题（v0.1.9 本地实验实现）
 
-核心类型为 `definition`、`theorem`、`method`、`conclusion`、`attention`、`thinking`、`answer`、`scaffold`。旧 `solution` 兼容 `answer` 配色；`example` 不提供专用主题，例题使用普通 Markdown。颜色与图标只表达语义，不改变 `[!type]+/-` 显隐和学生等高留白规则。
+核心类型为 `definition`、`theorem`、`method`、`conclusion`、`attention`、`thinking`、`answer`、`scaffold`。旧 `solution` 兼容 `answer` 配色；`example` 不提供专用主题，例题使用普通 Markdown。颜色与图标只表达语义，新 `solution` 输出规则在转换层实现，不由 CSS 配色判断。
 
 打印 Callout 透明背景、彩色左边框和彩色标题；正文、加粗推导保持标准前景色。阅读视图采用 Obsidian 原有图标，打印版隐藏图标以统一实际测量与 PDF 几何。作用范围包括标准 Obsidian 阅读视图、实时预览及 Mathsemble 打印/测量 DOM，无需 YAML 或额外添加 `mwb-*` 类；语义匹配仅针对八类核心 Callout 和历史 `solution` 兼容类型。禁止全局干预 `mark`、`strong`、MathJax SVG 的布局、学生填空线、教师答案与学生响应留白。
 

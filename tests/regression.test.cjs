@@ -13,7 +13,7 @@ const obsidian={
   renderMath:()=>{throw new Error('DOM not available in Node');}
 };
 const ctx={module:{exports:{}},require:name=>name==='obsidian'?obsidian:require(name),console,Buffer};
-vm.runInNewContext(js+'\n;globalThis.mathsembleAudit={handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers,mwbMapUnchangedAnswerSlots,mwbVisibleAnswerSlots,buildMathAnswerDecorations};',ctx,{timeout:15000});
+vm.runInNewContext(js+'\n;globalThis.mathsembleAudit={handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers,mwbMapUnchangedAnswerSlots,mwbVisibleAnswerSlots,buildMathAnswerDecorations,studentSpacePlan,teacherOnlyCalloutIndices};',ctx,{timeout:15000});
 const {handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers}=ctx.mathsembleAudit;
 const str=(s)=>String(s);
 const count=(s,r)=>[...str(s).matchAll(r)].length;
@@ -311,4 +311,109 @@ test('metadata change handling avoids full Markdown scans and CodeMirror no-op d
   assert.doesNotMatch(section,/getValue\(\)|answerSlots\(raw\)/);
   const sync=js.slice(js.indexOf('const syncAnswerViews ='),js.indexOf("listen(this.app.metadataCache, 'changed')"));
   assert.doesNotMatch(sync,/refreshQuestionEditors\(leaves\)/);
+});
+
+
+test('answer retains writing space while teacher-only solution defaults to none',()=>{
+  const source=[
+    '# 同一题分离答案和思路',
+    '求 $x$。',
+    '> [!answer]- 完整步骤',
+    '> 先写已知，再计算最终结果',
+    '> [!solution]- 解题思路',
+    '> 使用换元法观察结构',
+    '> [!note]+ 教师备注',
+    '> 提醒审题',
+    '> [!definition] 双版本共用',
+    '> 定义内容',
+  ].join('\n');
+  const student=handoutPlan(source,'student');
+  assert.equal(student.solutionCount,2,'answer and ordinary marked note reserve space');
+  assert.equal(count(student.markdown,/MWB_SOLUTION_SPACE_ANCHOR_\d+_END/g),2);
+  assert.doesNotMatch(student.markdown,/先写已知|换元法|提醒审题/);
+  assert.match(student.markdown,/定义内容/);
+  assert.deepEqual(Array.from(ctx.mathsembleAudit.teacherOnlyCalloutIndices(source)),[0,2]);
+  const studentWithSolution=handoutPlan(source,'student',{solutionSpaces:true});
+  assert.equal(studentWithSolution.solutionCount,3);
+  assert.deepEqual(Array.from(ctx.mathsembleAudit.teacherOnlyCalloutIndices(source,{solutionSpaces:true})),[0,1,2]);
+  assert.equal(count(studentWithSolution.markdown,/MWB_SOLUTION_SPACE_ANCHOR_\d+_END/g),3);
+  assert.doesNotMatch(studentWithSolution.markdown,/换元法/);
+  const teacher=handoutPlan(source,'teacher');
+  assert.match(teacher.markdown,/先写已知|换元法|提醒审题|定义内容/);
+  const teacherWithoutSolution=handoutPlan(source,'teacher',{showSolution:false});
+  assert.doesNotMatch(teacherWithoutSolution.markdown,/换元法|解题思路/);
+  assert.match(teacherWithoutSolution.markdown,/先写已知|提醒审题|定义内容/);
+  assert.equal(handoutPlan(source,'document',{showSolution:false}).markdown.includes('[!solution]-'),true);
+});
+
+test('teacher-only solution filters independently of answer type and all other callouts',()=>{
+  const source=[
+    '> [!answer]+ 最终答案',
+    '> 结果为 $2$',
+    '> [!solution]+ 方法详解',
+    '> 先配方再讨论',
+    '> [!scaffold]- 教师提示',
+    '> 先画出函数图像',
+  ].join('\n');
+  const ordinary=ctx.mathsembleAudit.studentSpacePlan(source);
+  const opt=ctx.mathsembleAudit.studentSpacePlan(source,{solutionSpaces:true});
+  assert.equal(ordinary.count,2);
+  assert.equal(opt.count,3);
+  assert.deepEqual(Array.from(ctx.mathsembleAudit.teacherOnlyCalloutIndices(source)),[0,2]);
+  assert.deepEqual(Array.from(ctx.mathsembleAudit.teacherOnlyCalloutIndices(source,{solutionSpaces:true})),[0,1,2]);
+  const teacher=transformQuestion(source,'teacher',{showSolution:false});
+  assert.match(teacher,/最终答案|结果为|教师提示|函数图像/);
+  assert.doesNotMatch(teacher,/方法详解|先配方/);
+  const unchanged=transformQuestion(source,'teacher');
+  assert.match(unchanged,/方法详解|先配方/);
+});
+
+test('shared solution stays shared for students but can be omitted in teacher compact mode',()=>{
+  const source=[
+    '> [!solution] 公共提示',
+    '> 先检查定义域',
+    '> [!answer]- 标准步骤',
+    '> 解得 $x=1$',
+  ].join('\n');
+  const student=handoutPlan(source,'student');
+  assert.equal(student.solutionCount,1);
+  assert.match(student.markdown,/公共提示|先检查定义域/);
+  const teacher=handoutPlan(source,'teacher',{showSolution:false});
+  assert.doesNotMatch(teacher.markdown,/公共提示|先检查定义域/);
+  assert.match(teacher.markdown,/标准步骤|x=1/);
+});
+
+test('answer-slot syntax and fenced literal solution callouts stay intact',()=>{
+  const tick=String.fromCharCode(96).repeat(3);
+  const source=[
+    '填空 ?{42}，选择 !{A}。',
+    '> [!answer]- 答案',
+    '> 推导文字',
+    '> [!solution]- 思路',
+    '> 不应进入学生正文',
+    tick+'md',
+    '> [!solution]- 仅为代码示例',
+    '> 不得过滤',
+    tick,
+  ].join('\n');
+  const student=handoutPlan(source,'student');
+  assert.equal(student.solutionCount,1);
+  assert.match(student.markdown,/mwb-answer-slot/);
+  assert.doesNotMatch(student.markdown,/!{A}|不应进入学生正文/);
+  assert.match(student.markdown,/\[!solution\]- 仅为代码示例/);
+  assert.match(student.markdown,/不得过滤/);
+  const compact=handoutPlan(source,'teacher',{showSolution:false});
+  assert.match(compact.markdown,/\[!solution\]- 仅为代码示例/);
+  assert.doesNotMatch(compact.markdown,/不应进入学生正文/);
+  assert.match(compact.markdown,/42/);
+});
+
+test('preview UI passes solution preferences to student and teacher rendering and export rechecks',()=>{
+  assert.match(js,/this\.solutionOptions = \{ solutionSpaces: false, showSolution: true \}/);
+  assert.match(js,/handoutPlan\(this\.markdown, mode, this\.solutionOptions\)/);
+  assert.match(js,/studentSpacePlan\(item\.markdown, this\.solutionOptions\)/);
+  assert.match(js,/transformQuestion\(item\.markdown, 'teacher', this\.solutionOptions\)/);
+  assert.match(js,/teacherOnlyCalloutIndices\(this\.markdown, this\.solutionOptions\)/);
+  assert.match(js,/this\.solutionModeLabels\.student\.style\.display = mode === 'student'/);
+  assert.match(js,/this\.solutionModeLabels\.teacher\.style\.display = mode === 'teacher'/);
 });
