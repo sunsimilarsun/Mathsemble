@@ -504,6 +504,8 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   let page, body;
   let atomicCount = 0, spaceChunks = 0, splitCallouts = 0;
   let intactQuestions = 0, splitQuestions = 0, keptPromptOptions = 0, keptPromptSpace = 0;
+  let handoutGroups = 0, intactHandoutGroups = 0, keptPromptAnswer = 0;
+  const relaxedGroupBindings = [];
   let lastRejectedHeight = 0;
   let lastSectionName = '';
   let questionPart = null;
@@ -625,23 +627,26 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     overflowError(node);
   };
   // Test a cohesive heading + first question paragraph as a single layout unit.
+  const commitUnit = (nodes, q = null, sectionHeading = null) => {
+    if (sectionHeading) body.appendChild(sectionHeading);
+    const content = targetFor(q);
+    for (const node of nodes) content.appendChild(node);
+    if (overflowed(nodes.concat(sectionHeading ? [sectionHeading] : []))) {
+      for (const node of nodes) content.removeChild(node);
+      removeEmptyPart();
+      if (sectionHeading) sectionHeading.remove();
+      return false;
+    }
+    active().meaningful += nodes.length + (sectionHeading ? 1 : 0);
+    atomicCount += nodes.length;
+    return true;
+  };
   const placeUnit = (nodes, q = null, sectionHeading = null) => {
-    const testPlace = () => {
-      if (sectionHeading) body.appendChild(sectionHeading);
-      const content = targetFor(q);
-      for (const node of nodes) content.appendChild(node);
-      if (overflowed(nodes.concat(sectionHeading ? [sectionHeading] : []))) {
-        for (const node of nodes) content.removeChild(node);
-        removeEmptyPart();
-        if (sectionHeading) sectionHeading.remove();
-        return false;
-      }
-      active().meaningful += nodes.length + (sectionHeading ? 1 : 0);
-      atomicCount += nodes.length;
-      return true;
-    };
-    if (testPlace()) return;
-    if (active().meaningful > 0) { nextPage(); if (testPlace()) return; }
+    if (commitUnit(nodes, q, sectionHeading)) return;
+    if (active().meaningful > 0) {
+      nextPage();
+      if (commitUnit(nodes, q, sectionHeading)) return;
+    }
     overflowError(nodes[0]);
   };
   const isDisplayNode = el => el && (el.matches?.('div.math, .math-block, .block-language-tikz, .block-language-tikzjax, pre, figure') ||
@@ -659,6 +664,9 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     trialBody.className = 'mwb-paper-body';
     trial.appendChild(trialBody);
     root.appendChild(trial);
+    const originals = [...nodes, ...(heading ? [heading] : [])].map(node => ({
+      node, parent: node.parentNode || node.parentElement, next: node.nextSibling,
+    }));
     try {
       if (heading) trialBody.appendChild(heading);
       let target = trialBody;
@@ -680,8 +688,15 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       }
       return usedHeight <= rect.height + 1.25 && !contentSpills([...nodes, ...(heading ? [heading] : [])], trialBody);
     } finally {
-      for (const node of nodes) node.remove();
-      if (heading) heading.remove();
+      for (const {node} of originals) node.remove();
+      // Restore in reverse source order so a failed probe cannot reorder or
+      // detach the live content that the next placement strategy will use.
+      for (const {node, parent, next} of originals.slice().reverse()) {
+        if (parent) {
+          if (next && (next.parentNode || next.parentElement) === parent) parent.insertBefore(node, next);
+          else parent.appendChild(node);
+        }
+      }
       trial.remove();
     }
   };
@@ -815,52 +830,82 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
 
   // Callouts are atomic if short; only truly over-height callouts split into
   // per-paragraph blocks with a fresh "（续）" title after each page break.
-  const placeCallout = (callout, q) => {
-    if (commit(callout,q)) return;
-    // If the callout fits on a fresh page, move it intact. An over-height
-    // callout MUST begin splitting on the current page rather than wasting
-    // all remaining space merely because the whole callout is too tall.
-    if (lastRejectedHeight < capacity() - 2 && active().meaningful > 0) {
+  const placeCallout = (callout, q, continuation = false, initial = null) => {
+    if (!initial && commit(callout,q)) return;
+    if (!initial && !continuation && lastRejectedHeight < capacity() - 2 && active().meaningful > 0) {
       nextPage(); if (commit(callout,q)) return;
     }
-    // Break at semantic steps; a huge solution uses the current free space.
     const title = callout.querySelector(':scope > .callout-title');
     const content = callout.querySelector(':scope > .callout-content');
     if (!content || !content.children.length) return overflowError(callout);
-    const blocks = [...content.children];
-    const titleText = title?.textContent?.trim() || '解答';
-    let continued = false;
+    const blocks = [...content.children], steps = [];
+    // A list item is one complete solution step, not the entire <ol>.
+    // Preserve explicit numbering/value attributes when rebuilding each page.
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      if (block.matches?.('ol, ul') && !isOptionsBlock(block) && block.children.length) {
+        let value = Number.parseInt(block.getAttribute('start') || '1', 10) || 1;
+        for (const item of Array.from(block.children)) {
+          const explicit = Number.parseInt(item.getAttribute('value'), 10);
+          if (Number.isFinite(explicit)) value = explicit;
+          steps.push({nodes:[item], list:block, start:value++});
+        }
+      } else {
+        const nodes = [block];
+        if (/^H[1-6]$/.test(block.tagName || '') && blocks[i+1]) nodes.push(blocks[++i]);
+        const lead = nodes[nodes.length-1];
+        if (blocks[i+1] && (isDisplayNode(blocks[i+1]) ||
+            (lead.matches?.('p') && /[:：]\s*$/.test(lead.textContent || '')))) nodes.push(blocks[++i]);
+        steps.push({nodes});
+      }
+    }
+    const titleText = (title?.textContent?.trim() || '解答').replace(/（续）$/, '');
+    let continued = continuation;
     const buildFragment = () => {
-      const fragment = callout.cloneNode(false);
+      const fragment = callout.cloneNode(false); fragment.removeAttribute?.('id');
       const head = title ? title.cloneNode(true) : doc.createElement('div');
+      head.removeAttribute?.('id');
       if (!title) { head.className='callout-title'; head.textContent=titleText; }
       if (continued) head.textContent = `${titleText}（续）`;
-      const inner = content.cloneNode(false);
+      const inner = content.cloneNode(false); inner.removeAttribute?.('id');
       fragment.append(head,inner);
-      return {fragment,inner};
+      return {fragment,inner,listPart:null};
     };
-    let current = buildFragment();
-    appendItem(current.fragment,q);
-    // Don't count a title-only fragment as meaningful content: it will be
-    // moved to the next sheet if the first solution step does not fit.
-    for (const block of blocks) {
-      current.inner.appendChild(block);
+    let current = initial || buildFragment(), fragmentCount = 1;
+    if (!initial) appendItem(current.fragment,q);
+    const appendStep = step => {
+      let holder = current.inner;
+      if (step.list) {
+        if (!current.listPart || current.listPart.source !== step.list) {
+          const list = step.list.cloneNode(false); list.removeAttribute?.('id');
+          if (list.tagName === 'OL') list.setAttribute('start',String(step.start));
+          current.inner.appendChild(list); current.listPart={source:step.list,element:list};
+        }
+        holder=current.listPart.element;
+      } else current.listPart=null;
+      for (const node of step.nodes) holder.appendChild(node);
+      return holder;
+    };
+    for (const step of steps) {
+      const holder=appendStep(step);
       if (overflowed(current.fragment)) {
-        current.inner.removeChild(block);
+        for (const node of step.nodes) holder.removeChild(node);
+        if (step.list && !holder.children.length) { holder.remove(); current.listPart=null; }
         if (!current.inner.children.length) {
           current.fragment.remove();
-          active().meaningful = Math.max(0, active().meaningful-1);
+          active().meaningful = Math.max(0,active().meaningful-1);
+          removeEmptyPart();
         }
         if (active().meaningful > 0) nextPage();
-        continued = true;
-        current = buildFragment();
+        continued=true;
+        current=buildFragment(); fragmentCount++;
         appendItem(current.fragment,q);
-        current.inner.appendChild(block);
-        if (overflowed(current.fragment)) overflowError(block);
+        appendStep(step);
+        if (overflowed(current.fragment)) overflowError(step.nodes[0]);
       }
-      atomicCount++;
+      atomicCount+=step.nodes.length;
     }
-    splitCallouts++;
+    if (fragmentCount > 1) splitCallouts++;
   };
   // Long Markdown documents often contain a single long <ol>/<ul>. Keep
   // list-item geometry, and split only between <li> nodes. Ordered lists
@@ -906,6 +951,198 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       spaceChunks++;
     }
   };
+  // Rendered-DOM grouping, not Markdown rewriting. An explicit question
+  // label bounds a multi-paragraph stem; unlabeled content only binds the
+  // immediately adjacent paragraph/formula/figure to its answer. A general
+  // heading, rule, new question or prose after an answer always ends a group.
+  const calloutType = node => String(node?.getAttribute?.('data-callout') || '').toLowerCase();
+  const isAnswer = node => node?.classList?.contains('callout') && /^(answer|success)$/.test(calloutType(node));
+  const isResponse = node => isAnswer(node) || isSpaceBlock(node);
+  const isSolution = node => node?.classList?.contains('callout') && calloutType(node) === 'solution';
+  const isHeading = node => /^H[1-6]$/.test(node?.tagName || '');
+  const isQuestionStart = node => {
+    if (!node?.matches?.('h1, h2, h3, h4, h5, h6, p')) return false;
+    const text = (node.textContent || '').trim();
+    // Parenthesized (1)/(2) are subquestions, never fresh question boundaries.
+    const named = /^(?:[（(【\[]\s*)?(?:例题|例|变式(?:训练)?|练习题?|检测题?|习题|题目|题|问题)\s*(?:第\s*)?(?:[0-9０-９]+|[一二三四五六七八九十百零〇两]+)(?=$|[\s】\]、.．:：）)\-—])/;
+    return named.test(text) || (isHeading(node) && /^\d+[.．、]\s*\S/.test(text)) ||
+      (node.tagName === 'P' && /^\d+(?:[.．]\s+|、)\S/.test(text));
+  };
+  const isBoundary = node => !node || isHeading(node) || node.matches?.('hr') ||
+    node.classList?.contains('mwb-exam-question') || node.classList?.contains('mwb-exam-section') ||
+    node.classList?.contains('mwb-exam-title') || node.classList?.contains('mwb-exam-edition');
+  const questionGroupAt = index => {
+    const first = inputNodes[index];
+    if (!first || first.classList?.contains('callout') || first.classList?.contains('mwb-exam-question')) return null;
+    if (isQuestionStart(first)) {
+      const nodes = [first]; let responseSeen = false;
+      for (let j = index + 1; j < inputNodes.length; j++) {
+        const node = inputNodes[j];
+        if (isQuestionStart(node) || isBoundary(node)) break;
+        // Do not consume a method summary or the next unnumbered question.
+        if (responseSeen && !isResponse(node) && !isSolution(node)) break;
+        if (isResponse(node) || isSolution(node)) responseSeen = true;
+        nodes.push(node);
+      }
+      return nodes.length > 1 ? nodes : null;
+    }
+    const singleNumberedItem = first.tagName === 'OL' && first.children.length === 1 && !isOptionsBlock(first);
+    if (!first.matches?.('p') && !singleNumberedItem) return null;
+    const nodes = [first]; let j = index + 1;
+    // A bounded adjacent fallback avoids accidentally grouping an entire
+    // unstructured chapter. Explicit labels have no arbitrary block limit.
+    while (j < inputNodes.length && nodes.length < 12) {
+      const node = inputNodes[j];
+      if (isBoundary(node) || isQuestionStart(node)) return null;
+      if (isResponse(node)) {
+        nodes.push(node); j++;
+        while (j < inputNodes.length && (isResponse(inputNodes[j]) || isSolution(inputNodes[j]))) nodes.push(inputNodes[j++]);
+        return nodes;
+      }
+      if (isOptionsBlock(node) || isDisplayNode(node) || node.matches?.('figure') ||
+          (node.matches?.('p') && node.querySelector?.('img'))) { nodes.push(node); j++; }
+      else break;
+    }
+    return null;
+  };
+
+  const tryKeepUnit = (nodes, q = null, heading = null) => {
+    if (commitUnit(nodes, q, heading)) return true;
+    if (!fitsOnFreshPage(nodes, q, heading)) return false;
+    if (active().meaningful > 0) nextPage();
+    return commitUnit(nodes, q, heading);
+  };
+
+  // Split an answer only at a complete first paragraph / list item. A short
+  // introduction ending in a colon or followed by a display equation travels
+  // with that equation. Existing MathJax/figure nodes are moved, not retyped.
+  const takeAnswerStart = answer => {
+    const inner = answer.querySelector(':scope > .callout-content');
+    const original = inner ? Array.from(inner.children) : [];
+    if (!original.length) return null;
+    const fragment = answer.cloneNode(false);
+    fragment.removeAttribute?.('id');
+    const title = answer.querySelector(':scope > .callout-title');
+    if (title) { const copy = title.cloneNode(true); copy.removeAttribute?.('id'); fragment.appendChild(copy); }
+    const piece = inner.cloneNode(false); piece.removeAttribute?.('id'); fragment.appendChild(piece);
+    const first = original[0];
+    let restore, listPart = null;
+    if (first.matches?.('ol, ul') && first.children.length > 1 && !isOptionsBlock(first)) {
+      const list = first.cloneNode(false); list.removeAttribute?.('id');
+      const item = first.children[0];
+      const startAttribute = first.getAttribute('start');
+      list.appendChild(item); piece.appendChild(list);
+      listPart = {source:first, element:list};
+      if (first.tagName === 'OL') {
+        const effective = Number.parseInt(item.getAttribute('value') || startAttribute || '1', 10);
+        first.setAttribute('start', String((Number.isFinite(effective) ? effective : 1) + 1));
+      }
+      restore = () => {
+        first.insertBefore(item, first.firstChild);
+        if (startAttribute === null) first.removeAttribute('start'); else first.setAttribute('start', startAttribute);
+      };
+    } else {
+      let take = 1;
+      // Keep subheadings with their first real step too.
+      if (isHeading(first) && original[1]) take++;
+      const lead = original[take - 1];
+      if (original[take] && (isDisplayNode(original[take]) ||
+          (lead.matches?.('p') && /[:：]\s*$/.test(lead.textContent || '')))) take++;
+      const moved = original.slice(0, take);
+      for (const node of moved) piece.appendChild(node);
+      restore = () => { for (const node of moved.slice().reverse()) inner.insertBefore(node, inner.firstChild); };
+    }
+    return {fragment, inner:piece, listPart, restore, hasRest: () => inner.children.length > 0};
+  };
+
+  const tryPromptAnswer = (stem, answer, q, heading) => {
+    const first = takeAnswerStart(answer);
+    if (!first) return false;
+    const unit = [...stem, first.fragment];
+    // A failed trial must put every node back before any fallback is tried.
+    if (!fitsOnFreshPage(unit, q, heading)) { first.restore(); return false; }
+    placeUnit(unit, q, heading);
+    keptPromptAnswer++;
+    if (first.hasRest()) placeCallout(answer, q, true, first);
+    return true;
+  };
+
+  const placeBlock = (block, q = null) => {
+    if (isSpaceBlock(block)) {
+      if (block.querySelector(':scope > .mwb-answer-space-chunk')) placeSpace(block, q);
+    } else if (block.classList?.contains('callout')) placeCallout(block, q);
+    else if (block.matches?.('ol, ul')) placeLongList(block, q);
+    else if (block.matches?.('p')) placeParagraph(block, q);
+    else appendItem(block, q);
+  };
+  const placeStem = (stem, q, heading) => {
+    if (!stem.length) { if (heading) appendItem(heading); return; }
+    if (tryKeepUnit(stem, q, heading)) return;
+    if (heading) {
+      if (stem[0].matches?.('p')) placeParagraph(stem.shift(), q, heading);
+      else placeUnit([stem.shift()], q, heading);
+    }
+    for (let i = 0; i < stem.length; i++) {
+      const node = stem[i];
+      if (isHeading(node) && stem[i+1]?.matches?.('p')) {
+        const next = stem[++i];
+        if (!tryKeepUnit([node,next], q)) placeParagraph(next, q, node);
+      } else placeBlock(node, q);
+    }
+  };
+  const placeQuestionBlocks = (blocks, q = null, heading = null) => {
+    const responseAt = blocks.findIndex(isResponse);
+    if (responseAt <= 0) {
+      // A long question without an answer still gets the old prompt/formula
+      // protection and ordinary safe block-level pagination.
+      const first = [blocks[0]]; let offset = 1;
+      if (blocks[1] && isDisplayNode(blocks[1]) && (blocks[0].textContent || '').trim().length < 130) first.push(blocks[offset++]);
+      if (isOptionsBlock(blocks[offset]) && fitsOnFreshPage([...first,blocks[offset]],q,heading)) {
+        first.push(blocks[offset++]); keptPromptOptions++;
+      }
+      placeStem(first, q, heading);
+      for (const block of blocks.slice(offset)) placeBlock(block, q);
+      return;
+    }
+    const stem = blocks.slice(0,responseAt), response = blocks[responseAt];
+    // A long optional solution must not force a short stem+answer to split.
+    if (isAnswer(response) && tryKeepUnit([...stem,response],q,heading)) {
+      keptPromptAnswer++;
+    } else if (isSpaceBlock(response) && placeWithFirstSpace(stem,response,q,heading)) {
+      placeBlock(response,q);
+    } else if (isAnswer(response) && tryPromptAnswer(stem,response,q,heading)) {
+      // Remaining answer steps were placed with continuation titles above.
+    } else {
+      // The full stem + one complete step itself exceeds A4. Keep at least
+      // the last prompt block with the step if possible; otherwise relax the
+      // binding explicitly, never shrink content or handwriting space.
+      const last = stem[stem.length-1];
+      let canBindTail = false;
+      if (stem.length > 1 && isAnswer(response)) {
+        const first = takeAnswerStart(response);
+        if (first) { canBindTail = fitsOnFreshPage([last,first.fragment],q); first.restore(); }
+      } else if (stem.length > 1 && isSpaceBlock(response)) {
+        const chunk = response.querySelector(':scope > .mwb-answer-space-chunk');
+        if (chunk) {
+          const probe = response.cloneNode(false); probe.appendChild(chunk.cloneNode(true));
+          canBindTail = fitsOnFreshPage([last,probe],q);
+        }
+      }
+      relaxedGroupBindings.push({reason:'题干与首个完整作答块超过单页',
+        question: (stem[0].textContent || '').trim().slice(0,70), keptTail:canBindTail});
+      if (canBindTail) {
+        placeStem(stem.slice(0,-1),q,heading);
+        if (isAnswer(response)) {
+          if (!tryPromptAnswer([last],response,q,null)) { placeBlock(last,q); placeBlock(response,q); }
+        } else {
+          if (!placeWithFirstSpace([last],response,q,null)) placeBlock(last,q);
+          placeBlock(response,q);
+        }
+      } else { placeStem([...stem],q,heading); placeBlock(response,q); }
+    }
+    for (const block of blocks.slice(responseAt+1)) placeBlock(block,q);
+  };
+
   makePage();
   const pending = [];
   const documentHeadings = [];
@@ -921,6 +1158,21 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       continue;
     }
     if (!node.classList?.contains('mwb-exam-question')) {
+      const group = questionGroupAt(index);
+      if (group) {
+        if (pending.length) placeUnit(pending.splice(0));
+        // Keep the closest section heading with the next question, without
+        // accidentally merging adjacent examples into a single question.
+        const leaders = documentHeadings.splice(0);
+        const all = [...leaders,...group];
+        handoutGroups++;
+        if (tryKeepUnit(all)) {
+          intactHandoutGroups++;
+          spaceChunks += all.reduce((n,block)=>n+block.querySelectorAll('.mwb-answer-space-chunk').length,0);
+        } else placeQuestionBlocks(all);
+        for (const part of group.slice(1)) consumed.add(part);
+        continue;
+      }
       // The long-handout path has no question wrapper. Keep heading/prompt
       // with nearby choice options or the first actual handwriting chunk.
       if (node.matches?.('h1, h2, h3, h4') && !node.classList.contains('mwb-exam-title') && !node.classList.contains('mwb-exam-section')) {
@@ -977,36 +1229,13 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     if (!blocks.length) throw new Error('试题为空：' + node.getAttribute('data-mwb-source-path'));
     // Try a whole question first, including options and writing space.
     // If it is longer than A4, keep the existing per-block splitting path.
-    if (blocks.length <= 64 && tryWholeQuestion(node, pendingHeading)) {
+    if (tryWholeQuestion(node, pendingHeading)) {
       pendingHeading = null;
       continue;
     }
     splitQuestions++;
-    // Keep the prompt with its first display formula and choice grid when
-    // that unit fits on a fresh sheet. Otherwise allow a natural split.
-    const first = [blocks.shift()];
-    if (blocks.length && isDisplayNode(blocks[0]) && first[0].textContent.trim().length < 130) {
-      first.push(blocks.shift());
-    }
-    if (isOptionsBlock(blocks[0]) && fitsOnFreshPage([...first, blocks[0]], node, pendingHeading)) {
-      first.push(blocks.shift());
-      keptPromptOptions++;
-    }
-    if (!(isSpaceBlock(blocks[0]) && placeWithFirstSpace(first, blocks[0], node, pendingHeading))) {
-      if (first.length === 1 && first[0].matches?.('p') && !fitsOnFreshPage(first,node,pendingHeading)) {
-        placeParagraph(first[0],node,pendingHeading);
-      } else placeUnit(first,node,pendingHeading);
-    }
+    placeQuestionBlocks(blocks,node,pendingHeading);
     pendingHeading = null;
-    for (const block of blocks) {
-      if (isSpaceBlock(block)) {
-        if (block.querySelector(':scope > .mwb-answer-space-chunk')) placeSpace(block,node);
-      }
-      else if (block.classList?.contains('callout')) placeCallout(block,node);
-      else if (block.matches?.('ol, ul')) placeLongList(block,node);
-      else if (block.matches?.('p')) placeParagraph(block,node);
-      else appendItem(block,node);
-    }
     questionPart = null;
   }
   if (pending.length) placeUnit(pending.splice(0));
@@ -1063,6 +1292,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   return {
     pages: pages.length, blocks: atomicCount, answerSpaceChunks: spaceChunks, splitCallouts,
     intactQuestions, splitQuestions, keptPromptOptions, keptPromptSpace,
+    handoutGroups, intactHandoutGroups, keptPromptAnswer, relaxedGroupBindings,
     answerSpaceExpectedPx: Number(expectedSpacePx.toFixed(2)),
     answerSpacePlacedPx: Number(placedSpacePx.toFixed(2)),
     answerSpaceDeltaPx: Number(spaceDeltaPx.toFixed(2)),
@@ -3731,7 +3961,8 @@ class PreviewModal extends Modal {
         let previewNote = '';
         try {
           const pagination = this.showPaginatedPreview();
-          previewNote = `；A4 分页预览 ${pagination.pages} 页（PDF 导出时重新核验）`;
+          previewNote = `；A4 分页预览 ${pagination.pages} 页（PDF 导出时重新核验）` +
+            (pagination.relaxedGroupBindings?.length ? `；${pagination.relaxedGroupBindings.length} 处题干与首步合计超过整页，已采用续页` : '');
         } catch (error) {
           this.clearPaginatedPreview();
           previewNote = '；A4 分页预览失败，当前显示连续内容：' + String(error?.message || error).slice(0,150);
@@ -4059,7 +4290,8 @@ class PreviewModal extends Modal {
       const pagination=pdf.mwbPrintReport;
       const partialLabel = this.renderWarnings.length ? `；带 ${this.renderWarnings.length} 项局部渲染警告（内容可能不完整）` : '';
       this.status.setText((savedPath ? `PDF 已保存：${savedPath}` : 'PDF 已生成（未保存）')+printMessage+
-        (pagination ? `；${pagination.pages} 页` : '')+partialLabel);
+        (pagination ? `；${pagination.pages} 页` : '')+
+        (pagination?.relaxedGroupBindings?.length ? `；${pagination.relaxedGroupBindings.length} 处超长题组已续页` : '')+partialLabel);
       new Notice((savedPath?'PDF 已保存':'PDF 已生成')+partialLabel+printMessage,8500);
     } catch(e) {
       const message=e?.message||String(e);

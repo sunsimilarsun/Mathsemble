@@ -1,3 +1,5 @@
+> 0.1.12 开发补充：题干—答案成组分页按 [GROUP_PAGINATION.md](GROUP_PAGINATION.md) 执行；不能用减少学生留白或裁切内容换取同页。以下旧版验收记录保留。
+
 # Mathsemble 功能需求规格说明（FRD）
 
 - 版本：**v0.1.9 文档基线 / FRD 1.0**
