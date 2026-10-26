@@ -1,0 +1,69 @@
+name: Final audit math context validation
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/finalize-audit-math.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/audit-seven-issues-20261026'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply exact display math guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, lzma, subprocess
+          assert subprocess.check_output(['git','hash-object','src/plugin.js'],text=True).strip() == '8fa1739e5b8f9b3cfd85944142876a4ec951f903'
+          encoded='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'
+          packed=base64.b64decode(encoded,validate=True)
+          assert hashlib.sha256(packed).hexdigest() == 'bdc6d9ffb7dfc9ce87e33aac6510f937eec87ae8ff7ee1a9b8f0aac3e5a5be34'
+          patch=Path('audit-math.patch');patch.write_bytes(lzma.decompress(packed))
+          subprocess.run(['git','apply','--check',str(patch)],check=True)
+          subprocess.run(['git','apply',str(patch)],check=True)
+          assert subprocess.check_output(['git','hash-object','src/plugin.js'],text=True).strip() == '5cc75693f28af050ddd1bd15303f032629e813d1'
+          patch.unlink()
+          Path('.github/workflows/finalize-audit-math.yml').unlink()
+          PY
+      - name: Validate all fixes
+        run: |
+          npm ci
+          npm run prepublish-check
+      - name: Commit verified final source
+        env:
+          BRANCH: fix/audit-seven-issues-20261026
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/plugin.js main.js tests/audit-regressions.test.cjs docs/AUDIT_FIX_0.1.13.md .github/workflows/finalize-audit-math.yml
+          git commit -m 'fix: preserve indented display-math answer slots while protecting code'
+          git push origin "HEAD:$BRANCH"
+          git rev-parse HEAD
+      - name: Prepare final archives
+        run: |
+          mkdir -p dist/install
+          cp main.js styles.css manifest.json dist/install/
+          git archive --format=zip -o dist/Mathsemble-audit-final-source.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mathsemble-v0.1.13-audit-fixes-install-only
+          path: dist/install/
+          compression-level: 9
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mathsemble-audit-final-source
+          path: dist/Mathsemble-audit-final-source.zip
+          if-no-files-found: error
