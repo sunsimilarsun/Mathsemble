@@ -9,6 +9,19 @@ Authors add outer parentheses for choices when needed, e.g. `（!{B}）`.
 Native `==highlight==` is not an answer, even inside parentheses.
 Escaped typed markers, inline code, fenced blocks and YAML are not transformed.
 
+## Answers and explanations by question type
+
+Choice and true/false questions use `!{...}` in the question text; fill-in
+questions use `?{...}` at each blank. True/false slots may contain
+`!{$\checkmark$}` or `!{$\times$}`. These types have no `answer` Callout;
+put the explanation in `[!solution]-` without a separate answer summary.
+
+For calculation, written-response and proof questions, `[!answer]-` contains
+the full standard response: required working, reasoning and conclusions,
+including applicable case splits and equality conditions. `[!solution]-` is
+optional supplementary explanation. Hiding `solution` in the teacher version
+must leave a complete full-credit response in `answer`.
+
 ## Migration safety
 
 Old answers written as `==42==` or `(==B==)` must be reviewed and migrated manually.

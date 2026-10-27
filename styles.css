@@ -107,6 +107,17 @@
 .mwb-typography td, .mwb-typography th { border: 1px solid #999; padding: 0.25em 0.45em; }
 /* A unified print-mode font/color, distinct from dark-theme reading foreground. */
 .mwb-print-document { color: #141414; background: white; }
+/* Keep explicit Markdown page breaks when saved HTML is printed directly.
+ * The A4 paginator consumes these markers before placing content on paper. */
+.mwb-print-document .mwb-page-break {
+  display: block;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  break-before: page;
+  page-break-before: always;
+}
 /* Keep ink black even when the original Obsidian theme is dark or inherited
    text fill is transparent. This is separate from the hidden answer content. */
 .mwb-print-document .mwb-answer-slot {
@@ -239,8 +250,9 @@
   /* Match all four edge colors without changing the existing border widths. */
   border-color: var(--mwb-callout-accent, #999);
 }
-/* A visual accent that does not add border width or change printed heights.
- * The paper layout retains its existing 2px physical left border. */
+/* Default Obsidian callouts have zero-width borders. Draw a matching inner
+ * outline as well as the left accent so all four edges are visible without
+ * changing their box geometry. Paper retains its physical 2px left border. */
 :is(.markdown-preview-view, .markdown-source-view.mod-cm6) .callout:is(
   [data-callout="definition"],
   [data-callout="theorem"],
@@ -252,7 +264,8 @@
   [data-callout="scaffold"],
   [data-callout="solution"]
 ) {
-  box-shadow: inset 3px 0 0 var(--mwb-callout-accent, #999);
+  box-shadow: inset 3px 0 0 var(--mwb-callout-accent, #999),
+    inset 0 0 0 1px var(--mwb-callout-accent, #999);
 }
 :is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(
   [data-callout="definition"],

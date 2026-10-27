@@ -1,4 +1,4 @@
-> 0.1.15 当前题目边界与分页规则以 [Markdown 规范](MARKDOWN_SPEC.md) 和 [严格五级标题分页](STRICT_H5_PAGINATION.md) 为准：五级题目标注、六级题内标题、短题不拆、长题新页起排。下文旧版推断规则仅保留历史记录，不再作为新讲义识别标准。
+> 0.1.15 当前题目边界、答案分区与分页规则以 [Markdown 规范](MARKDOWN_SPEC.md) 和 [严格五级标题分页](STRICT_H5_PAGINATION.md) 为准：五级题目标注、六级题内标题、短题不拆、长题新页起排；选填判断仅用答案槽与 `solution` 解析，计算、解答、证明等题由 `answer` 给出完整满分步骤，`solution` 提供补充说明。下文旧版推断规则仅保留历史记录，不再作为新讲义识别标准。
 
 > 0.1.12 开发补充：题干—答案成组分页按 [GROUP_PAGINATION.md](GROUP_PAGINATION.md) 执行；不能用减少学生留白或裁切内容换取同页。以下旧版验收记录保留。
 
@@ -28,7 +28,7 @@
 
 ### FR-01 Callout 的显隐与留白
 
-解析规则：`> [!type]` 后紧贴 `+` 或 `-` 的整个 Callout 为**教师专用**；无 `+/-` 的为双版共用。`solution` 额外具有独立留白和教师显隐选项；`answer` 保留标准答案语义及原有等高留白。
+解析规则：`> [!type]` 后紧贴 `+` 或 `-` 的整个 Callout 为**教师专用**；无 `+/-` 的为双版共用。`solution` 用于选填判断的解析、其他题型的补充说明，具有独立留白和教师显隐选项；`answer` 用于计算、解答、证明等题的完整标准步骤及结论，保留等高留白。
 
 - 教师版：默认显示全部 Callout；关闭“显示 solution”时隐藏所有 `solution` 块（无论是否带 `+/-`），不隐藏 `answer`。
 - 学生版：`answer` 和其他非 `solution` 教师专用 Callout 默认等高留白；教师专用 `solution` 默认隐藏且不留白，勾选“solution 留白”后按实际渲染高度生成空白。无 `+/-` 的 `solution` 在学生版仍为普通可见块。
@@ -149,6 +149,8 @@
 核心类型为 `definition`、`theorem`、`method`、`conclusion`、`attention`、`thinking`、`answer`、`scaffold`。旧 `solution` 兼容 `answer` 配色；`example` 不提供专用主题，例题使用普通 Markdown。颜色与图标只表达语义，新 `solution` 输出规则在转换层实现，不由 CSS 配色判断。
 
 打印 Callout 在白色纸张上采用四周同色边框和彩色标题（左边框 2px，上/右/下 1px，保持原有盒模型与留白测量）；`answer` 橙色 `#e67e22`，`solution` 淡蓝灰色 `#8794ad`（标题 `#53637e`），其余教学 Callout 四边同各自主题色；正文、加粗推导保持标准前景色。阅读视图采用 Obsidian 原有图标，打印版隐藏图标以统一实际测量与 PDF 几何。作用范围包括标准 Obsidian 阅读视图、实时预览及 Mathsemble 打印/测量 DOM，无需 YAML 或额外添加 `mwb-*` 类；语义匹配仅针对八类核心 Callout 和历史 `solution` 兼容类型。禁止全局干预 `mark`、`strong`、MathJax SVG 的布局、学生填空线、教师答案与学生响应留白。
+
+Obsidian 默认明／暗主题的阅读视图、实时预览采用同色内描边：左侧 3px 强调线，上／右／下 1px，均使用同一类型的主题色；默认主题无实体边框时也清晰可见。内描边不增加盒模型尺寸，不影响学生留白测量。标题继续采用相应的深色文字。
 
 **验收**：八类核心加旧 `solution`、普通 `example`/ `student-note`，短长解析、数学公式、折叠与非折叠混用；检查阅读与 PDF 同类配色，以及教师内容高度到学生留白的映射。当前仅完成静态、转换和 Chromium 局部浏览器测试；宿主真实 PDF 验收待完成。黑白打印和自定义主题属于后续 P1，不在本次引入复杂开关。
 

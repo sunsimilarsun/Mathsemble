@@ -319,6 +319,98 @@ function mwbCalloutDocument(markdown) {
   }
   return {lines, blocks};
 }
+
+// Only a top-level line with exactly six hyphens is a print page boundary.
+// Find it before Markdown's Setext/thematic-break parsing loses the spelling.
+// The projection runs after source-mapped question/answer plans are prepared,
+// so its extra blank lines never change their original source-line identities.
+function mwbPageBreakLines(source) {
+  const lines = String(source).replace(/\r\n?/g, '\n').split('\n');
+  const result = [];
+  let yaml = lines[0]?.replace(/^\uFEFF/, '').trim() === '---';
+  let html = null, fence = null, displayMath = false, bracketMath = false, paragraph = false;
+  let listItems = [];
+  const inlineContext = {};
+  const columns = text => [...text].reduce((n, char) => char === '\t' ? n + 4 - n % 4 : n + 1, 0);
+  const blockTag = /^ {0,3}<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?=\s|\/?>|$)/i;
+  const completeTag = /^ {0,3}(?:<\/[A-Za-z][\w-]*\s*>|<[A-Za-z][\w-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>)[ \t]*$/;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (yaml) { if (index > 0 && /^(?:---|\.\.\.)\s*$/.test(line)) yaml = false; continue; }
+    if (html) {
+      if (html === 'blank' ? !line.trim() : html.test(line)) html = null;
+      continue;
+    }
+    if (fence) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const startsLiteral = !!(inlineContext.comment || inlineContext.htmlTag || inlineContext.rawHtml);
+    if (!displayMath && !bracketMath && !startsLiteral) {
+      if (/^ {0,3}>/.test(line) || /^(?: {4}| {0,3}\t)/.test(line)) { paragraph = false; continue; }
+      // A list's nested fence/math belongs to that list. A dedented thematic
+      // line ends the container, even if its nested fence was never closed.
+      const indentation = columns(/^[ \t]*/.exec(line)[0]);
+      const marker = /^([ \t]*)([-+*]|\d{1,9}[.)])([ \t]+)(.*)$/.exec(line);
+      const kind = marker && (/^\d/.test(marker[2]) ? 'ordered' + marker[2].at(-1) : marker[2]);
+      const sibling = marker && listItems.some(item => item.indent === indentation && item.kind === kind);
+      const canInterrupt = !paragraph || sibling || (marker && marker[4].trim() && (!/^\d/.test(marker[2]) || parseInt(marker[2], 10) === 1));
+      if (marker && canInterrupt && !/^\s*(?:[-*]\s*){3,}$/.test(line)) {
+        while (listItems.length && indentation < listItems.at(-1).content) listItems.pop();
+        const markerEnd = line.length - marker[4].length, padding = columns(marker[3]);
+        const content = padding <= 4 ? columns(line.slice(0, markerEnd)) : columns(line.slice(0, markerEnd - marker[3].length)) + 1;
+        listItems.push({indent:indentation,content,kind});
+        paragraph = false; continue;
+      }
+      if (line.trim()) {
+        while (listItems.length && indentation < listItems.at(-1).content) listItems.pop();
+        if (listItems.some(item => indentation >= item.content)) continue;
+      }
+      const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (open && !(open[1][0] === '`' && open[2].includes('`'))) { fence = open[1]; paragraph = false; continue; }
+      // Do not feed literal HTML contents to the math/fence scanner: tokens
+      // inside a block must not leak into the Markdown following that block.
+      const raw = /^ {0,3}<(script|pre|style|textarea|code)(?:\s|>|$)/i.exec(line);
+      if (raw) {
+        const end = new RegExp('</' + raw[1] + '\\s*>', 'i');
+        if (!end.test(line)) html = end;
+        paragraph = false; continue;
+      }
+      if (/^ {0,3}<!\[CDATA\[/.test(line)) { if (!line.includes(']]>')) html = /\]\]>/; paragraph = false; continue; }
+      if (/^ {0,3}<\?/.test(line)) { if (!line.includes('?>')) html = /\?>/; paragraph = false; continue; }
+      if (/^ {0,3}<![A-Z]/.test(line)) { if (!line.includes('>')) html = />/; paragraph = false; continue; }
+      // Inline spans generated for answer slots are not HTML blocks. Only
+      // block tags or a complete standalone tag can begin a literal block.
+      if (blockTag.test(line) || (!paragraph && completeTag.test(line))) { html = 'blank'; paragraph = false; continue; }
+    }
+    const scan = mwbScanTypedLine(line, displayMath, inlineContext);
+    let visible = line;
+    for (const literal of [...scan.literals].reverse())
+      visible = visible.slice(0, literal.from) + ' '.repeat(literal.to - literal.from) + visible.slice(literal.to);
+    if (displayMath || bracketMath) {
+      displayMath = scan.displayMath;
+      if (bracketMath && /(?<!\\)\\\]/.test(visible)) bracketMath = false;
+      continue;
+    }
+    displayMath = scan.displayMath;
+    bracketMath = /(?<!\\)\\\[/.test(visible) && !/(?<!\\)\\\]/.test(visible);
+    if (!displayMath && !bracketMath && /^------[ \t]*$/.test(line) && !scan.literals.some(span => span.from === 0 && span.to >= line.length)) result.push(index);
+    paragraph = !!visible.trim() && !displayMath && !bracketMath && !/^(?: {0,3}#{1,6}(?:\s|$)|\s*(?:[-*_]\s*){3,}$|[=-]+\s*$)/.test(visible);
+  }
+  return result;
+}
+
+function mwbProjectPageBreaks(source) {
+  const lines = String(source).replace(/\r\n?/g, '\n').split('\n');
+  for (const index of mwbPageBreakLines(source))
+    lines[index] = '\n<div class="mwb-page-break" data-mwb-page-break="true" aria-hidden="true"></div>\n';
+  return lines.join('\n');
+}
+
+async function mwbRenderMarkdown(app, source, target, sourcePath, component) {
+  return MarkdownRenderer.render(app, mwbProjectPageBreaks(source), target, sourcePath, component);
+}
 function mwbSpaceTargets(blocks, options = {}) {
   return blocks.filter(block => {
     if (!block.teacherOnly || (block.type === 'solution' && options.solutionSpaces !== true)) return false;
@@ -402,6 +494,7 @@ function mwbQuestionTitle(text) {
 function mwbHandoutQuestionPlan(markdown) {
   const text = String(markdown).replace(/\r\n?/g, '\n');
   const lines = text.split('\n'), headings = [], groups = [], warnings = [], errors = [], candidates = [];
+  const pageBreakLines = new Set(mwbPageBreakLines(text));
   let hash = 2166136261;
   for (let i=0;i<text.length;i++) hash = Math.imul(hash ^ text.charCodeAt(i),16777619);
   const token = 'mwb-h5-' + (hash >>> 0).toString(16);
@@ -450,6 +543,9 @@ function mwbHandoutQuestionPlan(markdown) {
     if(displayMath||bracketMath||/^\s*\$\$/.test(line))continue;
     const heading=/^(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/.exec(line);
     if(heading){register(i,heading[1].length,(heading[2]||'').replace(/[ \t]+#+[ \t]*$/,'').trim());continue;}
+    // This spelling is an explicit print boundary, including after prose;
+    // it must not become a Setext H2 or end the current question's scope.
+    if(pageBreakLines.has(i))continue;
     // Setext H1/H2 still close a question. Inject on the preceding text line
     // without introducing a new paragraph or changing reference scope.
     if(/^(?:=+|-+)[ \t]*$/.test(line) && eligible[i-1] && lines[i-1].trim()) {
@@ -868,7 +964,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   root.replaceChildren();
   const pages = [];
   let page, body;
-  let atomicCount = 0, spaceChunks = 0, splitCallouts = 0;
+  let atomicCount = 0, spaceChunks = 0, splitCallouts = 0, forcedPageBreaks = 0;
   let intactQuestions = 0, splitQuestions = 0, keptPromptOptions = 0, keptPromptSpace = 0;
   let handoutGroups = 0, intactHandoutGroups = 0, keptPromptAnswer = 0;
   const relaxedGroupBindings = [];
@@ -876,6 +972,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   let lastSectionName = '';
   let questionPart = null;
   let pendingHeading = null;
+  let forcedPagePending = false;
 
   const makePage = () => {
     page = doc.createElement('div'); page.className = 'mwb-paper';
@@ -966,6 +1063,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     }
   };
   const commit = (node, q = null) => {
+    ensureForcedPage();
     const parent = targetFor(q);
     parent.appendChild(node);
     const fits = !overflowed(node);
@@ -984,6 +1082,11 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     if (active().meaningful === 0) throw new Error('打印页面存在不可容纳的题目标题或公式');
     makePage();
   };
+  const ensureForcedPage = () => {
+    if (!forcedPagePending) return;
+    forcedPagePending = false;
+    if (active().meaningful > 0) nextPage();
+  };
   const appendItem = (node, q = null) => {
     if (commit(node, q)) return;
     if (active().meaningful > 0) {
@@ -994,6 +1097,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   };
   // Test a cohesive heading + first question paragraph as a single layout unit.
   const commitUnit = (nodes, q = null, sectionHeading = null) => {
+    ensureForcedPage();
     if (sectionHeading) body.appendChild(sectionHeading);
     const content = targetFor(q);
     for (const node of nodes) content.appendChild(node);
@@ -1019,6 +1123,15 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
       !!el.querySelector?.('mjx-container[display="true"], .math.math-block'));
   const isOptionsBlock = node => !!node?.matches?.('ul.mwb-options, ol.mwb-options');
   const isSpaceBlock = node => !!node?.classList?.contains('mwb-answer-space');
+  const isPageBreak = node => node?.classList?.contains('mwb-page-break') &&
+    node.getAttribute('data-mwb-page-break') === 'true';
+  const placePageBreak = () => {
+    forcedPageBreaks++;
+    // Defer until actual content is placed. This also permits a trailing
+    // marker on a valid 200-page document without attempting page 201.
+    forcedPagePending = forcedPagePending || active().meaningful > 0;
+    questionPart = null;
+  };
 
   // Trial-layout on a real A4-width sheet before committing a keep-together
   // unit. The temporary sheet is never counted or exported. Unlike comparing
@@ -1091,6 +1204,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   // new page when the full question fits there; oversized questions fall back
   // to the semantic split rules and do not waste an entire current sheet.
   const tryWholeQuestion = (question, heading) => {
+    ensureForcedPage();
     const attempt = () => {
       if (heading) body.appendChild(heading);
       if (!commit(question)) {
@@ -1345,7 +1459,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     return named.test(text) || (isHeading(node) && /^\d+[.．、]\s*\S/.test(text)) ||
       (node.tagName === 'P' && /^\d+(?:[.．]\s+|、)\S/.test(text));
   };
-  const isBoundary = node => !node || isHeading(node) || node.matches?.('hr') ||
+  const isBoundary = node => !node || isPageBreak(node) || isHeading(node) || node.matches?.('hr') ||
     node.classList?.contains('mwb-exam-question') || node.classList?.contains('mwb-exam-section') ||
     node.classList?.contains('mwb-exam-title') || node.classList?.contains('mwb-exam-edition');
   const questionGroupAt = index => {
@@ -1439,7 +1553,8 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
   };
 
   const placeBlock = (block, q = null) => {
-    if (isSpaceBlock(block)) {
+    if (isPageBreak(block)) placePageBreak();
+    else if (isSpaceBlock(block)) {
       if (block.querySelector(':scope > .mwb-answer-space-chunk')) placeSpace(block, q);
     } else if (block.classList?.contains('callout')) placeCallout(block, q, strictFlow);
     else if (block.matches?.('ol, ul')) placeLongList(block, q);
@@ -1462,6 +1577,27 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     }
   };
   const placeQuestionBlocks = (blocks, q = null, heading = null) => {
+    if (blocks.some(isPageBreak)) {
+      let segment = [];
+      const flush = () => {
+        if (!segment.length) return;
+        // Each explicitly separated part retains short-part protection. The
+        // author-chosen boundary takes precedence over whole-question keeping.
+        if (tryKeepUnit(segment, q, heading)) {
+          spaceChunks += segment.reduce((sum, block) => sum + block.querySelectorAll('.mwb-answer-space-chunk').length, 0);
+        } else placeQuestionBlocks(segment, q, heading);
+        segment = []; heading = null;
+      };
+      for (const block of blocks) {
+        if (isPageBreak(block)) {
+          flush();
+          if (heading) { appendItem(heading); heading = null; }
+          placePageBreak();
+        } else segment.push(block);
+      }
+      flush();
+      return;
+    }
     const responseAt = blocks.findIndex(isResponse);
     if (responseAt <= 0) {
       // A long question without an answer still gets the old prompt/formula
@@ -1522,9 +1658,15 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     const content=question.querySelector(':scope > .mwb-exam-question-content');
     if(!content?.children.length)throw new Error('题目范围为空，不能执行严格分页');
     const blocks=Array.from(content.children);
-    const short=fitsOnFreshPage([question]);
+    const forced=blocks.some(isPageBreak);
+    const short=!forced && fitsOnFreshPage([question]);
     if(question.classList.contains('mwb-handout-question'))handoutGroups++;
-    if(short){
+    if(forced){
+      splitQuestions++;
+      strictFlow=true;
+      try { placeQuestionBlocks(blocks,question,heading); }
+      finally {strictFlow=false;questionPart=null;}
+    }else if(short){
       // A very tall section heading is not part of the question's height.
       // It may occupy its own sheet, but must never force a short question to split.
       if(heading && !fitsOnFreshPage([question],null,heading)){appendItem(heading);heading=null;}
@@ -1548,7 +1690,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     if(!occupied.length || (short && occupied.length!==1))throw new Error('题目分页核验失败：短题被拆开或题目丢失');
     strictQuestionPages.push({id,label:question.getAttribute('data-mwb-question-label') || question.getAttribute('data-mwb-source-path') || id,
       sourceStart:question.getAttribute('data-mwb-source-start'),sourceEnd:question.getAttribute('data-mwb-source-end'),
-      short,startPage:occupied[0],endPage:occupied[occupied.length-1],pages:occupied});
+      short,forced,startPage:occupied[0],endPage:occupied[occupied.length-1],pages:occupied});
   };
 
   makePage();
@@ -1559,6 +1701,13 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     const node = inputNodes[index];
     if (consumed.has(node)) continue;
     const next = inputNodes[index + 1];
+    if (isPageBreak(node)) {
+      if (pending.length) placeUnit(pending.splice(0));
+      for (const header of documentHeadings.splice(0)) appendItem(header);
+      if (pendingHeading) { appendItem(pendingHeading); pendingHeading = null; }
+      placePageBreak();
+      continue;
+    }
     if (node.classList?.contains('mwb-exam-section')) {
       if (pendingHeading) appendItem(pendingHeading);
       pendingHeading = node; lastSectionName = node.textContent || '';
@@ -1647,7 +1796,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     if (!blocks.length) throw new Error('试题为空：' + node.getAttribute('data-mwb-source-path'));
     // Try a whole question first, including options and writing space.
     // If it is longer than A4, keep the existing per-block splitting path.
-    if (tryWholeQuestion(node, pendingHeading)) {
+    if (!blocks.some(isPageBreak) && tryWholeQuestion(node, pendingHeading)) {
       pendingHeading = null;
       continue;
     }
@@ -1708,7 +1857,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false) 
     return false;
   }
   return {
-    pages: pages.length, blocks: atomicCount, answerSpaceChunks: spaceChunks, splitCallouts,
+    pages: pages.length, blocks: atomicCount, answerSpaceChunks: spaceChunks, splitCallouts, forcedPageBreaks,
     intactQuestions, splitQuestions, keptPromptOptions, keptPromptSpace,
     questionPolicy:strictPolicy?'strict-h5':'legacy',strictQuestionPages,
     handoutGroups, intactHandoutGroups, keptPromptAnswer, relaxedGroupBindings,
@@ -2544,7 +2693,7 @@ module.exports = { sanitizeClone, mimeFor, toDataUrl, inlineImages, extractMathC
 
 return module.exports; })();
 const { typographyCss } = (() => { const module = {exports:{}};
-module.exports = {typographyCss:"/* Mathsemble style boundaries: modal UI uses .mwb-modal; teaching material\n * uses .mwb-typography; PDF uses .mwb-print-document in isolated HTML.\n * The named teaching callout palette intentionally also works in ordinary notes.\n */\n/* One mathematical typography contract, shared verbatim by reading, A4 preview and PDF.\n * IMPORTANT: MathJax owns <mjx-container> and its descendant SVG dimensions, baseline,\n * viewBox, overflow and font metrics. Never apply generic svg{height:auto} here.\n */\n.mwb-typography {\n  font-family: \"Noto Serif CJK SC\", \"Songti SC\", \"SimSun\", serif;\n  font-size: 11pt;\n  line-height: 1.65;\n  letter-spacing: normal;\n  font-kerning: normal;\n  overflow: visible;\n}\n.mwb-typography p,\n.mwb-typography ul,\n.mwb-typography ol {\n  margin-block: 0.55em;\n  line-height: inherit;\n}\n.mwb-typography li { margin-block: 0.24em; line-height: inherit; }\n.mwb-typography h1,\n.mwb-typography h2,\n.mwb-typography h3,\n.mwb-typography h4,\n.mwb-typography h5,\n.mwb-typography h6 {\n  line-height: 1.45;\n  margin-block: 0.85em 0.4em;\n  break-after: avoid;\n}\n.mwb-typography h1 { font-size: 1.42em; }\n.mwb-typography h2 { font-size: 1.27em; }\n.mwb-typography h3 { font-size: 1.13em; }\n.mwb-typography h4 { font-size: 1.03em; }\n.mwb-typography h5 { font-size: 1.03em; font-weight: 700; }\n.mwb-typography h6 { font-size: 1em; font-weight: 600; }\n.mwb-typography img {\n  max-width: 100%; height: auto; filter: none;\n  object-fit: contain;\n}\n/* Only known TikZ wrappers are scaled. Never select arbitrary SVG descendants. */\n.mwb-typography :is(.tikzjax, .tikzjax-output, .mwb-tikz, .tikz) > svg,\n.mwb-typography .block-language-tikz svg,\n.mwb-typography .block-language-tikzjax svg {\n  max-width: 100%; height: auto; filter: none;\n}\n.mwb-typography .mwb-answer-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  /* Answer text is intentionally transparent. A currentColor underline would\n     therefore be transparent too; the writing line needs its own ink color. */\n  --mwb-answer-underline-color: var(--text-normal, #141414);\n  border-bottom: 1px solid var(--mwb-answer-underline-color);\n  vertical-align: baseline;\n  color: transparent;\n  white-space: nowrap;\n}\n/* Teacher-mode fill answers: red text centered on a persistent black line.\n * Choice letters use mwb-answer-revealed instead and are never underlined.\n * Math answers use TeX \\underline{\\color{red}{...}} for correct MathJax baselines. */\n.mwb-typography .mwb-teacher-fill-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  border: 0;\n  border-bottom: 1px solid var(--mwb-answer-underline-color, #141414);\n  color: #ad2323;\n  font-weight: 600;\n  text-align: center;\n  white-space: nowrap;\n  vertical-align: baseline;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n.mwb-print-document .mwb-teacher-fill-slot {\n  border-bottom-color: #141414;\n}\n/* Choice slots reserve a little inline space in parentheses, NEVER a writing line. */\n.mwb-typography .mwb-choice-slot,\n.mwb-typography.mwb-print-document .mwb-choice-slot {\n  display: inline-block;\n  min-width: 1.4em;\n  min-height: 0;\n  padding: 0;\n  border: 0;\n  border-bottom: none;\n  box-shadow: none;\n  background: transparent;\n  vertical-align: baseline;\n  text-decoration: none;\n  white-space: nowrap;\n}\n.mwb-typography .mwb-answer-revealed { color: #ad2323; font-weight: 600; }\n.mwb-typography blockquote { margin-block: 0.8em; padding: 0.3em 0.85em; border-left: 3px solid #999; }\n.mwb-typography .callout { border: 1px solid #bbb; border-radius: 4px; padding: 0.4em 0.75em; margin-block: 0.7em; }\n.mwb-print-document .callout-icon,\n.mwb-print-document .callout-fold { display: none; }\n.mwb-typography table { border-collapse: collapse; max-width: 100%; }\n.mwb-typography td, .mwb-typography th { border: 1px solid #999; padding: 0.25em 0.45em; }\n/* A unified print-mode font/color, distinct from dark-theme reading foreground. */\n.mwb-print-document { color: #141414; background: white; }\n/* Keep ink black even when the original Obsidian theme is dark or inherited\n   text fill is transparent. This is separate from the hidden answer content. */\n.mwb-print-document .mwb-answer-slot {\n  --mwb-answer-underline-color: #141414;\n  border-bottom-color: #141414;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n/* White print background; unthemed callouts retain a gray fallback border. */\n.mwb-typography.mwb-print-document .callout { background: #fff; border-color: #c4c4c4; border-left: 2px solid #999; }\n/* Teacher solutions must occupy the same geometry in preview and isolated PDF. */\n.mwb-print-document .callout-title { display: block; font-weight: 600; line-height: 1.5; padding: 0; margin: 0 0 0.35em; }\n.mwb-print-document .callout-content { display: block; padding: 0; margin: 0; }\n/* Export-only callout expansion: Obsidian themes can make folded content\n   display:none with higher specificity. Do not change the reading view. */\n.mwb-typography.mwb-print-document .callout > .callout-content,\n.mwb-typography.mwb-print-document .callout.is-collapsed > .callout-content {\n  display: block;\n  visibility: visible;\n}\n.mwb-print-document .callout-content > :first-child { margin-top: 0; }\n.mwb-print-document .callout-content > :last-child { margin-bottom: 0; }\n/* TikZJax can invert drawings in dark themes; the paper output stays unfiltered. */\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container svg { filter: none; }\n.mwb-print-document pre,\n.mwb-print-document figure,\n.mwb-print-document table,\n.mwb-print-document blockquote { break-inside: avoid; }\n.mwb-print-document p,\n.mwb-print-document li { orphans: 2; widows: 2; }\n/* Do not force height, overflow, vertical-align or display on MathJax containers. */\n\n/* Student response space measured from the fully rendered teacher solution.\n * Short questions with a response space are permitted to split on these chunks;\n * the first prompt paragraph remains protected by the rule below. */\n.mwb-print-document .mwb-answer-space {\n  display: block;\n  box-sizing: border-box;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  overflow: visible;\n  break-inside: auto;\n  page-break-inside: auto;\n}\n.mwb-print-document .mwb-answer-space-chunk {\n  box-sizing: border-box;\n  display: block;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  break-inside: avoid;\n  page-break-inside: avoid;\n}\n\n/* v0.1.4: options use the SAME responsive grid after live measurement. */\n.mwb-typography :is(ul,ol).mwb-options {\n  display: grid;\n  gap: 0.3em 12px;\n  margin: 0.3em 0 0.7em;\n  padding: 0;\n  list-style: none;\n  break-inside: avoid;\n}\n.mwb-typography .mwb-options li { list-style: none; margin:0; min-width:0; }\n.mwb-typography .mwb-options-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-1 { grid-template-columns: minmax(0, 1fr); }\n/* Measure natural, unwrapped MathJax and text widths without retaining these rules in PDF. */\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring { display: block; padding: 0; margin: 0; }\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring > li {\n  display: block;\n  width: max-content;\n  max-width: none;\n  white-space: nowrap;\n  margin:0;\n  padding:0;\n  list-style:none;\n}\n.mwb-typography .mwb-options-1 > li { overflow-wrap: anywhere; }\n/* Q numbering and sectional headers are print content, not Obsidian file metadata. */\n.mwb-print-document .mwb-exam-title { font-size: 18pt; text-align:center; margin: 0 0 0.85em; line-height:1.4; }\n.mwb-print-document .mwb-exam-section {\n  font-weight:700; font-size: 12pt; margin: 1.15em 0 0.65em;\n  break-after:avoid; page-break-after:avoid;\n}\n.mwb-print-document .mwb-exam-question { margin: 0 0 1.05em; break-inside: auto; }\n.mwb-print-document .mwb-exam-question.mwb-question-keep { break-inside: avoid; page-break-inside: avoid; }\n.mwb-print-document .mwb-number-only { break-after: avoid; page-break-after: avoid; }\n.mwb-print-document .mwb-question-index { font-weight:700; display:inline-block; margin-right:0.42em; white-space:nowrap; vertical-align:baseline; }\n.mwb-print-document .mwb-exam-question-content > p:first-child { break-after: avoid; page-break-after:avoid; }\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container[display=\"true\"],\n.mwb-print-document .math.math-block,\n.mwb-print-document .block-language-tikz,\n.mwb-print-document .block-language-tikzjax { break-inside: avoid; page-break-inside: avoid; }\n/* No forced no-break for a *long* question; a long answer space can split. */\n\n/* v0.1.4.1: MathJax-based answers have a stable underlined inline slot. */\n.mwb-typography .mwb-answer-slot-math { min-width: 3em; height: 1.65em; line-height: 1.65em; }\n.mwb-print-document .mwb-exam-edition {\n  text-align: right; font-size: 9pt; font-weight: 600; color:#444;\n  margin: -0.85em 0 0.85em;\n}\n\n/* Mathsemble mathematics teaching palette — reading-view reach fix (2026-10-23).\n * Read/Live Preview: match native Obsidian .callout markup DIRECTLY, even for\n * notes lacking YAML or Mathsemble class annotations. The previous version\n * required .mwb-math-material/.mwb-answer-note and could miss regular notes.\n * Keep colors independent of teacher/student +/- blank-space projection.\n * Example questions remain ordinary Markdown; [!example] gets no special look.\n * Do not globally style mark, strong, body fonts, or MathJax containers.\n */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  background-color: transparent;\n  /* Match all four edge colors without changing the existing border widths. */\n  border-color: var(--mwb-callout-accent, #999);\n}\n/* A visual accent that does not add border width or change printed heights.\n * The paper layout retains its existing 2px physical left border. */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  box-shadow: inset 3px 0 0 var(--mwb-callout-accent, #999);\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) > .callout-title {\n  color: var(--mwb-callout-title-ink, #444);\n  font-weight: 600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"definition\"] {\n  --callout-color: 46, 164, 79;\n  --callout-icon: book-open;\n  --mwb-callout-accent: #2ea44f;\n  --mwb-callout-title-ink: #237b39;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"theorem\"] {\n  --callout-color: 47, 129, 247;\n  --callout-icon: sigma;\n  --mwb-callout-accent: #2f81f7;\n  --mwb-callout-title-ink: #1f64c2;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"method\"] {\n  --callout-color: 155, 89, 182;\n  --callout-icon: lightbulb;\n  --mwb-callout-accent: #9b59b6;\n  --mwb-callout-title-ink: #793a97;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"conclusion\"] {\n  --callout-color: 0, 168, 150;\n  --callout-icon: check-circle;\n  --mwb-callout-accent: #00a896;\n  --mwb-callout-title-ink: #007d70;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"attention\"] {\n  --callout-color: 241, 196, 15;\n  --callout-icon: alert-triangle;\n  --mwb-callout-accent: #f1c40f;\n  --mwb-callout-title-ink: #866600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"thinking\"] {\n  --callout-color: 99, 110, 114;\n  --callout-icon: help-circle;\n  --mwb-callout-accent: #636e72;\n  --mwb-callout-title-ink: #525c60;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"answer\"] {\n  --callout-color: 230, 126, 34;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #e67e22;\n  --mwb-callout-title-ink: #a44f06;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"scaffold\"] {\n  --callout-color: 143, 112, 181;\n  --callout-icon: list-checks;\n  --mwb-callout-accent: #8f70b5;\n  --mwb-callout-title-ink: #684b91;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"solution\"] {\n  --callout-color: 135, 148, 173;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #8794ad;\n  --mwb-callout-title-ink: #53637e;\n}\n\n/* v0.2.1: optional metadata is always separate from math/answer DOM. */\n.mwb-typography .mwb-print-meta { color:#666; font-size:8.5pt; line-height:1.5;\n  display:flex; flex-wrap:wrap; gap:0.12em 1.1em; margin:0.2em 0 0.45em;\n  break-inside:avoid; }\n.mwb-typography .mwb-print-meta-item { white-space:normal; overflow-wrap:anywhere; }\n.mwb-typography .mwb-long-document { line-height:inherit; }\n\n/* v0.1.7: literal Markdown writing blanks, not LaTeX or answer reveal slots. */\n.mwb-typography .mwb-fixed-blank {\n  display:inline-block; box-sizing:border-box; min-height:1em;\n  border-bottom:1px solid #333; margin:0 0.22em; vertical-align:baseline;\n}\n/* Marker + and - control student/teacher projection in JavaScript only.\n * Do not apply visibility, fixed height, text recoloring or break-inside rules\n * based on callout names; long teacher solutions must remain fully measurable. */\n/* Headings must stay with following paragraphs. Do NOT break before all H2:\n   an automatic new page on every unit wastes sheets and disrupts space. */\n@media print {\n  .mwb-print-document h2,.mwb-print-document h3,.mwb-print-document h4 { break-after:avoid; page-break-after:avoid; }\n  .mwb-print-document .mwb-fixed-blank { border-bottom-color:#333; }\n}\n\n/* Source-mapped question containers add no padding or extra height. */\n.mwb-print-document .mwb-handout-question { display: flow-root; margin: 0; padding: 0; }\n.mwb-print-document .mwb-section-leaders { display: flow-root; margin: 0; padding: 0; }\n\n/* Modal-only UI rules below are excluded from export CSS. */\n"};
+module.exports = {typographyCss:"/* Mathsemble style boundaries: modal UI uses .mwb-modal; teaching material\n * uses .mwb-typography; PDF uses .mwb-print-document in isolated HTML.\n * The named teaching callout palette intentionally also works in ordinary notes.\n */\n/* One mathematical typography contract, shared verbatim by reading, A4 preview and PDF.\n * IMPORTANT: MathJax owns <mjx-container> and its descendant SVG dimensions, baseline,\n * viewBox, overflow and font metrics. Never apply generic svg{height:auto} here.\n */\n.mwb-typography {\n  font-family: \"Noto Serif CJK SC\", \"Songti SC\", \"SimSun\", serif;\n  font-size: 11pt;\n  line-height: 1.65;\n  letter-spacing: normal;\n  font-kerning: normal;\n  overflow: visible;\n}\n.mwb-typography p,\n.mwb-typography ul,\n.mwb-typography ol {\n  margin-block: 0.55em;\n  line-height: inherit;\n}\n.mwb-typography li { margin-block: 0.24em; line-height: inherit; }\n.mwb-typography h1,\n.mwb-typography h2,\n.mwb-typography h3,\n.mwb-typography h4,\n.mwb-typography h5,\n.mwb-typography h6 {\n  line-height: 1.45;\n  margin-block: 0.85em 0.4em;\n  break-after: avoid;\n}\n.mwb-typography h1 { font-size: 1.42em; }\n.mwb-typography h2 { font-size: 1.27em; }\n.mwb-typography h3 { font-size: 1.13em; }\n.mwb-typography h4 { font-size: 1.03em; }\n.mwb-typography h5 { font-size: 1.03em; font-weight: 700; }\n.mwb-typography h6 { font-size: 1em; font-weight: 600; }\n.mwb-typography img {\n  max-width: 100%; height: auto; filter: none;\n  object-fit: contain;\n}\n/* Only known TikZ wrappers are scaled. Never select arbitrary SVG descendants. */\n.mwb-typography :is(.tikzjax, .tikzjax-output, .mwb-tikz, .tikz) > svg,\n.mwb-typography .block-language-tikz svg,\n.mwb-typography .block-language-tikzjax svg {\n  max-width: 100%; height: auto; filter: none;\n}\n.mwb-typography .mwb-answer-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  /* Answer text is intentionally transparent. A currentColor underline would\n     therefore be transparent too; the writing line needs its own ink color. */\n  --mwb-answer-underline-color: var(--text-normal, #141414);\n  border-bottom: 1px solid var(--mwb-answer-underline-color);\n  vertical-align: baseline;\n  color: transparent;\n  white-space: nowrap;\n}\n/* Teacher-mode fill answers: red text centered on a persistent black line.\n * Choice letters use mwb-answer-revealed instead and are never underlined.\n * Math answers use TeX \\underline{\\color{red}{...}} for correct MathJax baselines. */\n.mwb-typography .mwb-teacher-fill-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  border: 0;\n  border-bottom: 1px solid var(--mwb-answer-underline-color, #141414);\n  color: #ad2323;\n  font-weight: 600;\n  text-align: center;\n  white-space: nowrap;\n  vertical-align: baseline;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n.mwb-print-document .mwb-teacher-fill-slot {\n  border-bottom-color: #141414;\n}\n/* Choice slots reserve a little inline space in parentheses, NEVER a writing line. */\n.mwb-typography .mwb-choice-slot,\n.mwb-typography.mwb-print-document .mwb-choice-slot {\n  display: inline-block;\n  min-width: 1.4em;\n  min-height: 0;\n  padding: 0;\n  border: 0;\n  border-bottom: none;\n  box-shadow: none;\n  background: transparent;\n  vertical-align: baseline;\n  text-decoration: none;\n  white-space: nowrap;\n}\n.mwb-typography .mwb-answer-revealed { color: #ad2323; font-weight: 600; }\n.mwb-typography blockquote { margin-block: 0.8em; padding: 0.3em 0.85em; border-left: 3px solid #999; }\n.mwb-typography .callout { border: 1px solid #bbb; border-radius: 4px; padding: 0.4em 0.75em; margin-block: 0.7em; }\n.mwb-print-document .callout-icon,\n.mwb-print-document .callout-fold { display: none; }\n.mwb-typography table { border-collapse: collapse; max-width: 100%; }\n.mwb-typography td, .mwb-typography th { border: 1px solid #999; padding: 0.25em 0.45em; }\n/* A unified print-mode font/color, distinct from dark-theme reading foreground. */\n.mwb-print-document { color: #141414; background: white; }\n/* Keep explicit Markdown page breaks when saved HTML is printed directly.\n * The A4 paginator consumes these markers before placing content on paper. */\n.mwb-print-document .mwb-page-break {\n  display: block;\n  height: 0;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  break-before: page;\n  page-break-before: always;\n}\n/* Keep ink black even when the original Obsidian theme is dark or inherited\n   text fill is transparent. This is separate from the hidden answer content. */\n.mwb-print-document .mwb-answer-slot {\n  --mwb-answer-underline-color: #141414;\n  border-bottom-color: #141414;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n/* White print background; unthemed callouts retain a gray fallback border. */\n.mwb-typography.mwb-print-document .callout { background: #fff; border-color: #c4c4c4; border-left: 2px solid #999; }\n/* Teacher solutions must occupy the same geometry in preview and isolated PDF. */\n.mwb-print-document .callout-title { display: block; font-weight: 600; line-height: 1.5; padding: 0; margin: 0 0 0.35em; }\n.mwb-print-document .callout-content { display: block; padding: 0; margin: 0; }\n/* Export-only callout expansion: Obsidian themes can make folded content\n   display:none with higher specificity. Do not change the reading view. */\n.mwb-typography.mwb-print-document .callout > .callout-content,\n.mwb-typography.mwb-print-document .callout.is-collapsed > .callout-content {\n  display: block;\n  visibility: visible;\n}\n.mwb-print-document .callout-content > :first-child { margin-top: 0; }\n.mwb-print-document .callout-content > :last-child { margin-bottom: 0; }\n/* TikZJax can invert drawings in dark themes; the paper output stays unfiltered. */\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container svg { filter: none; }\n.mwb-print-document pre,\n.mwb-print-document figure,\n.mwb-print-document table,\n.mwb-print-document blockquote { break-inside: avoid; }\n.mwb-print-document p,\n.mwb-print-document li { orphans: 2; widows: 2; }\n/* Do not force height, overflow, vertical-align or display on MathJax containers. */\n\n/* Student response space measured from the fully rendered teacher solution.\n * Short questions with a response space are permitted to split on these chunks;\n * the first prompt paragraph remains protected by the rule below. */\n.mwb-print-document .mwb-answer-space {\n  display: block;\n  box-sizing: border-box;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  overflow: visible;\n  break-inside: auto;\n  page-break-inside: auto;\n}\n.mwb-print-document .mwb-answer-space-chunk {\n  box-sizing: border-box;\n  display: block;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  break-inside: avoid;\n  page-break-inside: avoid;\n}\n\n/* v0.1.4: options use the SAME responsive grid after live measurement. */\n.mwb-typography :is(ul,ol).mwb-options {\n  display: grid;\n  gap: 0.3em 12px;\n  margin: 0.3em 0 0.7em;\n  padding: 0;\n  list-style: none;\n  break-inside: avoid;\n}\n.mwb-typography .mwb-options li { list-style: none; margin:0; min-width:0; }\n.mwb-typography .mwb-options-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-1 { grid-template-columns: minmax(0, 1fr); }\n/* Measure natural, unwrapped MathJax and text widths without retaining these rules in PDF. */\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring { display: block; padding: 0; margin: 0; }\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring > li {\n  display: block;\n  width: max-content;\n  max-width: none;\n  white-space: nowrap;\n  margin:0;\n  padding:0;\n  list-style:none;\n}\n.mwb-typography .mwb-options-1 > li { overflow-wrap: anywhere; }\n/* Q numbering and sectional headers are print content, not Obsidian file metadata. */\n.mwb-print-document .mwb-exam-title { font-size: 18pt; text-align:center; margin: 0 0 0.85em; line-height:1.4; }\n.mwb-print-document .mwb-exam-section {\n  font-weight:700; font-size: 12pt; margin: 1.15em 0 0.65em;\n  break-after:avoid; page-break-after:avoid;\n}\n.mwb-print-document .mwb-exam-question { margin: 0 0 1.05em; break-inside: auto; }\n.mwb-print-document .mwb-exam-question.mwb-question-keep { break-inside: avoid; page-break-inside: avoid; }\n.mwb-print-document .mwb-number-only { break-after: avoid; page-break-after: avoid; }\n.mwb-print-document .mwb-question-index { font-weight:700; display:inline-block; margin-right:0.42em; white-space:nowrap; vertical-align:baseline; }\n.mwb-print-document .mwb-exam-question-content > p:first-child { break-after: avoid; page-break-after:avoid; }\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container[display=\"true\"],\n.mwb-print-document .math.math-block,\n.mwb-print-document .block-language-tikz,\n.mwb-print-document .block-language-tikzjax { break-inside: avoid; page-break-inside: avoid; }\n/* No forced no-break for a *long* question; a long answer space can split. */\n\n/* v0.1.4.1: MathJax-based answers have a stable underlined inline slot. */\n.mwb-typography .mwb-answer-slot-math { min-width: 3em; height: 1.65em; line-height: 1.65em; }\n.mwb-print-document .mwb-exam-edition {\n  text-align: right; font-size: 9pt; font-weight: 600; color:#444;\n  margin: -0.85em 0 0.85em;\n}\n\n/* Mathsemble mathematics teaching palette — reading-view reach fix (2026-10-23).\n * Read/Live Preview: match native Obsidian .callout markup DIRECTLY, even for\n * notes lacking YAML or Mathsemble class annotations. The previous version\n * required .mwb-math-material/.mwb-answer-note and could miss regular notes.\n * Keep colors independent of teacher/student +/- blank-space projection.\n * Example questions remain ordinary Markdown; [!example] gets no special look.\n * Do not globally style mark, strong, body fonts, or MathJax containers.\n */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  background-color: transparent;\n  /* Match all four edge colors without changing the existing border widths. */\n  border-color: var(--mwb-callout-accent, #999);\n}\n/* Default Obsidian callouts have zero-width borders. Draw a matching inner\n * outline as well as the left accent so all four edges are visible without\n * changing their box geometry. Paper retains its physical 2px left border. */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  box-shadow: inset 3px 0 0 var(--mwb-callout-accent, #999),\n    inset 0 0 0 1px var(--mwb-callout-accent, #999);\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) > .callout-title {\n  color: var(--mwb-callout-title-ink, #444);\n  font-weight: 600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"definition\"] {\n  --callout-color: 46, 164, 79;\n  --callout-icon: book-open;\n  --mwb-callout-accent: #2ea44f;\n  --mwb-callout-title-ink: #237b39;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"theorem\"] {\n  --callout-color: 47, 129, 247;\n  --callout-icon: sigma;\n  --mwb-callout-accent: #2f81f7;\n  --mwb-callout-title-ink: #1f64c2;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"method\"] {\n  --callout-color: 155, 89, 182;\n  --callout-icon: lightbulb;\n  --mwb-callout-accent: #9b59b6;\n  --mwb-callout-title-ink: #793a97;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"conclusion\"] {\n  --callout-color: 0, 168, 150;\n  --callout-icon: check-circle;\n  --mwb-callout-accent: #00a896;\n  --mwb-callout-title-ink: #007d70;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"attention\"] {\n  --callout-color: 241, 196, 15;\n  --callout-icon: alert-triangle;\n  --mwb-callout-accent: #f1c40f;\n  --mwb-callout-title-ink: #866600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"thinking\"] {\n  --callout-color: 99, 110, 114;\n  --callout-icon: help-circle;\n  --mwb-callout-accent: #636e72;\n  --mwb-callout-title-ink: #525c60;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"answer\"] {\n  --callout-color: 230, 126, 34;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #e67e22;\n  --mwb-callout-title-ink: #a44f06;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"scaffold\"] {\n  --callout-color: 143, 112, 181;\n  --callout-icon: list-checks;\n  --mwb-callout-accent: #8f70b5;\n  --mwb-callout-title-ink: #684b91;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"solution\"] {\n  --callout-color: 135, 148, 173;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #8794ad;\n  --mwb-callout-title-ink: #53637e;\n}\n\n/* v0.2.1: optional metadata is always separate from math/answer DOM. */\n.mwb-typography .mwb-print-meta { color:#666; font-size:8.5pt; line-height:1.5;\n  display:flex; flex-wrap:wrap; gap:0.12em 1.1em; margin:0.2em 0 0.45em;\n  break-inside:avoid; }\n.mwb-typography .mwb-print-meta-item { white-space:normal; overflow-wrap:anywhere; }\n.mwb-typography .mwb-long-document { line-height:inherit; }\n\n/* v0.1.7: literal Markdown writing blanks, not LaTeX or answer reveal slots. */\n.mwb-typography .mwb-fixed-blank {\n  display:inline-block; box-sizing:border-box; min-height:1em;\n  border-bottom:1px solid #333; margin:0 0.22em; vertical-align:baseline;\n}\n/* Marker + and - control student/teacher projection in JavaScript only.\n * Do not apply visibility, fixed height, text recoloring or break-inside rules\n * based on callout names; long teacher solutions must remain fully measurable. */\n/* Headings must stay with following paragraphs. Do NOT break before all H2:\n   an automatic new page on every unit wastes sheets and disrupts space. */\n@media print {\n  .mwb-print-document h2,.mwb-print-document h3,.mwb-print-document h4 { break-after:avoid; page-break-after:avoid; }\n  .mwb-print-document .mwb-fixed-blank { border-bottom-color:#333; }\n}\n\n/* Source-mapped question containers add no padding or extra height. */\n.mwb-print-document .mwb-handout-question { display: flow-root; margin: 0; padding: 0; }\n.mwb-print-document .mwb-section-leaders { display: flow-root; margin: 0; padding: 0; }\n\n/* Modal-only UI rules below are excluded from export CSS. */\n"};
 return module.exports; })();
 const { DEFAULT_SPACE_SETTINGS, studentSpacePlan, teacherOnlyCalloutIndices, teacherSolutionHeights, injectSpaceNodes, auditSpaceGeometry, assertMeasurementWidth } = (() => { const module = {exports:{}};
 'use strict';
@@ -3906,7 +4055,7 @@ class PreviewModal extends Modal {
             heights = await this.measureSolutions(plan.count);
             if (generation !== this.generation) return;
           }
-          await MarkdownRenderer.render(this.app, plan.markdown, this.rendered, this.file.path, this.plugin);
+          await mwbRenderMarkdown(this.app, plan.markdown, this.rendered, this.file.path, this.plugin);
           if (generation !== this.generation) return;
           injectSpaceNodes(this.rendered, heights, this.spaceSettings, this.rendered.ownerDocument, plan.skipSpaces, plan.targets);
           this.solutionHeights = heights.filter((_, index) => !plan.skipSpaces?.includes(index));
@@ -3917,7 +4066,7 @@ class PreviewModal extends Modal {
             this.metaSelections.student,this.metaPosition);
         } else {
           const content = transformQuestion(this.markdown, mode, this.solutionOptions);
-          await MarkdownRenderer.render(this.app, content, this.rendered, this.file.path, this.plugin);
+          await mwbRenderMarkdown(this.app, content, this.rendered, this.file.path, this.plugin);
           if (generation !== this.generation) return;
           this.addRenderWarnings('教师版预览', await waitForStableRender(this.rendered, content));
           layoutOptionGrids(this.rendered);
@@ -4055,7 +4204,7 @@ class PreviewModal extends Modal {
     for (const chunk of chunks) {
       if (generation !== this.generation) return;
       const staging = target.ownerDocument.createElement('div');
-      await MarkdownRenderer.render(this.app, chunk, staging, this.file.path, this.plugin);
+      await mwbRenderMarkdown(this.app, chunk, staging, this.file.path, this.plugin);
       if (generation !== this.generation) return;
       while (staging.firstChild) target.appendChild(staging.firstChild);
     }
@@ -4117,7 +4266,7 @@ class PreviewModal extends Modal {
       if (mode === 'student') {
         const plan = studentSpacePlan(item.markdown, this.solutionOptions);
         source = plan.markdown;
-        await MarkdownRenderer.render(this.app, source, content, item.file.path, this.plugin);
+        await mwbRenderMarkdown(this.app, source, content, item.file.path, this.plugin);
         if (generation !== this.generation) return;
         if (plan.count > 0) {
           const heights = teacherHeightMap.get(item.file.path);
@@ -4127,7 +4276,7 @@ class PreviewModal extends Modal {
         }
       } else {
         source = transformQuestion(item.markdown, 'teacher', this.solutionOptions);
-        await MarkdownRenderer.render(this.app, source, content, item.file.path, this.plugin);
+        await mwbRenderMarkdown(this.app, source, content, item.file.path, this.plugin);
       }
       insertQuestionNumber(content, item.number);
       addMetaBlock(content.ownerDocument,content,metadataOf(item),this.metaSelections[mode] || [],this.metaPosition);
@@ -4162,7 +4311,7 @@ class PreviewModal extends Modal {
         const holder = page.createDiv({cls:'mwb-exam-question-content'});
         const measurement = mwbTeacherMeasurementPlan(item.markdown, this.solutionOptions);
         const source = measurement.markdown;
-        await MarkdownRenderer.render(this.app, source, holder, item.file.path, this.plugin);
+        await mwbRenderMarkdown(this.app, source, holder, item.file.path, this.plugin);
         contexts.push({item,plan,measurement,content:holder,source,path:item.file.path});
       }
       this.addRenderWarnings('整卷教师高度测量', await waitForStableRender(page, contexts.map(x=>x.source).join('\n\n')));
@@ -4186,7 +4335,7 @@ class PreviewModal extends Modal {
     try {
       const measurement = mwbTeacherMeasurementPlan(this.markdown, this.solutionOptions);
       const source = measurement.markdown;
-      await MarkdownRenderer.render(this.app, source, teacher, this.file.path, this.plugin);
+      await mwbRenderMarkdown(this.app, source, teacher, this.file.path, this.plugin);
       this.addRenderWarnings('教师专用块高度测量', await waitForStableRender(teacher, source));
       assertMeasurementWidth(this.rendered, teacher);
       layoutOptionGrids(teacher);
