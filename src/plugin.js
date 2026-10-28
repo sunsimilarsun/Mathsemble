@@ -2523,6 +2523,18 @@ const MEDIA_TYPES = Object.freeze({
 
 function sanitizeClone(node) {
   const clone = node.cloneNode(true);
+  // SVG labels may inherit TeX fonts from TikZJax's host stylesheet. Freeze
+  // their font properties before leaving Obsidian, without changing the preview.
+  const labels = svgTextNodes(node);
+  const copies = svgTextNodes(clone);
+  const view = node.ownerDocument?.defaultView;
+  if (view?.getComputedStyle) labels.forEach((label, index) => {
+    const style = view.getComputedStyle(label);
+    for (const property of ['font-family', 'font-size', 'font-style', 'font-weight', 'font-stretch']) {
+      const value = style.getPropertyValue(property);
+      if (value) copies[index].style.setProperty(property, value);
+    }
+  });
   for (const callout of clone.querySelectorAll('.callout.is-collapsed')) {
     callout.classList.remove('is-collapsed');
     if (callout.getAttribute('aria-expanded') === 'false') callout.setAttribute('aria-expanded', 'true');
@@ -2621,17 +2633,47 @@ async function inlineImages(root, converter = toDataUrl, allowIncompleteImages =
   }
 }
 
-function extractMathCss(doc) {
+function svgTextNodes(root) {
+  return Array.from(root?.querySelectorAll('svg text, svg tspan, svg textPath') || []);
+}
+
+function fontFamilyNames(value) {
+  return Array.from(String(value || '').matchAll(/(?:^|,)\s*(?:"([^"]+)"|'([^']+)'|([^,]+))/g),
+    match => (match[1] || match[2] || match[3]).trim().toLowerCase());
+}
+
+function extractMathCss(doc, bodyNode) {
+  const families = new Set();
+  const view = bodyNode?.ownerDocument?.defaultView;
+  for (const label of svgTextNodes(bodyNode)) {
+    const family = view?.getComputedStyle
+      ? view.getComputedStyle(label).fontFamily
+      : label.style?.fontFamily || label.getAttribute('font-family');
+    for (const name of fontFamilyNames(family)) families.add(name);
+  }
+  const selectRules = rules => {
+    const selected = [];
+    for (const rule of Array.from(rules || [])) {
+      const css = rule.cssText;
+      if (rule.cssRules?.length && rule.type !== 1) {
+        // Keep media/supports conditions around nested font declarations.
+        const inner = selectRules(rule.cssRules);
+        if (inner.length) selected.push(css.slice(0, css.indexOf('{') + 1) + '\n' + inner.join('\n') + '\n}');
+      } else if (/^@font-face/i.test(css)
+        // Match the family, not base64 font bytes that can contain "mjx" by chance.
+        ? fontFamilyNames(rule.style?.getPropertyValue('font-family'))
+          .some(name => families.has(name) || /mjx|mathjax/i.test(name))
+        : /mjx|mathjax/i.test(css)) {
+        selected.push(css);
+      }
+    }
+    return selected;
+  };
   const groups = [];
   for (const sheet of Array.from(doc.styleSheets || [])) {
     try {
-      const rules = Array.from(sheet.cssRules || []);
-      for (const rule of rules) {
-        const css = rule.cssText;
-        // A math-specific sheet may include required @font-face declarations.
-        if (/mjx|mathjax/i.test(css) || (/^@font-face/i.test(css) && /MJX|MathJax/i.test(css))) {
-          groups.push({ css, base: sheet.href || doc.baseURI });
-        }
+      for (const css of selectRules(sheet.cssRules)) {
+        groups.push({ css, base: sheet.href || doc.baseURI });
       }
     } catch (_) { /* opaque external stylesheet: never bypass cross-origin restrictions */ }
   }
@@ -2656,7 +2698,7 @@ async function inlineFontCss(groups, converter = toDataUrl) {
         if (!cache.has(resolved)) cache.set(resolved, converter(resolved));
         let uri;
         try { uri = await cache.get(resolved); }
-        catch (e) { throw new Error(`MathJax 字体资源无法内联（${resolved.slice(0, 90)}）：${e.message || e}`); }
+        catch (e) { throw new Error(`数学或 TikZ 字体资源无法内联（${resolved.slice(0, 90)}）：${e.message || e}`); }
         out += `url("${uri}")`;
       }
       cursor = m.index + m[0].length;
@@ -2683,7 +2725,7 @@ body { font-family:"Noto Serif CJK SC","Songti SC","SimSun",serif; font-size:11p
 async function exportHtml(bodyNode, title, typographyCss, doc = document, options = {}) {
   const clone = sanitizeClone(bodyNode);
   await inlineImages(clone, toDataUrl, options.allowIncompleteImages === true);
-  const mathCss = await inlineFontCss(extractMathCss(doc));
+  const mathCss = await inlineFontCss(extractMathCss(doc, bodyNode));
   const html=assembleHtml(clone.innerHTML, title, typographyCss, mathCss);
   return bodyNode.getAttribute?.('data-mwb-question-policy')==='strict-h5'
     ? html.replace('<main class="mwb-export-doc mwb-typography mwb-print-document">','<main class="mwb-export-doc mwb-typography mwb-print-document" data-mwb-question-policy="strict-h5">') : html;
