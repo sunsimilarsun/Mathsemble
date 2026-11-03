@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.resolve(__dirname, '../src/plugin.js'), 'utf8');
 const renders = [];
 const context = {
-  console, Buffer, module: {exports:{}},
+  console, Buffer, performance, setTimeout, clearTimeout, module: {exports:{}},
   require: name => name === 'obsidian' ? {
     Plugin:class {}, Modal:class {}, Notice:class {}, MarkdownView:class {},
     MarkdownRenderer:{render:async (...args) => {renders.push(args);return 'rendered';}},
@@ -90,12 +90,18 @@ test('page break projection is shared by raw, student, teacher and measurement r
   plans.push(a.mwbTeacherMeasurementPlan(text));
   renders.length = 0;
   for (const plan of plans) {
-    const app = {}, target = {}, component = {};
+    const app = {}, component = {};
+    const target = {children: [],
+      ownerDocument: {createElement: () => ({firstChild:null, remove(){this.detached=true;}})},
+      appendChild(stage){this.children.push(stage);stage.parentAtRender=this;},
+    };
     assert.equal(await a.mwbRenderMarkdown(app, plan.markdown, target, '讲义.md', component), 'rendered');
     const args = renders.at(-1);
     assert.equal(args[0], app);
     assert.match(args[1], /data-mwb-page-break="true"/);
-    assert.equal(args[2], target);
+    assert.notEqual(args[2], target, 'native renderer must write into isolated staging');
+    assert.equal(args[2].parentAtRender, target, 'staging was connected to its target');
+    assert.equal(args[2].detached, true, 'staging is removed after successful rendering');
     assert.equal(args[3], '讲义.md');
     assert.equal(args[4], component);
   }

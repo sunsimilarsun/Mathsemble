@@ -12,6 +12,7 @@
     "test": "node --test --test-concurrency=1 tests/*.test.cjs",
     "verify": "node scripts/verify.mjs",
     "check": "npm run build && npm test && npm run verify",
-    "prepublish-check": "npm run check && node scripts/prepublish.mjs"
+    "prepublish-check": "npm run check && node scripts/prepublish.mjs",
+    "test:templates": "node scripts/test-templates.mjs"
   }
 }
