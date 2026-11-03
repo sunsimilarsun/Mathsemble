@@ -19,7 +19,7 @@ CommonMark 夹具由 markdown-it-py 解析并用受控 Callout 适配器生成�
 
 本轮不重写数学内容，不压缩学生书写空间，不保证任意原生 HTML／第三方扩展或省略引用层级的复杂结构。不能匹配源码边界时失败退出。旧式无题标散文不能保证自动发现漏题。
 
-详见 [Markdown 书写规范](MARKDOWN_SPEC.md) 与 [五级题目标注模板](../templates/讲义_五级题目标题.md)。
+详见 [Markdown 书写规范](MARKDOWN_SPEC.md) 与本地配套内容库的[讲义最小示例](../../../Markdown/数学教学/模板&规范/讲义【最小示例】.md)。
 
 本地验证：`CHROME_PATH=/usr/bin/chromium npm run prepublish-check` 全部 162 项通过，0 失败、0 跳过，其中真实 Chromium 子场景共 68 个。另生成 5 组样例 PDF（短题、长题、交替小问、学生长留白、MathJax SVG），实际页数均与分页报告相同，并检查长答案续页渲染图。以上为受控样例，不等于用户实际 Obsidian 宿主验收。
 

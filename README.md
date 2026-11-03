@@ -14,7 +14,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 ## 书写规则与模板
 
-**唯一现行书写规范：[Markdown 规范](docs/MARKDOWN_SPEC.md)。** 模板入口为[模板交付说明](templates/README_交付说明.md)，可从[五级题目讲义](templates/讲义_五级题目标题.md)开始。
+**唯一现行书写规范：[Markdown 规范](docs/MARKDOWN_SPEC.md)。** 本地配套模板维护在相邻 Markdown 内容库，入口为[模板清单](../../Markdown/数学教学/模板&规范/README.md)，可从[讲义最小示例](../../Markdown/数学教学/模板&规范/讲义【最小示例】.md)开始。模板不在本仓库内；更换设备时按实际内容库位置定位。
 
 ```markdown
 # 二次函数专题
@@ -89,6 +89,8 @@ npm run prepublish-check
 ```
 
 CI 配置覆盖 Linux 和 Windows；CI 缺少浏览器时应失败。本地未指定可用浏览器会跳过对应测试，不能据此声称完成布局验收。模板回归会检查题目边界、答案投影和元信息；数学正确性另需审校。自动化验证不能代替真实 Obsidian 和完整 PDF 验收。
+
+模板单独验收时，将 `MATHSEMBLE_TEMPLATE_DIR` 设为内容库中 `数学教学/模板&规范/` 的实际路径，再运行 `node --test tests/templates.test.cjs`；未设置时兼容读取仓库根的 `templates/`。运行包含模板回归的全量检查时也须提供该目录。
 
 ## Network access and files outside the vault
 
