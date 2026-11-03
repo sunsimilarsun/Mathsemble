@@ -30,12 +30,13 @@ jobs:
           git merge-base --is-ancestor 5f2d8819352d8701151e2b947b0d2e5aad6c32cc HEAD
           python3 - <<'PY'
           from pathlib import Path
-          import base64, hashlib, lzma, subprocess
+          import base64, hashlib, lzma, subprocess, re
           parts = [Path(f'.integration/payload.{i:02}').read_text().strip() for i in range(4)]
           compressed = base64.b64decode(''.join(parts), validate=True)
           assert hashlib.sha256(compressed).hexdigest() == '842e19dd9ca290e3ce664f97d4a210f3d550ab3851cb95ec88265addfa1db7a2'
           patch = lzma.decompress(compressed)
           assert hashlib.sha256(patch).hexdigest() == '5cfcf4b3b0ccce511cd3a7088114bdb9279122572d21732b199f78fe2cdfd693'
+          patch = re.sub(rb'(new file mode 100644\n)--- a/[^\n]+', rb'\1--- /dev/null', patch)
           original = Path('tests/templates.test.cjs').read_text()
           integration = original.replace("const root = path.resolve(__dirname, '..');", "const root = path.resolve(__dirname, '../..');")
           old = "const templateDir = process.env.MATHSEMBLE_TEMPLATE_DIR\n  ? path.resolve(process.env.MATHSEMBLE_TEMPLATE_DIR)\n  : path.join(root, 'templates');"
