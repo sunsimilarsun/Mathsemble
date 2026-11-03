@@ -4,6 +4,14 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 **当前源码：0.1.15 开发版。** 仓库已有发布记录为 [0.1.10](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10)，其答案语法与开发版不同。当前模板面向开发版；本轮优化没有创建新 Release。真实 Obsidian、跨主题和完整长讲义 PDF 验收仍须按[宿主验收清单](docs/OBSIDIAN_HOST_ACCEPTANCE.md)执行。
 
+## 名称与项目边界
+
+产品名称统一为 **Mathsemble（数课工坊）**，当前插件源码与规范以 `sunsimilarsun/Mathsemble` 为准。预览窗口、诊断日志和交付包均使用 Mathsemble；插件类名为 `MathsemblePlugin`，日志前缀为 `[Mathsemble]`，PDF 临时目录前缀为 `mathsemble-pdf-`。
+
+`math-teaching-workbench` 只作为已有安装的兼容插件 ID 和目录名保留，不代表本插件归属于同名旧工作台仓库。不要仅将安装目录改成 `Mathsemble` 或 `mathsemble`；本轮没有迁移插件身份。旧工作台的长期平台规划、版本和验收记录不作为 Mathsemble 的完成依据。
+
+为避免破坏已有配置，命令 ID、`mwb-` 样式／DOM 标识及 `ExamExports/` 输出目录保持不变。更名不修改源 Markdown、数学内容或学生／教师双版本规则。详见[命名约定](docs/NAMING.md)。
+
 ## 快速使用
 
 1. 打开 Markdown，运行命令 **长 Markdown 文档预览、PDF 与打印（实验）**。
@@ -61,7 +69,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 2. 重启 Obsidian，在社区插件设置中启用 Mathsemble。
 3. 开发版请先在独立测试库安装本地构建的三个文件，核对当前模板和双版本输出。
 
-插件 ID 为 `math-teaching-workbench`，要求桌面版 Obsidian 1.5.0 及以上。社区目录审核／上架状态以实际审核结果为准。
+显示名称为 **Mathsemble**；`math-teaching-workbench` 是兼容插件 ID，安装目录沿用该 ID。要求桌面版 Obsidian 1.5.0 及以上。社区目录审核／上架状态以实际审核结果为准。
 
 ## 导出诊断与支持边界
 
@@ -90,7 +98,7 @@ npm run prepublish-check
 
 CI 配置覆盖 Linux 和 Windows；CI 缺少浏览器时应失败。本地未指定可用浏览器会跳过对应测试，不能据此声称完成布局验收。模板回归会检查题目边界、答案投影和元信息；数学正确性另需审校。自动化验证不能代替真实 Obsidian 和完整 PDF 验收。
 
-模板单独验收时，将 `MATHSEMBLE_TEMPLATE_DIR` 设为内容库中 `数学教学/模板&规范/` 的实际路径，再运行 `node --test tests/templates.test.cjs`；未设置时兼容读取仓库根的 `templates/`。运行包含模板回归的全量检查时也须提供该目录。
+默认模板回归使用 `tests/fixtures/templates/` 中的最小核心样本，不依赖个人内容库。个人模板单独验收时，将 `MATHSEMBLE_TEMPLATE_DIR` 设为内容库中 `数学教学/模板&规范/` 的实际路径，再运行 `npm run test:templates`；未提供有效目录会明确报错。个人模板不是插件安装包的一部分。
 
 ## Network access and files outside the vault
 
