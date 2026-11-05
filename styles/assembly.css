@@ -1,0 +1,64 @@
+/* Native assembly workspace. Scoped to the view, never included in PDF CSS. */
+.mwb-assembly { box-sizing:border-box; display:flex; flex-direction:column; height:100%; min-height:0; gap:10px; padding:12px; color:var(--text-normal); }
+.mwb-assembly * { box-sizing:border-box; }
+.mwb-assembly-header { display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+.mwb-assembly-header h2 { margin:0; font-size:1.25em; }
+.mwb-assembly-summary,.mwb-assembly-muted,.mwb-assembly-result-path { color:var(--text-muted); font-size:var(--font-smallest); }
+.mwb-assembly-toolbar { display:flex; align-items:end; flex-wrap:wrap; gap:8px; }
+.mwb-assembly-field { display:flex; flex-direction:column; gap:4px; min-width:0; margin:0; }
+.mwb-assembly-field > span { color:var(--text-muted); font-size:var(--font-smallest); }
+.mwb-assembly-field input,.mwb-assembly-field select,.mwb-assembly-field textarea { width:100%; min-width:0; }
+.mwb-assembly-toolbar > .mwb-assembly-field:first-child { flex:1 1 220px; }
+.mwb-assembly-toolbar > .mwb-assembly-field { flex:0 1 180px; }
+.mwb-assembly-status { padding:8px 10px; border-radius:var(--radius-s); background:var(--background-secondary); font-size:var(--font-small); overflow-wrap:anywhere; }
+.mwb-assembly-status.is-error,.mwb-assembly-error { color:var(--text-error); }
+.mwb-assembly-columns { display:grid; grid-template-columns:minmax(190px,0.8fr) minmax(300px,1.8fr) minmax(250px,1fr); gap:12px; flex:1; min-height:0; }
+.mwb-assembly-left,.mwb-assembly-center,.mwb-assembly-right { min-width:0; min-height:0; overflow:auto; padding:10px; border:1px solid var(--background-modifier-border); border-radius:var(--radius-m); }
+.mwb-assembly h3 { margin:8px 0; font-size:1em; }
+.mwb-assembly-config { margin-bottom:10px; }
+.mwb-assembly-config .mwb-assembly-field { margin:8px 0; }
+.mwb-assembly-config textarea { min-height:65px; resize:vertical; }
+.mwb-assembly-check { display:flex; align-items:center; gap:8px; margin:8px 0; }
+.mwb-assembly-filters { display:grid; gap:7px; margin:12px 0; }
+.mwb-assembly-filters h3 { margin-bottom:0; }
+.mwb-assembly-tree details { margin-block:8px; }
+.mwb-assembly-tree summary { cursor:pointer; overflow-wrap:anywhere; }
+.mwb-assembly-tree-row { display:flex; gap:5px; align-items:center; padding:4px 0 4px 8px; }
+.mwb-assembly-tree-item { text-align:left; white-space:normal; height:auto; padding-block:5px; flex:1; }
+.mwb-assembly-tree-row > button:last-child { font-size:var(--font-smallest); padding:3px 5px; }
+.mwb-assembly-search { display:grid; gap:8px; margin-bottom:8px; }
+.mwb-assembly-tabs { display:flex; gap:6px; }
+.mwb-assembly-tabs button.is-active { background:var(--interactive-accent); color:var(--text-on-accent); }
+.mwb-assembly-results { max-height:38vh; overflow:auto; border-block:1px solid var(--background-modifier-border); margin:8px 0; }
+.mwb-assembly-result { position:relative; padding:10px 65px 10px 3px; border-bottom:1px solid var(--background-modifier-border); }
+.mwb-assembly-result:last-child { border-bottom:0; }
+.mwb-assembly-result-title { display:block; background:transparent; box-shadow:none; height:auto; white-space:normal; text-align:left; padding:2px 0; font-weight:600; color:var(--text-normal); }
+.mwb-assembly-result-path { overflow-wrap:anywhere; margin-top:3px; }
+.mwb-assembly-add { position:absolute; right:3px; top:10px; }
+.mwb-assembly-preview-header { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.mwb-assembly-preview-header h3 { flex:1 1 120px; }
+.mwb-assembly-preview-body { overflow:auto; padding:8px 2px 20px; }
+.mwb-assembly-preview-body img { max-width:100%; }
+.mwb-assembly-outline-controls { display:flex; gap:6px; flex-wrap:wrap; align-items:end; margin-bottom:10px; }
+.mwb-assembly-outline-controls .mwb-assembly-field { flex:1 1 130px; }
+.mwb-assembly-outline { min-height:80px; padding-bottom:30px; }
+.mwb-assembly-entry { border:1px solid var(--background-modifier-border); padding:10px; border-radius:var(--radius-s); margin-bottom:8px; background:var(--background-primary); }
+.mwb-assembly-entry.is-section { background:var(--background-secondary); border-left:3px solid var(--interactive-accent); }
+.mwb-assembly-entry.is-dragging { opacity:0.5; }
+.mwb-assembly-entry-kind { font-size:var(--font-smallest); color:var(--text-accent); font-weight:600; cursor:grab; margin-bottom:6px; }
+.mwb-assembly-entry .mwb-assembly-field { margin-bottom:6px; }
+.mwb-assembly-entry-actions { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+.mwb-assembly-entry-actions button { font-size:var(--font-smallest); padding-inline:7px; }
+.mwb-assembly-error { font-size:var(--font-smallest); overflow-wrap:anywhere; }
+.mwb-assembly-empty { color:var(--text-muted); padding:16px 4px; }
+.mwb-assembly.is-busy .mwb-assembly-columns { opacity:0.75; }
+@media (max-width:1000px) {
+  .mwb-assembly-columns { grid-template-columns:minmax(170px,0.7fr) minmax(260px,1.3fr); }
+  .mwb-assembly-right { grid-column:1 / -1; max-height:45vh; }
+  .mwb-assembly-columns { overflow:auto; }
+}
+@media (max-width:650px) {
+  .mwb-assembly-columns { display:flex; flex-direction:column; }
+  .mwb-assembly-left,.mwb-assembly-center,.mwb-assembly-right { min-height:220px; flex-shrink:0; overflow:visible; max-height:none; }
+  .mwb-assembly-toolbar > .mwb-assembly-field { flex:1 1 160px; }
+}

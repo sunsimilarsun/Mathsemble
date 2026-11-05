@@ -223,26 +223,13 @@ Callout 类型及显隐选项不决定题目边界。嵌套结构必须写出引
 
 ## 11. 题卡元信息与模板验收
 
-普通讲义不要求 YAML；单文件题卡用于文件夹组卷时，以以下字段为准。复制模板必须替换示例 ID，并核实实际来源。已有知识点仅迁移字段，不从题名或路径猜造知识点、章节或题族身份。
+题卡采用现行十字段：`id`、`subject`、`question_type`、`difficulty`、`teaching_tier`、`source`、`role`、`knowledge_nodes`、`family_id`、`methods`。
 
-| 字段 | 用途／值 |
-| --- | --- |
-| `id` | 正式题卡的真实唯一 ID；模板中的示例 ID 必须替换，不把显示题号当成身份 |
-| `object_type` | 题卡使用 `question` |
-| `question_type` | `choice`、`multiple_choice`、`fill_blank`、`true_false`、`short_answer`、`calculation`、`proof`、`comprehensive` |
-| `knowledge_nodes` | 知识点列表，保持项目原有标识或链接；未知用 `[]` |
-| `teaching_tier` | 原有教学分层，如核心、基础、培优、扩展；不自动重定级 |
-| `difficulty` | 1～5；与教学分层独立 |
-| `role` | 已确认的 `example`、`variant`、`practice`、`homework`、`test`；未知用 `null` |
-| `source` | 实际来源；未核实应注明，不把示例“原创”当作事实 |
-| `chapter_id`、`section_id` | 已确认的章节身份；未知用 `null` |
-| `family_id`、`parent_id`、`question_group_id` | 已知结构关系；没有依据时用 `null` |
-| `methods`、`assets` | 方法和资源列表；未知用 `[]` |
+- role 为例题、变式、训练；兼容读取历史英文值，不在索引时自动迁移源文。
+- 知识点与方法为列表，允许空列表。family_id 允许 null，仅表示同族，不推断母题关系。
+- 不要求题卡填写 object_type、chapter_id、section_id、parent_id、question_group_id、assets 等历史扩展字段。已有旧字段可读取，不自动删除。
+- 元信息未知时显示缺项，不凭路径、标题猜造知识点、来源或难度。
+- 知识笔记采用自身既有字段，其 Markdown 为事实源；过期派生登记不能覆盖当前正文。
+- 组题方案独立保存，显示标题和本次角色不回写源卡。知识笔记整篇加入。
 
-旧模板中的 `知识点`、`level`、`来源` 分别迁移为 `knowledge_nodes`、`teaching_tier`、`source`。`type` 题型别名仍兼容，但新模板统一写 `question_type`，不保留相互冲突的双字段。
-
-空值必须写未加引号的 `null`／`~` 或留空；`"null"` 是文字。缺少章节、教学角色等信息会继续产生审计提示，不能为了消除提示编造身份。Obsidian 中优先使用宿主解析的 YAML；离线后备读取只支持项目所需的简单标量和列表。
-
-文件夹组卷只扫描当前题卡所在文件夹，不递归子目录。文件夹最多 200 份 Markdown，单次最多 100 道有效题；可按题型或 `knowledge_nodes` 第一项分组，多知识点题不会重复收录。全库搜索、题篮与题族驱动编排尚未实现。
-
-模板自动验收检查题目数量、边界警告、学生答案投影、正式字段和交付清单链接；它不能证明数学内容正确。完整题卡应写可核算的答案；占位教学内容应明确标注并在实际使用前补齐。
+现行题卡正文仍遵循本规范的答案槽、answer/solution 和 H5/H6 规则。正式来源及数学内容需要作者核对。

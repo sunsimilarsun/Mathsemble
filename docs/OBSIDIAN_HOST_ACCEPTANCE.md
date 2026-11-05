@@ -3,7 +3,7 @@
 ## Preparation
 
 1. Back up the existing vault and plugin installation. The tagged v0.1.10 has the old ==answer== syntax; this checklist is for a manually installed **development main** build only.
-2. In a separate test Vault, copy the current main-branch main.js, styles.css and matching manifest.json to `.obsidian/plugins/math-teaching-workbench/`. Never replace the stable teaching vault as the first test.
+2. In a separate test Vault, copy the target build's main.js, styles.css and matching manifest.json to `.obsidian/plugins/mathsemble/`. Record the branch and commit; development builds need not be on main. Never replace the stable teaching vault as the first test.
 3. Open `tests/fixtures/typed-answer-host.md` in that test Vault (copy it as a Markdown note). No network resources are required for the baseline cases.
 4. Record Obsidian version, OS, theme, locale, installed relevant plugins, and the exact Git commit being tested.
 

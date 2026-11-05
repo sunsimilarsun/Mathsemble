@@ -35,11 +35,11 @@ const handouts = [
   {name: '试卷【模板】.md', questions: 5, slots: 6},
 ];
 const cards = [
-  {name: '单选题【模板】.md', id: 'TEMPLATE-CHOICE-001', type: 'choice', group: 'single', slots: 1, unclassified: true},
+  {name: '单选题【模板】.md', id: 'TEMPLATE-CHOICE-001', type: 'choice', group: 'single', slots: 1, nodes: ['[[二次函数]]', '[[函数的极值与最值]]'], roleKnown:true},
   {name: '多选题【模板】.md', id: 'MATH-20261019-003', type: 'multiple_choice', group: 'multiple', node: '[[函数的极值与最值]]', slots: 1},
-  {name: '填空题【模板】.md', id: 'MATH-20261019-002', type: 'fill_blank', group: 'fill', node: '[[切线问题]]', slots: 2},
+  {name: '填空题【模板】.md', id: 'MATH-20261019-002', type: 'fill_blank', group: 'fill', node: '切线问题', slots: 2},
   {name: '判断题【模板】.md', id: 'TEMPLATE-JUDGMENT-001', type: 'true_false', group: 'judgment', slots: 2, unclassified: true},
-  {name: '解答题【模板】.md', id: 'MATH-20261019-001', type: 'short_answer', group: 'solution', node: '[[切线问题]]', slots: 0},
+  {name: '解答题【模板】.md', id: 'MATH-20261019-001', type: 'short_answer', group: 'solution', node: '切线问题', slots: 0},
 ];
 const materialTemplates = [...handouts, ...cards];
 // An intentional, ordinary highlight may be added here after review. Answer
@@ -112,28 +112,22 @@ for (const fixture of cards) {
     const markdown = readTemplate(fixture.name);
     const frontmatter = markdown.split(/\r?\n---(?:\r?\n|$)/)[0];
     const fields = new Set(Array.from(frontmatter.matchAll(/^([A-Za-z_][\w-]*):/gm), match => match[1]));
-    for (const field of ['id', 'object_type', 'question_type', 'difficulty', 'teaching_tier',
-      'chapter_id', 'section_id', 'role', 'knowledge_nodes', 'family_id', 'parent_id',
-      'question_group_id', 'methods', 'source', 'assets', 'needs_review']) {
-      assert.ok(fields.has(field), 'missing metadata key: ' + field);
-    }
-    assert.match(frontmatter, new RegExp('^id: "' + fixture.id + '"$', 'm'));
+    assert.deepEqual([...fields].sort(), ['id','subject','question_type','difficulty','teaching_tier','source','role','knowledge_nodes','family_id','methods'].sort());
+    assert.match(frontmatter, new RegExp('^id: [\"\']?' + fixture.id + '[\"\']?$', 'm'));
     assert.match(frontmatter, new RegExp('^question_type: ' + fixture.type + '$', 'm'));
     assert.doesNotMatch(frontmatter, /^(?:type|level|知识点|来源):/m);
-    assert.match(frontmatter, /替换示例 ID/);
-    assert.match(frontmatter, /尚未独立核实/);
 
     // Pass no metadata object: this exercises the actual offline YAML fallback.
     // Unknown IDs/role must remain missing, not become fabricated string values.
     const result = api.collectExamItems([{file: {path: fixture.name}, markdown}], {groupBy: 'knowledge_nodes'});
     assert.equal(result.items.length, 1);
     assert.equal(result.items[0].group, fixture.group);
-    assert.deepEqual(Array.from(result.items[0].knowledgeNodes), fixture.node ? [fixture.node] : []);
-    const missing = ['chapter_id', 'section_id', 'role'];
-    if (fixture.unclassified) missing.push('teaching_tier', 'difficulty', 'knowledge_nodes');
+    assert.deepEqual(Array.from(result.items[0].knowledgeNodes), fixture.nodes || (fixture.node ? [fixture.node] : []));
+    const missing = fixture.roleKnown ? [] : ['role'];
+    if (fixture.unclassified) missing.push('teaching_tier', 'difficulty', 'source');
     assert.deepEqual(Array.from(result.items[0].metadataAudit.missing), missing);
     assert.deepEqual(Array.from(result.items[0].metadataAudit.warnings), []);
-    assert.equal(result.sections[0].id, fixture.node || '__unknown__');
+    assert.equal(result.sections[0].id, fixture.nodes?.[0] || fixture.node || '__unknown__');
 
     const answerBlocks = Array.from(api.mwbCalloutDocument(markdown).blocks).filter(block => block.type === 'answer');
     assert.equal(answerBlocks.length > 0, fixture.group === 'solution', 'objective cards use slots and solution only');

@@ -2,7 +2,22 @@
 
 Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作讲义、题卡和试卷，预览并导出 A4 学生版／教师版 PDF、打印稿及 HTML。
 
-**当前源码：0.1.15 开发版。** 仓库已有发布记录为 [0.1.10](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.1.10)，其答案语法与开发版不同。当前模板面向开发版；本轮优化没有创建新 Release。真实 Obsidian、跨主题和完整长讲义 PDF 验收仍须按[宿主验收清单](docs/OBSIDIAN_HOST_ACCEPTANCE.md)执行。
+**当前源码：0.2.0 开发版。** 新增“知识点与组题工作区”，支持跨目录筛选、整篇知识笔记与独立题卡混编、拖动排序、方案保存及 Markdown 讲义生成，复用学生／教师 PDF 导出。此版尚待用户进行真实 Obsidian 使用验收。
+
+## 知识点与组题
+
+1. 在命令面板执行 **知识点与组题工作区**，或点击侧栏图标。
+2. 设置题库和知识库目录（库内相对路径，每行一个），应用并扫描；模板、登记和输出目录默认不收录。
+3. 搜索和筛选，预览题目或整篇知识笔记后加入编排。题卡知识标签可以关联到实际知识笔记；同名歧义保留提示。
+4. 拖动编排项或使用移动按钮，添加分区，修改本次显示标题和例题／变式／训练角色。源笔记不改写。
+5. 保存方案到 `Mathsemble/组题方案/`；重新扫描后显式更新已变化的引用。删除、重复 ID 或缺失来源不会被自动替换。
+6. 生成 Markdown 到 `Mathsemble/讲义/`，或生成并进入现有 A4 预览，再导出学生／教师 PDF。每次生成保存一份当前内容快照，已有输出不自动改写。
+
+知识正文按整篇加入，暂不提供小节截取、自动抽题或自动修改知识标签。Markdown 笔记嵌入需先展开为正文，否则阻止生成以避免学生投影遗漏；图片按原文件位置重新解析。
+
+源码基线恢复与版本差异见 [0.2.0 开发基线](docs/BASELINE_0.2.0.md)。
+
+本轮相关测试 69 项通过；全量回归 257 项通过、33 项失败，失败名称均已出现在原 0.1.20 基线对照中。完整记录及试用步骤见 [0.2.0 测试说明](docs/TESTING_0.2.0.md)；此结果不等于全量验收通过。
 
 ## 快速使用
 
@@ -57,11 +72,11 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 正式发布版可从 [GitHub Releases](https://github.com/sunsimilarsun/Mathsemble/releases) 下载三个独立文件：`main.js`、`manifest.json`、`styles.css`。
 
-1. 将三个同版本文件放入 `<vault>/.obsidian/plugins/math-teaching-workbench/`。
+1. 将三个同版本文件放入 `<vault>/.obsidian/plugins/mathsemble/`。
 2. 重启 Obsidian，在社区插件设置中启用 Mathsemble。
 3. 开发版请先在独立测试库安装本地构建的三个文件，核对当前模板和双版本输出。
 
-插件 ID 为 `math-teaching-workbench`，要求桌面版 Obsidian 1.5.0 及以上。社区目录审核／上架状态以实际审核结果为准。
+插件 ID 为 `mathsemble`，要求桌面版 Obsidian 1.5.0 及以上。社区目录审核／上架状态以实际审核结果为准。
 
 ## 导出诊断与支持边界
 
@@ -69,7 +84,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 - 题目丢失、留白高度异常、版心越界或无法安全分页会阻断导出。
 - `$x=?{2}$` 仅隐藏公式中的数值，`?{$x=2$}` 隐藏整个等式。公式内部槽保留 A4 导出支持，原生 Reading View／Live Preview 的全面适配尚未验收。
 - Reading View 对混合转义答案标记的区块仍采用保守跳过策略。复杂 HTML、懒续行、第三方 Markdown 扩展、TikZ、跨主题样式需要真实宿主检查。
-- 题库搜索、题篮、知识点编排和题族驱动的组卷尚未实现；见[功能矩阵](docs/FEATURE_MATRIX.md)与[路线图](docs/ROADMAP.md)。
+- 手动搜索、题篮及知识混编已加入；自动抽题和题族驱动组卷仍待后续开发，见[功能矩阵](docs/FEATURE_MATRIX.md)与[路线图](docs/ROADMAP.md)。
 
 ## 开发与验证
 
@@ -79,7 +94,7 @@ npm run check
 npm run prepublish-check
 ```
 
-`src/plugin.js` 是源码入口，`main.js` 是安装产物。`styles.css` 是打印 CSS 唯一编辑来源；构建同步其打印部分到源码中的生成字面量，再生成 `main.js`。构建统一使用 LF，CRLF 检出不应导致语义校验误报。修改后同时保留源码和构建产物。
+`src/plugin.js` 保留既有渲染源码；新组题模块维护在 `src/assembly-*.cjs`，构建将其同步到标记区，再生成 `main.js`。不要手改生成标记区。`styles/assembly.css` 维护组题界面样式。`styles.css` 是打印 CSS 唯一编辑来源；构建同步其打印部分到源码中的生成字面量，再生成 `main.js`。构建统一使用 LF，CRLF 检出不应导致语义校验误报。修改后同时保留源码和构建产物。
 
 浏览器回归需要 Chrome／Chromium。Linux 测试会查找常用安装路径；Windows PowerShell 可显式设置：
 

@@ -12,7 +12,20 @@ if (!existsSync(input)) {
 }
 if (!existsSync(resolve(root, 'styles.css'))) throw new Error('Missing styles.css; cannot generate printing stylesheet');
 const original = readFileSync(input, 'utf8');
-const source = synchronizePrintCss(original.replace(/\r\n?/g, '\n'), readFileSync(resolve(root, 'styles.css'), 'utf8'));
+let source = original.replace(/\r\n?/g, '\n');
+if (source.includes('/* MWB_ASSEMBLY_GENERATED_START */')) {
+  const modules = ['core','markdown','service','view'].map(name => {
+    const body = readFileSync(resolve(root, `src/assembly-${name}.cjs`), 'utf8').replace(/\r\n?/g, '\n');
+    return `const mwbAssembly${name[0].toUpperCase()+name.slice(1)} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();`;
+  }).join('\n');
+  source = source.replace(/\/\* MWB_ASSEMBLY_GENERATED_START \*\/[\s\S]*?\/\* MWB_ASSEMBLY_GENERATED_END \*\//,
+    () => '/* MWB_ASSEMBLY_GENERATED_START */\n' + modules + '\n/* MWB_ASSEMBLY_GENERATED_END */');
+  const cssPath = resolve(root,'styles.css');
+  const css = readFileSync(cssPath,'utf8').replace(/\r\n?/g,'\n').replace(/\n\/\* MWB_ASSEMBLY_STYLES_START \*\/[\s\S]*$/, '');
+  const assemblyCss = readFileSync(resolve(root,'styles/assembly.css'),'utf8').replace(/\r\n?/g,'\n');
+  writeFileSync(cssPath, css + '\n/* MWB_ASSEMBLY_STYLES_START */\n' + assemblyCss);
+}
+source = synchronizePrintCss(source, readFileSync(resolve(root, 'styles.css'), 'utf8'));
 if (source !== original) writeFileSync(input, source, 'utf8');
 writeFileSync(output, source, 'utf8');
 console.log('Synchronized printing CSS from styles.css; built main.js from src/plugin.js.');

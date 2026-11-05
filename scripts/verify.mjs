@@ -9,7 +9,7 @@ const manifest = JSON.parse(read('manifest.json').toString('utf8'));
 const pkg = JSON.parse(read('package.json').toString('utf8'));
 const required = ['main.js','src/plugin.js','styles.css','manifest.json','README.md','tests/regression.test.cjs'];
 for (const name of required) if (!existsSync(resolve(root,name))) throw new Error('Missing: '+name);
-if (manifest.id !== 'math-teaching-workbench') throw new Error('Plugin ID mismatch');
+if (manifest.id !== 'mathsemble') throw new Error('Plugin ID mismatch');
 if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) throw new Error('Non-semver manifest version');
 if (pkg.version !== manifest.version) throw new Error('Package/manifest versions differ');
 const lock = JSON.parse(read('package-lock.json').toString('utf8'));
@@ -18,6 +18,18 @@ if (lock.version !== pkg.version || lock.packages?.['']?.version !== pkg.version
 if (manifest.isDesktopOnly !== true) throw new Error('Node/Electron requires desktopOnly=true');
 if (!manifest.description.endsWith('.') || manifest.description.length>250) throw new Error('Invalid manifest description');
 if (!read('main.js').equals(read('src/plugin.js'))) throw new Error('Build differs from source');
+const pluginSource = read('src/plugin.js').toString('utf8');
+if (pluginSource.includes('/* MWB_ASSEMBLY_GENERATED_START */')) {
+  const modules = ['core','markdown','service','view'].map(name => {
+    const body = read(`src/assembly-${name}.cjs`).toString('utf8').replace(/\r\n?/g,'\n');
+    return `const mwbAssembly${name[0].toUpperCase()+name.slice(1)} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();`;
+  }).join('\n');
+  const expected = '/* MWB_ASSEMBLY_GENERATED_START */\n' + modules + '\n/* MWB_ASSEMBLY_GENERATED_END */';
+  if (!pluginSource.includes(expected)) throw new Error('Embedded assembly modules are stale; run npm run build');
+  const css = read('styles.css').toString('utf8').replace(/\r\n?/g,'\n');
+  if (!css.endsWith('/* MWB_ASSEMBLY_STYLES_START */\n' + read('styles/assembly.css').toString('utf8').replace(/\r\n?/g,'\n')))
+    throw new Error('Assembly UI CSS is stale; run npm run build');
+}
 if (synchronizePrintCss(read('src/plugin.js').toString('utf8'), read('styles.css').toString('utf8')) !== read('src/plugin.js').toString('utf8'))
   throw new Error('Embedded print CSS is stale; run npm run build');
 execFileSync(process.execPath,['--check',resolve(root,'main.js')]);
