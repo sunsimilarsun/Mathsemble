@@ -1,6 +1,6 @@
 # Mathsemble 路线图
 
-当前基线：0.2.0 开发测试版。书写契约以 [Markdown 规范](MARKDOWN_SPEC.md) 为准；历史演进见 [变更索引](CHANGELOG.md)，当前实现见 [功能矩阵](FEATURE_MATRIX.md)。本版验证结果与试用流程见 [0.2.0 测试说明](TESTING_0.2.0.md)。
+当前基线：0.2.1 开发测试版。书写契约以 [Markdown 规范](MARKDOWN_SPEC.md) 为准；历史演进见 [变更索引](CHANGELOG.md)，当前实现见 [功能矩阵](FEATURE_MATRIX.md)。本版验证结果见 [0.2.1 测试说明](TESTING_0.2.1.md)，基本试用流程见 [0.2.0 测试说明](TESTING_0.2.0.md)。
 
 ## 当前：知识点与手动组题首版
 

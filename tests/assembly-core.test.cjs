@@ -136,3 +136,95 @@ test('fingerprint is deterministic and notices content changes',()=>{
   assert.equal(core.fingerprint('中文公式\\alpha'),core.fingerprint('中文公式\\alpha'));
   assert.notEqual(core.fingerprint('x=1'),core.fingerprint('x=2'));
 });
+
+test('whole knowledge notes expose each declared tier, while questions retain a single tier',()=>{
+  const records=frozen([
+    knowledge('知识/完整.md','K1',{subject:'高中数学',teaching_tier:['培优','基础','基础',null,'未知']}),
+    knowledge('知识/旧单值.md','K2',{teaching_tier:'核心'}),
+    knowledge('知识/旧level.md','K3',{level:'扩展'}),
+    knowledge('知识/空值.md','K4',{teaching_tier:[],level:'核心'}),
+    question(),question('题库/错误列表.md','Q2',{teaching_tier:['核心','培优']})
+  ]);
+  const index=core.buildIndex(records);
+  assert.deepEqual(index.items.map(item=>item.tiers),[['基础','培优'],['核心'],['扩展'],[],['核心'],[]]);
+  assert.equal(index.items[0].tier,'基础 / 培优');
+  for(const tier of ['基础','培优'])assert.deepEqual(core.filterItems(index,{kind:'knowledge',tier}).map(item=>item.id),['K1']);
+  assert.deepEqual(core.filterItems(index,{kind:'knowledge',tier:['培优','扩展']}).map(item=>item.id),['K1','K3']);
+  assert.deepEqual(records[0].metadata.teaching_tier,['培优','基础','基础',null,'未知']);
+});
+
+test('a plain shared label relates a question to every covering note in the same subject',()=>{
+  const index=core.buildIndex([
+    knowledge('知识/表示.md','K1',{title:'表示方法',subject:'高中数学',knowledge_nodes:['代表元素']}),
+    knowledge('知识/辨析.md','K2',{title:'概念辨析',subject:'高中数学',knowledge_nodes:['代表元素','数集与点集']}),
+    question('题库/题.md','Q1',{knowledge_nodes:['代表元素']})
+  ]);
+  const ref=index.items[2].knowledgeRefs[0];
+  assert.equal(ref.status,'covered');assert.equal(ref.relation,'shared-tag');
+  assert.deepEqual(ref.nodeKeys,['id:K1','id:K2']);
+  assert.equal(ref.candidates,undefined,'Multiple covering notes are not ambiguous identities');
+  for(const knowledge of ['id:K1','id:K2'])
+    assert.deepEqual(core.filterItems(index,{kind:'question',knowledge}).map(item=>item.id),['Q1']);
+  assert.deepEqual(core.filterItems(index,{knowledge:'代表元素'}).map(item=>item.id),['K1','K2','Q1']);
+});
+
+test('shared labels and plain names never infer links across subjects or from an unknown subject',()=>{
+  const index=core.buildIndex([
+    knowledge('知识/高中.md','K1',{title:'同名标签',aliases:['另一标签'],subject:'高中数学',knowledge_nodes:['共同标签']}),
+    knowledge('知识/未知.md','K2',{title:'未分类知识',knowledge_nodes:['共同标签']}),
+    question('题库/初中.md','Q1',{subject:'初中数学',knowledge_nodes:['共同标签','同名标签','另一标签']}),
+    question('题库/未知.md','Q2',{subject:'',knowledge_nodes:['共同标签','同名标签','另一标签']}),
+    question('题库/高中.md','Q3',{knowledge_nodes:['共同标签','同名标签','另一标签']})
+  ]);
+  for(const item of index.items.slice(2,4))assert.deepEqual(item.knowledgeRefs.map(ref=>ref.status),['tag','tag','tag']);
+  assert.deepEqual(index.items[4].knowledgeRefs.map(ref=>ref.status),['covered','resolved','resolved']);
+  assert.deepEqual(index.items[4].knowledgeRefs[0].nodeKeys,['id:K1']);
+  assert.deepEqual(core.filterItems(index,{kind:'question',knowledge:'id:K1'}).map(item=>item.id),['Q3']);
+  assert.deepEqual(core.filterItems(index,{kind:'question',knowledge:'同名标签'}).map(item=>item.id),['Q1','Q2','Q3'],
+    'Literal label search does not turn a label into a cross-subject node relationship');
+});
+
+test('explicit IDs, paths and Wiki links remain authoritative and do not fall back to label coverage',()=>{
+  const index=core.buildIndex([
+    knowledge('知识/甲.md','K1',{title:'唯一名称',subject:'初中数学'}),
+    knowledge('知识/乙.md','K2',{title:'标签正文',subject:'高中数学',knowledge_nodes:['唯一名称','缺失页']}),
+    question('题库/题.md','Q1',{knowledge_nodes:['K1','知识/甲','[[唯一名称]]','[[缺失页]]','缺失页']})
+  ]);
+  const refs=index.items[2].knowledgeRefs;
+  assert.deepEqual(refs.map(ref=>ref.status),['resolved','resolved','resolved','missing','covered']);
+  assert.deepEqual(refs.slice(0,3).map(ref=>ref.nodeKey),['id:K1','id:K1','id:K1']);
+  assert.deepEqual(refs[4].nodeKeys,['id:K2']);
+});
+
+test('direct same-subject names take precedence over coverage and ambiguous links remain ambiguous',()=>{
+  const index=core.buildIndex([
+    knowledge('知识/甲.md','K1',{title:'表示法',subject:'高中数学'}),
+    knowledge('知识/乙.md','K2',{title:'概念',subject:'高中数学',knowledge_nodes:['表示法']}),
+    knowledge('知识/丙.md','K3',{title:'概念',subject:'高中数学'}),
+    question('题库/题.md','Q1',{knowledge_nodes:['表示法','[[概念]]']})
+  ]);
+  assert.equal(index.items[3].knowledgeRefs[0].nodeKey,'id:K1');
+  assert.equal(index.items[3].knowledgeRefs[1].status,'ambiguous');
+  assert.equal(core.filterItems(index,{kind:'question',knowledge:'id:K2'}).length,0);
+});
+
+test('conflicted knowledge identities cannot be used as shared-label coverage',()=>{
+  const index=core.buildIndex([
+    knowledge('知识/甲.md','K1',{title:'正文甲',subject:'高中数学',knowledge_nodes:['覆盖标签']}),
+    knowledge('知识/乙.md','K1',{title:'正文乙',subject:'高中数学',knowledge_nodes:['覆盖标签']}),
+    question('题库/题.md','Q1',{knowledge_nodes:['覆盖标签']})
+  ]);
+  assert.equal(index.items[2].knowledgeRefs[0].status,'tag');
+  assert.equal(core.filterItems(index,{kind:'question',knowledge:index.items[0].key}).length,0);
+});
+
+test('empty placeholder labels never become knowledge relations or filter options',()=>{
+  const index=core.buildIndex([question('题库/题.md','Q1',{
+    knowledge_nodes:[[],null,'','~','[[~]]','[]','有效标签'],
+    methods:[[],null,'~','[[~]]','分类讨论'],aliases:['~','[[~]]','旧名称']
+  })]);
+  assert.deepEqual(index.items[0].knowledgeNodes,['有效标签']);
+  assert.deepEqual(index.items[0].methods,['分类讨论']);
+  assert.deepEqual(index.items[0].aliases,['旧名称']);
+  assert.equal(core.filterItems(index,{knowledge:'[[~]]'}).length,0);
+});

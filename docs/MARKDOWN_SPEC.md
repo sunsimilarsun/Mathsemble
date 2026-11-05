@@ -223,7 +223,7 @@ Callout 类型及显隐选项不决定题目边界。嵌套结构必须写出引
 
 ## 11. 题卡元信息与模板验收
 
-题卡采用现行十字段：`id`、`subject`、`question_type`、`difficulty`、`teaching_tier`、`source`、`role`、`knowledge_nodes`、`family_id`、`methods`。
+题卡采用十个核心字段：`id`、`subject`、`question_type`、`difficulty`、`teaching_tier`、`source`、`role`、`knowledge_nodes`、`family_id`、`methods`；允许保留已有 `年级`、`aliases`。题卡与知识正文分别使用自己的属性规范。
 
 - role 为例题、变式、训练；兼容读取历史英文值，不在索引时自动迁移源文。
 - 知识点与方法为列表，允许空列表。family_id 允许 null，仅表示同族，不推断母题关系。

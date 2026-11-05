@@ -4453,6 +4453,7 @@ const MAX_ENTRIES = 1000;
 const FORBIDDEN = new Set(['__proto__', 'prototype', 'constructor']);
 const ROLES = Object.freeze({example:'例题', '例题':'例题', variant:'变式', '变式':'变式',
   practice:'训练', problem:'训练', '训练':'训练', '练习':'训练'});
+const TIERS = ['核心','基础','培优','扩展'];
 const text = value => typeof value === 'string' ? value.trim() : '';
 const fold = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase().trim();
 const list = value => [...new Set((Array.isArray(value) ? value : typeof value === 'string' ? [value] : [])
@@ -4490,7 +4491,31 @@ function parseKnowledgeRef(raw) {
     wiki:!!wiki};
 }
 
-function knowledgeCandidates(reference, sourcePath, nodes) {
+const usableLabel = raw => {
+  const target = parseKnowledgeRef(raw).target;
+  return !!target && !['~','[]'].includes(target);
+};
+const labels = value => list(value).filter(usableLabel);
+function normalizeTiers(metadata, kind) {
+  // A question has one level; a whole knowledge note can cover several levels.
+  // An explicitly empty field must not resurrect an obsolete `level` value.
+  const raw = Object.hasOwn(metadata,'teaching_tier') ? metadata.teaching_tier : metadata.level;
+  const values = kind === 'knowledge' ? list(raw) : [text(raw)].filter(Boolean);
+  return TIERS.filter(tier => values.includes(tier));
+}
+
+function coveredKnowledge(reference, source, nodes) {
+  // A missing Wiki link remains a missing link. Coverage is declared by plain
+  // labels only, within an explicitly known, equal subject on both sides.
+  if (reference.wiki || !source.subject) return [];
+  return nodes.filter(node => !node.identityConflict && node.subject && fold(node.subject) === fold(source.subject) &&
+    node.knowledgeNodes.some(raw => {
+      const tag = parseKnowledgeRef(raw);
+      return !tag.wiki && fold(tag.target) === fold(reference.target);
+    }));
+}
+
+function knowledgeCandidates(reference, sourcePath, nodes, subject) {
   const target = reference.target.replace(/\.md$/i, '');
   const exactId = nodes.filter(node => node.id && node.id === target);
   if (exactId.length) return exactId;
@@ -4499,7 +4524,8 @@ function knowledgeCandidates(reference, sourcePath, nodes) {
     const paths = [normalizePath(target), normalizePath(dirname + '/' + target)].filter(Boolean);
     return nodes.filter(node => paths.includes(node.path.replace(/\.md$/i, '')));
   }
-  return nodes.filter(node => [basename(node.path), node.title, ...node.aliases].some(name => fold(name) === fold(target)));
+  return nodes.filter(node => (reference.wiki || subject === undefined || subject && node.subject && fold(node.subject) === fold(subject)) &&
+    [basename(node.path), node.title, ...node.aliases].some(name => fold(name) === fold(target)));
 }
 
 function buildIndex(records) {
@@ -4518,16 +4544,16 @@ function buildIndex(records) {
     paths.add(path);
     const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
       ? {...record.metadata} : {};
-    const id = text(metadata.id);
+    const id = text(metadata.id), tiers = normalizeTiers(metadata,record.kind);
     const item = {key:'path:' + path, id, path, kind:record.kind,
       title:text(metadata.title) || basename(path), markdown:record.markdown, metadata,
-      aliases:list(metadata.aliases), knowledgeNodes:list(metadata.knowledge_nodes),
+      aliases:labels(metadata.aliases), knowledgeNodes:labels(metadata.knowledge_nodes),
       subject:text(metadata.subject), questionType:text(metadata.question_type || metadata.type),
       difficulty:metadata.difficulty !== null && metadata.difficulty !== '' &&
         Number.isInteger(Number(metadata.difficulty)) && Number(metadata.difficulty) >= 1 && Number(metadata.difficulty) <= 5
         ? Number(metadata.difficulty) : null,
-      tier:text(metadata.teaching_tier || metadata.level), role:normalizeRole(metadata.role || metadata.teaching_role),
-      methods:list(metadata.methods), source:text(metadata.source), fingerprint:fingerprint(record.markdown)};
+      tiers, tier:tiers.join(' / '), role:normalizeRole(metadata.role || metadata.teaching_role),
+      methods:labels(metadata.methods), source:text(metadata.source), fingerprint:fingerprint(record.markdown)};
     items.push(item);
     if (id) { if (!ids.has(id)) ids.set(id, []); ids.get(id).push(item); }
   }
@@ -4541,7 +4567,11 @@ function buildIndex(records) {
   const nodes = items.filter(item => item.kind === 'knowledge');
   for (const item of items) {
     item.knowledgeRefs = item.knowledgeNodes.map(raw => {
-      const ref = parseKnowledgeRef(raw), candidates = knowledgeCandidates(ref, item.path, nodes);
+      const ref = parseKnowledgeRef(raw), candidates = knowledgeCandidates(ref, item.path, nodes,item.subject);
+      if (!candidates.length) {
+        const covered = coveredKnowledge(ref,item,nodes);
+        if (covered.length) return {...ref,status:'covered',relation:'shared-tag',nodeKeys:covered.map(node => node.key)};
+      }
       const status = candidates.length > 1 || candidates[0]?.identityConflict ? 'ambiguous' :
         candidates.length === 1 ? 'resolved' : ref.wiki ? 'missing' : 'tag';
       return {...ref, status, ...(status === 'resolved' ? {nodeKey:candidates[0].key} : {}),
@@ -4559,7 +4589,7 @@ function filterItems(index, filters = {}) {
   return items.filter(item => {
     if (!match(filters.kind,[item.kind]) || !match(filters.subject,[item.subject]) ||
       !match(filters.questionType,[item.questionType]) || !match(filters.difficulty,[item.difficulty]) ||
-      !match(filters.tier,[item.tier]) || !match(filters.role,[item.role]) ||
+      !match(filters.tier,item.tiers) || !match(filters.role,[item.role]) ||
       !match(filters.method,item.methods.map(value => parseKnowledgeRef(value).target))) return false;
     if (options(filters.source).length && !options(filters.source).some(value => fold(item.source).includes(fold(value)))) return false;
     const keywords = fold(filters.query).split(/\s+/).filter(Boolean);
@@ -4568,9 +4598,12 @@ function filterItems(index, filters = {}) {
     if (options(filters.knowledge).length && !options(filters.knowledge).some(value => {
       const ref = parseKnowledgeRef(String(value));
       const selected = nodes.filter(node => node.key === value || (node.id && node.id === value));
+      // A label filter searches the declared labels; selecting a concrete note
+      // by its key/ID instead follows only resolved or same-subject coverage.
+      if (!selected.length && item.knowledgeRefs.some(known => fold(known.target) === fold(ref.target))) return true;
       const matches = selected.length ? selected : knowledgeCandidates(ref,'',nodes);
       if (matches.length === 1 && !matches[0].identityConflict) {
-        return item.key === matches[0].key || item.knowledgeRefs.some(known => known.nodeKey === matches[0].key);
+        return item.key === matches[0].key || item.knowledgeRefs.some(known => known.nodeKey === matches[0].key || known.nodeKeys?.includes(matches[0].key));
       }
       return item.knowledgeRefs.some(known => fold(known.target) === fold(ref.target));
     })) return false;
@@ -5418,10 +5451,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       for (const [key,select] of Object.entries(this.filterSelects)) {
         const values = new Set();
         for (const item of this.index.items) {
-          const raw = key==='knowledge' ? item.knowledgeNodes : key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : item[key];
+          const raw = key==='knowledge' ? item.knowledgeNodes : key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
           for (const value of Array.isArray(raw)?raw:[raw]) if (value !== null && value !== undefined && value !== '') values.add(String(value));
         }
-        const current=String(this.filters[key]||''); if(current) values.add(current);
+        let current=String(this.filters[key]||'');
+        if(['knowledge','method'].includes(key)&&['','~','[]'].includes(core.parseKnowledgeRef(current).target)){
+          current='';this.filters[key]='';
+        }
+        if(current) values.add(current);
         select.replaceChildren();this.el('option',select,'','不限').value='';
         for (const value of [...values].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}))) {
           const node = key==='knowledge' ? this.index.items.find(item=>item.kind==='knowledge'&&item.key===value) : null;
@@ -5483,11 +5520,18 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const detail=this.button(row,item.title,()=>this.showItem(item),'mwb-assembly-result-title');detail.title=item.path;
         const info=[item.subject,item.kind==='question'?(typeNames[item.questionType]||item.questionType):'整篇知识',item.difficulty?`难度 ${item.difficulty}`:'',item.tier,item.role].filter(Boolean);
         this.el('div',row,'mwb-assembly-muted',info.join(' · '));
+        const related=this.relatedKnowledge(item);
+        if(related.length)this.el('div',row,'mwb-assembly-muted','关联知识：'+related.map(node=>node.title).join('、'));
         this.el('div',row,'mwb-assembly-result-path',item.path);
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
       }
       if(items.length>this.limit) this.button(this.results,'再显示 100 条',()=>{this.limit+=100;this.renderResults();});
+    }
+    relatedKnowledge(item) {
+      if(item.kind!=='question')return [];
+      const keys=new Set((item.knowledgeRefs||[]).flatMap(ref=>ref.nodeKeys||[ref.nodeKey]).filter(Boolean));
+      return this.index.items.filter(node=>node.kind==='knowledge'&&keys.has(node.key));
     }
     add(item) {
       if(this.actionBusy) return;
@@ -5503,6 +5547,12 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.button(header,item.kind==='knowledge'?'整篇加入':'加入题篮',()=>this.add(item));
       this.button(header,'打开原文件',()=>service.openSource(item.path));
       this.el('p',this.preview,'mwb-assembly-muted',item.path);
+      const related=this.relatedKnowledge(item);
+      if(related.length){
+        const links=this.el('div',this.preview,'mwb-assembly-preview-header');
+        this.el('span',links,'mwb-assembly-muted','关联知识：');
+        for(const node of related)this.button(links,node.title,()=>this.showItem(node));
+      }
       const body=this.el('div',this.preview,'mwb-typography mwb-assembly-preview-body');
       let owner=this;
       if(Component){owner=new Component();this.addChild?.(owner);}

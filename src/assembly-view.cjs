@@ -242,10 +242,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       for (const [key,select] of Object.entries(this.filterSelects)) {
         const values = new Set();
         for (const item of this.index.items) {
-          const raw = key==='knowledge' ? item.knowledgeNodes : key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : item[key];
+          const raw = key==='knowledge' ? item.knowledgeNodes : key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
           for (const value of Array.isArray(raw)?raw:[raw]) if (value !== null && value !== undefined && value !== '') values.add(String(value));
         }
-        const current=String(this.filters[key]||''); if(current) values.add(current);
+        let current=String(this.filters[key]||'');
+        if(['knowledge','method'].includes(key)&&['','~','[]'].includes(core.parseKnowledgeRef(current).target)){
+          current='';this.filters[key]='';
+        }
+        if(current) values.add(current);
         select.replaceChildren();this.el('option',select,'','不限').value='';
         for (const value of [...values].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}))) {
           const node = key==='knowledge' ? this.index.items.find(item=>item.kind==='knowledge'&&item.key===value) : null;
@@ -307,11 +311,18 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const detail=this.button(row,item.title,()=>this.showItem(item),'mwb-assembly-result-title');detail.title=item.path;
         const info=[item.subject,item.kind==='question'?(typeNames[item.questionType]||item.questionType):'整篇知识',item.difficulty?`难度 ${item.difficulty}`:'',item.tier,item.role].filter(Boolean);
         this.el('div',row,'mwb-assembly-muted',info.join(' · '));
+        const related=this.relatedKnowledge(item);
+        if(related.length)this.el('div',row,'mwb-assembly-muted','关联知识：'+related.map(node=>node.title).join('、'));
         this.el('div',row,'mwb-assembly-result-path',item.path);
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
       }
       if(items.length>this.limit) this.button(this.results,'再显示 100 条',()=>{this.limit+=100;this.renderResults();});
+    }
+    relatedKnowledge(item) {
+      if(item.kind!=='question')return [];
+      const keys=new Set((item.knowledgeRefs||[]).flatMap(ref=>ref.nodeKeys||[ref.nodeKey]).filter(Boolean));
+      return this.index.items.filter(node=>node.kind==='knowledge'&&keys.has(node.key));
     }
     add(item) {
       if(this.actionBusy) return;
@@ -327,6 +338,12 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.button(header,item.kind==='knowledge'?'整篇加入':'加入题篮',()=>this.add(item));
       this.button(header,'打开原文件',()=>service.openSource(item.path));
       this.el('p',this.preview,'mwb-assembly-muted',item.path);
+      const related=this.relatedKnowledge(item);
+      if(related.length){
+        const links=this.el('div',this.preview,'mwb-assembly-preview-header');
+        this.el('span',links,'mwb-assembly-muted','关联知识：');
+        for(const node of related)this.button(links,node.title,()=>this.showItem(node));
+      }
       const body=this.el('div',this.preview,'mwb-typography mwb-assembly-preview-body');
       let owner=this;
       if(Component){owner=new Component();this.addChild?.(owner);}

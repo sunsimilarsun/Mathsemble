@@ -5,6 +5,7 @@ const MAX_ENTRIES = 1000;
 const FORBIDDEN = new Set(['__proto__', 'prototype', 'constructor']);
 const ROLES = Object.freeze({example:'例题', '例题':'例题', variant:'变式', '变式':'变式',
   practice:'训练', problem:'训练', '训练':'训练', '练习':'训练'});
+const TIERS = ['核心','基础','培优','扩展'];
 const text = value => typeof value === 'string' ? value.trim() : '';
 const fold = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase().trim();
 const list = value => [...new Set((Array.isArray(value) ? value : typeof value === 'string' ? [value] : [])
@@ -42,7 +43,31 @@ function parseKnowledgeRef(raw) {
     wiki:!!wiki};
 }
 
-function knowledgeCandidates(reference, sourcePath, nodes) {
+const usableLabel = raw => {
+  const target = parseKnowledgeRef(raw).target;
+  return !!target && !['~','[]'].includes(target);
+};
+const labels = value => list(value).filter(usableLabel);
+function normalizeTiers(metadata, kind) {
+  // A question has one level; a whole knowledge note can cover several levels.
+  // An explicitly empty field must not resurrect an obsolete `level` value.
+  const raw = Object.hasOwn(metadata,'teaching_tier') ? metadata.teaching_tier : metadata.level;
+  const values = kind === 'knowledge' ? list(raw) : [text(raw)].filter(Boolean);
+  return TIERS.filter(tier => values.includes(tier));
+}
+
+function coveredKnowledge(reference, source, nodes) {
+  // A missing Wiki link remains a missing link. Coverage is declared by plain
+  // labels only, within an explicitly known, equal subject on both sides.
+  if (reference.wiki || !source.subject) return [];
+  return nodes.filter(node => !node.identityConflict && node.subject && fold(node.subject) === fold(source.subject) &&
+    node.knowledgeNodes.some(raw => {
+      const tag = parseKnowledgeRef(raw);
+      return !tag.wiki && fold(tag.target) === fold(reference.target);
+    }));
+}
+
+function knowledgeCandidates(reference, sourcePath, nodes, subject) {
   const target = reference.target.replace(/\.md$/i, '');
   const exactId = nodes.filter(node => node.id && node.id === target);
   if (exactId.length) return exactId;
@@ -51,7 +76,8 @@ function knowledgeCandidates(reference, sourcePath, nodes) {
     const paths = [normalizePath(target), normalizePath(dirname + '/' + target)].filter(Boolean);
     return nodes.filter(node => paths.includes(node.path.replace(/\.md$/i, '')));
   }
-  return nodes.filter(node => [basename(node.path), node.title, ...node.aliases].some(name => fold(name) === fold(target)));
+  return nodes.filter(node => (reference.wiki || subject === undefined || subject && node.subject && fold(node.subject) === fold(subject)) &&
+    [basename(node.path), node.title, ...node.aliases].some(name => fold(name) === fold(target)));
 }
 
 function buildIndex(records) {
@@ -70,16 +96,16 @@ function buildIndex(records) {
     paths.add(path);
     const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
       ? {...record.metadata} : {};
-    const id = text(metadata.id);
+    const id = text(metadata.id), tiers = normalizeTiers(metadata,record.kind);
     const item = {key:'path:' + path, id, path, kind:record.kind,
       title:text(metadata.title) || basename(path), markdown:record.markdown, metadata,
-      aliases:list(metadata.aliases), knowledgeNodes:list(metadata.knowledge_nodes),
+      aliases:labels(metadata.aliases), knowledgeNodes:labels(metadata.knowledge_nodes),
       subject:text(metadata.subject), questionType:text(metadata.question_type || metadata.type),
       difficulty:metadata.difficulty !== null && metadata.difficulty !== '' &&
         Number.isInteger(Number(metadata.difficulty)) && Number(metadata.difficulty) >= 1 && Number(metadata.difficulty) <= 5
         ? Number(metadata.difficulty) : null,
-      tier:text(metadata.teaching_tier || metadata.level), role:normalizeRole(metadata.role || metadata.teaching_role),
-      methods:list(metadata.methods), source:text(metadata.source), fingerprint:fingerprint(record.markdown)};
+      tiers, tier:tiers.join(' / '), role:normalizeRole(metadata.role || metadata.teaching_role),
+      methods:labels(metadata.methods), source:text(metadata.source), fingerprint:fingerprint(record.markdown)};
     items.push(item);
     if (id) { if (!ids.has(id)) ids.set(id, []); ids.get(id).push(item); }
   }
@@ -93,7 +119,11 @@ function buildIndex(records) {
   const nodes = items.filter(item => item.kind === 'knowledge');
   for (const item of items) {
     item.knowledgeRefs = item.knowledgeNodes.map(raw => {
-      const ref = parseKnowledgeRef(raw), candidates = knowledgeCandidates(ref, item.path, nodes);
+      const ref = parseKnowledgeRef(raw), candidates = knowledgeCandidates(ref, item.path, nodes,item.subject);
+      if (!candidates.length) {
+        const covered = coveredKnowledge(ref,item,nodes);
+        if (covered.length) return {...ref,status:'covered',relation:'shared-tag',nodeKeys:covered.map(node => node.key)};
+      }
       const status = candidates.length > 1 || candidates[0]?.identityConflict ? 'ambiguous' :
         candidates.length === 1 ? 'resolved' : ref.wiki ? 'missing' : 'tag';
       return {...ref, status, ...(status === 'resolved' ? {nodeKey:candidates[0].key} : {}),
@@ -111,7 +141,7 @@ function filterItems(index, filters = {}) {
   return items.filter(item => {
     if (!match(filters.kind,[item.kind]) || !match(filters.subject,[item.subject]) ||
       !match(filters.questionType,[item.questionType]) || !match(filters.difficulty,[item.difficulty]) ||
-      !match(filters.tier,[item.tier]) || !match(filters.role,[item.role]) ||
+      !match(filters.tier,item.tiers) || !match(filters.role,[item.role]) ||
       !match(filters.method,item.methods.map(value => parseKnowledgeRef(value).target))) return false;
     if (options(filters.source).length && !options(filters.source).some(value => fold(item.source).includes(fold(value)))) return false;
     const keywords = fold(filters.query).split(/\s+/).filter(Boolean);
@@ -120,9 +150,12 @@ function filterItems(index, filters = {}) {
     if (options(filters.knowledge).length && !options(filters.knowledge).some(value => {
       const ref = parseKnowledgeRef(String(value));
       const selected = nodes.filter(node => node.key === value || (node.id && node.id === value));
+      // A label filter searches the declared labels; selecting a concrete note
+      // by its key/ID instead follows only resolved or same-subject coverage.
+      if (!selected.length && item.knowledgeRefs.some(known => fold(known.target) === fold(ref.target))) return true;
       const matches = selected.length ? selected : knowledgeCandidates(ref,'',nodes);
       if (matches.length === 1 && !matches[0].identityConflict) {
-        return item.key === matches[0].key || item.knowledgeRefs.some(known => known.nodeKey === matches[0].key);
+        return item.key === matches[0].key || item.knowledgeRefs.some(known => known.nodeKey === matches[0].key || known.nodeKeys?.includes(matches[0].key));
       }
       return item.knowledgeRefs.some(known => fold(known.target) === fold(ref.target));
     })) return false;
