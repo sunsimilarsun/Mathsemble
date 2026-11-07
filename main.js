@@ -776,7 +776,12 @@ function mwbApplyHandoutQuestions(root,plan,sourcePath='') {
     if(!start||start.parentElement!==root||(end&&end.parentElement!==root))throw new Error('块范围映射失效');
     const wrapper=root.ownerDocument.createElement('section');wrapper.className='mwb-handout-question';
     wrapper.setAttribute('data-mwb-question-id',group.id);
-    wrapper.setAttribute('data-mwb-question-label',group.title);
+    // The plan contains unprojected source (including typed answers). Only
+    // derive display metadata from the already projected/rendered heading.
+    // Never fall back to group.title, even if an SVG-only heading has no text.
+    const heading=start.matches('h5') ? start : start.querySelector('h5');
+    const label=(heading?.textContent || '').trim() || '块';
+    wrapper.setAttribute('data-mwb-question-label',label);
     wrapper.setAttribute('data-mwb-source-start',String(group.start+1));
     wrapper.setAttribute('data-mwb-source-end',String(group.end));
     wrapper.setAttribute('data-mwb-source-path',sourcePath);
@@ -1170,13 +1175,44 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
   // Checking only top-level section rectangles let such content disappear
   // behind .mwb-paper {overflow:hidden} without triggering an export error.
   // Check candidates during placement and all final page content afterwards.
+  let lastSpillDetail = null;
   const contentSpills = (candidate, printable = body, checkText = false) => {
+    lastSpillDetail = null;
     if (!candidate) return false;
     const region = printable.getBoundingClientRect();
     const tolerance = 2.5;
-    const outside = rect => rect && rect.width > 0 && rect.height > 0 && (
-      rect.top < region.top - tolerance || rect.bottom > region.bottom + tolerance ||
-      rect.left < region.left - tolerance || rect.right > region.right + tolerance);
+    // MathJax 4 CHTML uses oversized text inside a horizontally clipped
+    // stretcher. Its spacer's raw DOM/Range box is not its painted width.
+    // Honor only that verified horizontal clip; keep all vertical bounds,
+    // whole-formula bounds, and unrelated content under the normal audit.
+    const mathHorizontalClips = new Map();
+    const paintedHorizontalRect = (rect, node) => {
+      if (!rect || !node) return rect;
+      const element = node.nodeType === 3 ? node.parentElement : node;
+      const stretch = element?.closest?.('mjx-stretchy-h');
+      if (!stretch || !stretch.closest?.('mjx-container[jax="CHTML"]')) return rect;
+      let clip = mathHorizontalClips.get(stretch);
+      if (clip === undefined) {
+        const style = doc.defaultView.getComputedStyle(stretch);
+        const shape = String(style.clipPath || '').replace(/\s+/g, '');
+        const polygon = 'polygon(0px-2px,100%-2px,100%calc(100%+2px),0pxcalc(100%+2px))';
+        const verified = (shape === polygon + 'padding-box' || shape === 'padding-box' + polygon) &&
+          !(parseFloat(style.borderLeftWidth) || parseFloat(style.borderRightWidth));
+        const bounds = verified ? stretch.getBoundingClientRect() : null;
+        clip = bounds?.width > 0 ? {left: bounds.left, right: bounds.right} : null;
+        mathHorizontalClips.set(stretch, clip);
+      }
+      if (!clip) return rect;
+      const left = Math.max(rect.left, clip.left), right = Math.min(rect.right, clip.right);
+      return {left, right, top: rect.top, bottom: rect.bottom,
+        width: Math.max(0, right - left), height: rect.height};
+    };
+    const outside = (rawRect, node) => {
+      const rect = paintedHorizontalRect(rawRect, node);
+      return rect && rect.width > 0 && rect.height > 0 && (
+        rect.top < region.top - tolerance || rect.bottom > region.bottom + tolerance ||
+        rect.left < region.left - tolerance || rect.right > region.right + tolerance);
+    };
     const stack = Array.isArray(candidate) ? [...candidate] : [candidate];
     while (stack.length) {
       const current = stack.pop();
@@ -1187,28 +1223,46 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
           const range = doc.createRange();
           range.selectNodeContents(current);
           for (const rect of range.getClientRects()) {
-            if (outside(rect)) return true;
+            if (outside(rect, current)) {
+              const fmt = x => [x.left,x.top,x.right,x.bottom].map(v => Number(v).toFixed(1)).join(',');
+              const direction = [rect.top < region.top - tolerance && 'top', rect.bottom > region.bottom + tolerance && 'bottom', rect.left < region.left - tolerance && 'left', rect.right > region.right + tolerance && 'right'].filter(Boolean).join(',');
+              lastSpillDetail = `text-range direction=${direction}; rect=[${fmt(rect)}]; page=[${fmt(region)}]`;
+              return true;
+            }
           }
           range.detach?.();
         } catch (_) { /* MathJax/SVG may not support browser text ranges. */ }
         continue;
       }
       if (current.nodeType !== 1 && current.nodeType !== undefined) continue;
+      // SVG definition elements do not paint directly; their instances (<use>)
+      // and all other rendered nodes still undergo the normal bounds checks.
+      if (current.namespaceURI === 'http://www.w3.org/2000/svg' &&
+          /^(defs|symbol|clipPath|mask|pattern|marker|linearGradient|radialGradient|filter)$/i.test(current.localName || '')) continue;
       const style = doc.defaultView.getComputedStyle(current);
       if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') continue;
-      if (outside(current.getBoundingClientRect())) return true;
+      const rect = current.getBoundingClientRect();
+      const record = (kind, r) => {
+        const directions = r ? [r.top < region.top - tolerance && 'top', r.bottom > region.bottom + tolerance && 'bottom', r.left < region.left - tolerance && 'left', r.right > region.right + tolerance && 'right'].filter(Boolean).join(',') : 'clipped';
+        const fmt = x => [x.left,x.top,x.right,x.bottom].map(v => Number(v).toFixed(1)).join(',');
+        lastSpillDetail = `${kind} ns=${String(current.namespaceURI || 'none').slice(0,80)} tag=${String(current.localName || current.tagName || 'element').slice(0,32)} defs=false direction=${directions}; rect=[${fmt(r || rect)}]; page=[${fmt(region)}]; scroll=${current.scrollWidth || 0},${current.scrollHeight || 0}; client=${current.clientWidth || 0},${current.clientHeight || 0}; clip=${style.overflowX || 'visible'},${style.overflowY || 'visible'}`;
+      };
+      if (outside(rect, current)) { record('bounds', rect); return true; }
       if ((/^(hidden|clip)$/.test(style.overflowX || '') &&
            current.clientWidth > 0 && current.scrollWidth > current.clientWidth + tolerance) ||
           (/^(hidden|clip)$/.test(style.overflowY || '') &&
            current.clientHeight > 0 && current.scrollHeight > current.clientHeight + tolerance)) {
-        return true;
+        record('clip', null); return true;
       }
       for (const child of current.childNodes || current.children || []) stack.push(child);
     }
     return false;
   };
-  const overflowed = (candidate = null) =>
-    used() > capacity() + 1.25 || !!(candidate && contentSpills(candidate));
+  const overflowed = (candidate = null) => {
+    lastSpillDetail = null;
+    if (used() > capacity() + 1.25) { lastSpillDetail = 'page-height capacity exceeded'; return true; }
+    return !!(candidate && contentSpills(candidate));
+  };
   const newQuestionPart = (q) => {
     const section = doc.createElement('section');
     section.className = (q.classList?.contains('mwb-handout-question') ? 'mwb-handout-question' : 'mwb-exam-question') + ' mwb-question-fragment';
@@ -1243,8 +1297,8 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
     return false;
   };
   const overflowError = (node) => {
-    const description = (node?.textContent || node?.getAttribute?.('aria-label') || node?.tagName || '未知元素').trim().slice(0,65);
-    throw new Error(`存在超过 A4 可打印区域的不可拆分内容：${description || '大型公式或图形'}；请拆成多个独立步骤`);
+    const kind = String(node?.localName || node?.tagName || '元素').slice(0,32);
+    throw new Error(`存在超过 A4 可打印区域的不可拆分内容（${kind}）；请拆成多个独立步骤${lastSpillDetail ? '；' + lastSpillDetail : ''}`);
   };
   const nextPage = () => {
     if (pages.length >= 200) throw new Error('试卷异常：超过 200 页或分页无法收敛');
@@ -2213,9 +2267,10 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
     footer.className='mwb-paper-footer';
     footer.textContent = `${i+1}/${pages.length}`;
     item.paper.appendChild(footer);
+    lastSpillDetail = null;
     if (item.body.scrollHeight > item.body.clientHeight + 2 || usedIsOverflow(item.body) ||
         contentSpills(item.body, item.body, true)) {
-      throw new Error(`第 ${i+1} 页仍然溢出，已阻止生成 PDF`);
+      throw new Error(`第 ${i+1} 页仍然溢出，已阻止生成 PDF${lastSpillDetail ? '；' + lastSpillDetail : '；正文高度或布局超出可用区域'}`);
     }
     if (!item.body.children.length && i !== pages.length - 1) throw new Error(`第 ${i+1} 页为空白页`);
     for (const formula of item.body.querySelectorAll('mjx-container, .MathJax, .katex')) {
@@ -2255,6 +2310,60 @@ module.exports = { paginatePrintDocument, printPaginationScript, printPagination
 
 return module.exports; })();
 
+// Only structured, non-content diagnostics cross the isolated renderer boundary.
+// Error.message/stack can contain DOM text, selectors, paths or teacher answers.
+function mwbPrintScriptDiagnostic(error) {
+  const raw = String(error?.message || error || '');
+  const fixed = [
+    '打印字体与图片加载超时', '找不到 PDF 正文容器', '等高留白缺少有效的目标高度',
+    '试卷异常：超过 200 页或分页无法收敛', '打印页面存在不可容纳的块标题或公式',
+    '答题留白没有可打印的起始分段', '长解答续页文本核验失败，已阻止输出',
+    '答题留白没有可打印的分段', '内容块范围为空，不能执行严格分页',
+    '短块整组试排不一致，已阻止拆分输出', '内容块分页核验失败：短块被拆开或块内容丢失',
+    '缺少组卷题目正文', '打印正文为空，无法生成 PDF',
+  ];
+  let message = fixed.includes(raw) ? raw : '';
+  const numeric = [
+    /^第 \d+ 页仍然溢出，已阻止生成 PDF/,
+    /^第 \d+ 页为空白页$/,
+    /^第 \d+ 页公式在打印分页后几何尺寸异常$/,
+    /^分页后答题空间丢失或高度异常：目标 [\d.]+px，实得 [\d.]+px，段数 \d+\/\d+$/,
+    /^分页后题号数量异常：原有 \d+ 题，现有 \d+ 个题号$/,
+  ];
+  if (!message) for (const pattern of numeric) {
+    const match = raw.match(pattern);
+    if (match) { message = match[0]; break; }
+  }
+  if (!message && raw.startsWith('存在超过 A4 可打印区域的不可拆分内容')) {
+    // The legacy suffix contains textContent; keep only the audited element kind.
+    const kind = raw.match(/^存在超过 A4 可打印区域的不可拆分内容（(p|div|span|img|svg|table|pre|figure|mjx-container|math|元素)）/);
+    message = '存在超过 A4 可打印区域的不可拆分内容' + (kind ? '（' + kind[1] + '）' : '') + '；请拆成多个独立步骤';
+  }
+  if (!message && raw.startsWith('试题为空：')) message = '试题为空，已停止分页';
+  if (!message && raw.startsWith('存在没有题目的试卷分区：')) message = '存在没有题目的试卷分区';
+  if (/不可拆分内容|仍然溢出/.test(message)) {
+    // Keep numeric geometry, without passing through DOM labels or raw suffixes.
+    const number = '-?\\d+(?:\\.\\d+)?';
+    const box = '\\[(' + [number,number,number,number].join(',') + ')\\]';
+    const rect = raw.match(new RegExp('(?:^|[;；]\\s*)rect=' + box));
+    const page = raw.match(new RegExp('(?:^|[;；]\\s*)page=' + box));
+    const direction = raw.match(/\bdirection=((?:top|bottom|left|right)(?:,(?:top|bottom|left|right))*)[;；]/);
+    if (rect && page) message += '；元素范围=[' + rect[1] + ']，页面范围=[' + page[1] + ']' + (direction ? '，越界方向=' + direction[1] : '');
+    else if (raw.includes('page-height capacity exceeded')) message += '；内容高度超过页面容量';
+  }
+  const name = ['Error','TypeError','RangeError','ReferenceError','SyntaxError'].includes(error?.name) ? error.name : 'Error';
+  if (!message) message = '打印脚本运行异常（' + name + '）';
+  const code = raw === '打印字体与图片加载超时' ? 'MWB_PRINT_READY_TIMEOUT'
+    : /不可拆分内容|仍然溢出/.test(message) ? 'MWB_PRINT_OVERFLOW'
+    : /公式.*几何尺寸异常/.test(message) ? 'MWB_PRINT_MATH_GEOMETRY' : 'MWB_PRINT_SCRIPT_FAILED';
+  // Preserve useful renderer line/column locations, never its paths or first line.
+  const frames = String(error?.stack || '').split('\n').slice(1).map(line => {
+    const location = /^\s*at\s/.test(line) && line.match(/:(\d+):(\d+)\)?\s*$/);
+    return location ? '    at renderer:' + location[1] + ':' + location[2] : '';
+  }).filter(Boolean).slice(0,8);
+  return {message, code, stack:name + ': ' + message + (frames.length ? '\n' + frames.join('\n') : '')};
+}
+
 async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
   mwbThrowIfExportAborted(options.signal);
   if (typeof BrowserWindow !== 'function') {
@@ -2277,6 +2386,40 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
   };
   const stage = (task, label, timeoutMs = options.pdfTimeoutMs ?? 60000) =>
     mwbRunExportStage(task, {signal:options.signal, timeoutMs, stage:label, onStop:destroyWindow});
+  const runPrintScript = async (script, label) => {
+    let response;
+    try {
+      response = await stage(() => printWindow.webContents.executeJavaScript(`
+        (async () => {
+          try { return {ok:true, result:await (${script})}; }
+          catch (error) { return {ok:false, error:(${mwbPrintScriptDiagnostic.toString()})(error)}; }
+        })()
+      `), label);
+    } catch (error) {
+      if (mwbIsExportStop(error)) throw error;
+      const failure = new Error(label + '失败：无法执行打印脚本');
+      failure.code = 'MWB_PRINT_SCRIPT_EXECUTION';
+      failure.stage = label;
+      throw failure;
+    }
+    if (!response || typeof response.ok !== 'boolean' || (!response.ok &&
+        (!response.error || !['message','code','stack'].every(key => typeof response.error[key] === 'string')))) {
+      const failure = new Error(label + '失败：打印脚本返回了无效结果');
+      failure.code = 'MWB_PRINT_SCRIPT_PROTOCOL';
+      failure.stage = label;
+      throw failure;
+    }
+    if (!response.ok) {
+      const detail = response.error;
+      const failure = new Error(label + '失败：' + detail.message);
+      failure.code = detail.code;
+      failure.stage = label;
+      failure.rendererStack = detail.stack;
+      failure.stack += '\nRenderer ' + detail.stack;
+      throw failure;
+    }
+    return response.result;
+  };
   const paginationRequired = /<main\b[^>]*class=["'][^"']*\bmwb-export-doc\b/i.test(html);
   let paginationReport = null;
   try {
@@ -2302,7 +2445,7 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
     // This check is run from trusted plugin code; the HTML has CSP script-src 'none'
     // and all user-authored scripts and event handlers have been removed.
     if (typeof printWindow.webContents.executeJavaScript === 'function') {
-      const status = await stage(() => printWindow.webContents.executeJavaScript(`
+      const status = await runPrintScript(`
         (async () => {
           let timer;
           const bounded = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('打印字体与图片加载超时')), 10000); });
@@ -2319,8 +2462,8 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
             return {badImage, badMath, pageFontStatus: document.fonts?.status || 'unsupported'};
           })();
           try { return await Promise.race([ready, bounded]); } finally { clearTimeout(timer); }
-        })();
-      `), '打印字体与图片就绪');
+        })()
+      `, '打印字体与图片就绪');
       if (status?.badImage && !options.allowPartialImage) throw new Error('打印窗口中的图片未完整加载，已阻止 PDF 导出');
       if (status?.badMath && !options.allowPartialMath) throw new Error('打印窗口中的数学公式几何尺寸异常，已阻止 PDF 导出');
     } else {
@@ -2332,11 +2475,11 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
       if (typeof printWindow.webContents.executeJavaScript !== 'function') {
         throw new Error('当前 Electron 不支持打印前智能分页，已阻止导出');
       }
-      paginationReport = await stage(() => printWindow.webContents.executeJavaScript(
+      paginationReport = await runPrintScript(
         options.allowOverflowOmission
           ? `(${paginatePrintDocument.toString()})(document.querySelector('.mwb-export-doc'), ${!!options.allowPartialMath}, false, true)`
-          : options.allowPartialMath ? printPaginationPartialScript : printPaginationScript
-      ), 'A4 分页');
+          : options.allowPartialMath ? printPaginationPartialScript : printPaginationScript,
+        'A4 分页');
       if (!paginationReport || !Number.isInteger(paginationReport.pages) || paginationReport.pages < 1) {
         throw new Error('打印前分页失败：没有有效 A4 页面');
       }
@@ -2942,7 +3085,13 @@ function sanitizeClone(node) {
     if (content.getAttribute('aria-hidden') === 'true') content.removeAttribute('aria-hidden');
   }
   clone.querySelectorAll('script, iframe, object, embed, foreignObject, link[rel="preload"]').forEach((el) => el.remove());
-  for (const el of clone.querySelectorAll('*')) {
+  for (const el of [clone, ...clone.querySelectorAll('*')]) {
+    // Private preview diagnostics are not print content. Drop both the raw
+    // label and its tooltip so stale/older preview DOM cannot leak answers.
+    // Stable question IDs and line ranges remain for strict pagination.
+    if (el.hasAttribute('data-mwb-question-id')) el.removeAttribute('title');
+    el.removeAttribute('data-mwb-question-label');
+    el.removeAttribute('data-mwb-source-path');
     for (const attr of [...el.attributes]) {
       const key = attr.name.toLowerCase();
       if (/^on/.test(key) || key === 'nonce' || key === 'srcdoc') el.removeAttribute(attr.name);
@@ -6176,7 +6325,7 @@ class PreviewModal extends Modal {
         this.status.setText(`A4 预览 ${report.pages} 页；已跳过 ${report.omittedBlocks.length} 处超出页面的内容，原文保留。`);
       } catch (error) {
         this.clearPaginatedPreview();
-        this.previewPaginationIssue = String(error?.message || error).slice(0,150);
+        this.previewPaginationIssue = String(error?.message || error).slice(0,1000);
         this.status.setText('A4 分页预览失败，当前显示连续内容：' + this.previewPaginationIssue);
       }
       this.updateCompactStatus();
@@ -6467,7 +6616,7 @@ class PreviewModal extends Modal {
             (pagination.relaxedGroupBindings?.length ? `；${pagination.relaxedGroupBindings.length} 处题干与首步合计超过整页，已采用续页` : '');
         } catch (error) {
           this.clearPaginatedPreview();
-          this.previewPaginationIssue = String(error?.message || error).slice(0,150);
+          this.previewPaginationIssue = String(error?.message || error).slice(0,1000);
           previewNote = '；A4 分页预览失败，当前显示连续内容：' + this.previewPaginationIssue;
           console.warn('[Mathsemble] A4 预览分页失败', error);
         }
@@ -6532,10 +6681,14 @@ class PreviewModal extends Modal {
   updateQuestionBoundaryReport() {
     if(!this.questionBoundaryPanel)return;
     const plan=this.questionPlan;
+    const labels=new Map(Array.from(this.rendered?.querySelectorAll('[data-mwb-question-id]') || [],
+      q=>[q.getAttribute('data-mwb-question-id'),q.getAttribute('data-mwb-question-label') || '块']));
     const rows=plan ? [
       `五级标题构成的块：${plan.groups.length} 个；块内六级标题、小问及 Callout 不结束当前块。`,
-      ...plan.groups.map((g,i)=>`块${i+1} ${g.title}｜源码 ${g.start+1}—${g.end} 行｜answer ${g.answerCount}，solution ${g.solutionCount}`),
-      ...plan.warnings.map(w=>`注意：第 ${w.line} 行，${w.message}`),
+      ...plan.groups.map((g,i)=>`块${i+1} ${labels.get(g.id) || '块'}｜源码 ${g.start+1}—${g.end} 行｜answer ${g.answerCount}，solution ${g.solutionCount}`),
+      // Source warnings may quote a raw answer-bearing heading. Student
+      // diagnostics retain location/type without reproducing that source.
+      ...plan.warnings.map(w=>`注意：第 ${w.line} 行，${this.mode==='student' ? '块边界提示（'+w.code+'），请在教师版或原文中检查' : w.message}`),
     ] : ['题卡／文件夹组卷：沿用一题一容器，短题不拆，长题新页起排。'];
     if(plan && !plan.groups.length)rows.push('当前没有五级内容块；普通正文不享有整块分页保护。请使用 ##### 标题 开始一个块。');
     this.questionBoundaryPanel.setText(rows.join('\n'));

@@ -12,7 +12,7 @@ const obsidian={
   finishRenderMath:()=>Promise.resolve(),
   renderMath:()=>{throw new Error('DOM not available in Node');}
 };
-const ctx={module:{exports:{}},require:name=>name==='obsidian'?obsidian:require(name),console,Buffer};
+const ctx={module:{exports:{}},require:name=>name==='obsidian'?obsidian:require(name),console,Buffer,setTimeout,clearTimeout,performance};
 vm.runInNewContext(js+'\n;globalThis.mathsembleAudit={handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers,mwbMapUnchangedAnswerSlots,mwbVisibleAnswerSlots,buildMathAnswerDecorations,studentSpacePlan,teacherOnlyCalloutIndices};',ctx,{timeout:15000});
 const {handoutPlan,transformQuestion,answerSlots,collectExamItems,typographyCss,pdfBufferFromHtml,mwbScanTypedLine,mwbTypedSlots,mwbRewriteTypedAnswers,mwbValidateTypedAnswers}=ctx.mathsembleAudit;
 const str=(s)=>String(s);
@@ -102,8 +102,8 @@ test('isolated PDF engine preserves sandbox and always removes temporary HTML',a
   let tempHtml='',prefs=null,destroyed=false;
   class FakeWindow {
     constructor(opts){prefs=opts.webPreferences;this.webContents={
-      executeJavaScript: async s => s.includes('document.querySelector')
-        ? {pages:1,blocks:1,answerSpaceChunks:0} : {badImage:false,badMath:false},
+      executeJavaScript: async s => ({ok:true,result:s.includes('function paginatePrintDocument(')
+        ? {pages:1,blocks:1,answerSpaceChunks:0} : {badImage:false,badMath:false}}),
       printToPDF: async()=>Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj'),
     };}
     async loadFile(name){tempHtml=name;assert.ok(fs.existsSync(name));}
@@ -121,7 +121,7 @@ test('formula geometry failures remain blockers without explicit partial permiss
   let tempHtml='';
   class FakeWindow {
     constructor(){this.webContents={
-      executeJavaScript:async()=>({badImage:false,badMath:true}),
+      executeJavaScript:async()=>({ok:true,result:{badImage:false,badMath:true}}),
       printToPDF:async()=>{throw new Error('MUST NOT PRINT');}
     };}
     async loadFile(name){tempHtml=name;}
@@ -136,7 +136,7 @@ test('partial math permission does not suppress pagination failures',async()=>{
   let tempHtml='';
   class FakeWindow {
     constructor(){this.webContents={
-      executeJavaScript:async s=>s.includes('document.querySelector')? {pages:0}: {badImage:false,badMath:true},
+      executeJavaScript:async s=>({ok:true,result:s.includes('function paginatePrintDocument(')? {pages:0}: {badImage:false,badMath:true}}),
       printToPDF:async()=>{throw new Error('MUST NOT PRINT');}
     };}
     async loadFile(name){tempHtml=name;}
@@ -452,13 +452,13 @@ test('opening a saved PDF checks vault file identity and uses system default vie
 });
 test('A4 preview maintains source geometry and PDF export path independently',()=>{
   assert.match(js,/const \{ pdfBufferFromHtml, paginatePreviewDocument \} =/);
-  assert.match(js,/function paginatePrintDocument\(root, allowPartialMath = false, preview = false\)/);
+  assert.match(js,/function paginatePrintDocument\(root, allowPartialMath = false, preview = false, allowOverflowOmission = false\)/);
   assert.match(js,/if \(!preview\) doc\.head\.appendChild\(paper\);/);
   assert.match(js,/const view = this\.rendered\.cloneNode\(true\);/);
-  assert.match(js,/paginatePreviewDocument\(view, false, true\)/);
+  assert.match(js,/paginatePreviewDocument\(view, false, true, !!this\.overflowOmissionEnabled\)/);
   assert.match(js,/this\.page\.classList\.add\('mwb-preview-source'\)/);
   assert.match(js,/this\.page\.classList\.remove\('mwb-preview-source'\)/);
-  assert.match(js,/return await exportHtml\(this\.rendered, title, typographyCss, document/);
+  assert.match(js,/return await exportHtml\(this\.rendered, title, typographyCss, this\.rendered\.ownerDocument \|\| document/);
   assert.match(js,/this\.lastSavedPdfPath = savedPath;/);
   assert.match(js,/openPdfButton\.onclick = async/);
   const css=fs.readFileSync(path.resolve(__dirname,'../styles.css'),'utf8');

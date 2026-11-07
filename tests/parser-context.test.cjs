@@ -268,3 +268,16 @@ test('Reading View leaves literal links untouched beside a real answer slot', as
   try { for (const result of await runChromeDocument(chrome, input, path.join(temp, 'profile'))) assert.equal(result.ok, true, result.error); }
   finally { fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
+
+test('student projection removes entire fraction answers and hides only marked denominator', () => {
+  const markdown = String.raw`##### 填空
+完整 ?{$\frac{713}{947}$}；仅分母 $\frac{x^2}{?{863}}$。`;
+  for (const student of studentOutputs(markdown)) {
+    assert.doesNotMatch(student, /713|947|863/);
+    assert.match(student, /x\^2/);
+    assert.match(student, /mwb-answer-slot/);
+    assert.match(student, /\\underline\{\\hspace/);
+  }
+  const teacher = a.handoutPlan(markdown, 'teacher').markdown;
+  assert.match(teacher, /713/); assert.match(teacher, /947/); assert.match(teacher, /863/);
+});
