@@ -27,7 +27,7 @@
 - 按 MathJax 4 的菜单设置关闭测试中不用的语音／辅助处理，避免菜单在启动后重新开启 Worker；不篡改浏览器 Worker 实现。浏览器 shim 补齐桌面宿主的 Buffer 字节转 Base64 功能，并检查 HTML 导出确实嵌入字体。
 - CI 的删除构建产物步骤以及构建测试的临时检出复制均排除 `node_modules`，防止破坏或重复复制已安装的开发资源。
 
-## 验证结果
+## 候选 v3 本地验证结果
 
 环境：macOS、Node 22.13.1、npm 10.9.2、Chrome 157.0.8103.38，显式提供 `CHROME_PATH`。完整检查另设置 `CI=1`，缺少浏览器时必须失败。未设置个人模板或宿主数学资源覆盖路径。
 
@@ -43,6 +43,25 @@
 新增回归还验证纠正断行期间取消或父级期限耗尽后不写入晚到结果，以及持续超宽最多重排两次后仍由分页守卫阻断。测试中的字体已实际加载，HTML 内嵌字体数据已核验。
 
 持久日志位于工作树上一层 `appearance-20261109/`：`npm-ci-portable-mathjax.log`、`0.2.3-candidate-v3-prepublish.log`、`portable-mathjax-tests.log`、`host-mathjax-tests.log`、`0.2.3-template-live-audit.log`。候选包为上一层 `dist/Mathsemble-0.2.3-candidate-v3.zip`，摘要登记在 `release/SHA256SUMS_0.2.3-candidate-v3.txt`。
+
+## 候选 v4 跨平台验证
+
+GitHub 重新授权后建立[草稿 PR #21](https://github.com/sunsimilarsun/Mathsemble/pull/21)。首轮 CI 暴露了显示 MathJax 容器内边距导致的实际越界：公式只比正文宽约 2 px，宽度断言允许，但容器的左侧 2 px 内边距使右侧越界约 4 px。源码现在读取实际容器 padding／border 并检查左右边界；保持原有字号、2.5 px 容差和最多两次纠正，不缩公式、不放宽分页守卫。
+
+测试同时排除平台字体偶然性的影响：需触发长行内公式或取消场景时，显式构造确实溢出的容器；首遍测量仍必须匹配已展开列表宽度，后续纠正目标只能递减，字体重试须保持同一目标。新增用例直接验证“宽度看似合格，但内边距导致实际右边界越界”的情况，以及修复后预览／打印均可分页。
+
+| 提交／检查 | 结果 |
+| --- | --- |
+| `4ede04b`，CI `42579555193` | Ubuntu 428 通过／5 失败，Windows 431 通过／2 失败，均 0 跳过；含父测试级联失败 |
+| `7eb80fb`，CI `42581112324` | Windows 434 全通过；Ubuntu 432 通过／2 失败，仅首遍与纠正宽度断言及其父记录，0 跳过 |
+| `81d7c54`，[CI `42581661383`](https://github.com/sunsimilarsun/Mathsemble/actions/runs/42581661383) | Ubuntu、Windows 各 434 全通过，0 失败、0 跳过；`npm ci`、清洁构建、`npm run check`、源码／产物无漂移均通过 |
+| [安装 ZIP `42581661305`](https://github.com/sunsimilarsun/Mathsemble/actions/runs/42581661305) | 通过，三份安装资产验证成功 |
+| macOS 本地完整 `prepublish-check` | 434 全通过，0 跳过；包含发布静态门槛 |
+| 当前宿主数学资源长公式对照 | 27 全通过，0 跳过 |
+
+两个远程平台核验的 `src/plugin.js`／`main.js` SHA-256 均为 `d19172d6e0d6c32baf9cfa929aa0dc0fa37b23dbef22439bb34c27d24cdb9290`。PR CI 执行 `npm run check`，不将它冒称为完整 `prepublish-check`；发布静态门槛由本地完整命令和正式标签工作流单独覆盖。
+
+本轮日志仍在上一层 `appearance-20261109/`：各轮 `ci-<run>-linux.log`／`ci-<run>-windows.log`、`0.2.3-ci-fix-prepublish.log`、`0.2.3-v4-host-math-verified.log`。候选 v4 为上一层 `dist/Mathsemble-0.2.3-candidate-v4.zip`，摘要见 `release/SHA256SUMS_0.2.3-candidate-v4.txt`；此前候选及历史失败记录保留。
 
 ## 证据边界
 

@@ -1,6 +1,6 @@
 # Mathsemble 发布指引
 
-当前源码为 0.2.3 发布候选，以用户验收通过的外观 v8 为基线。发布历史见 [变更索引](CHANGELOG.md)；当前仅整理本地提交与候选包，未创建正式 Release 或提交社区目录。
+当前源码为 0.2.3 发布候选，以用户验收通过的外观 v8 为基线。发布历史见 [变更索引](CHANGELOG.md)；[草稿 PR #21](https://github.com/sunsimilarsun/Mathsemble/pull/21) 已建立，候选 v4 的本地及 Linux／Windows 检查通过，见[验证记录](TESTING_RELEASE_0.2.3.md)。尚未合并或创建正式 Release，未提交社区目录。
 
 ## 本地与 CI 门槛
 
