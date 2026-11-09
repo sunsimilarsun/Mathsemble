@@ -4,6 +4,7 @@ const assert=require('node:assert/strict');
 const core=require('../src/assembly-core.cjs');
 const {compileMarkdown}=require('../src/assembly-markdown.cjs');
 const createService=require('../src/assembly-service.cjs');
+const createView=require('../src/assembly-view.cjs');
 
 const source=(metadata,body)=>`---\n${JSON.stringify(metadata)}\n---\n${body}`;
 const q=(id='Q1',body='函数最小值为 ?{1}。')=>source({id,subject:'高中数学',question_type:'fill_blank',role:'训练',knowledge_nodes:['[[集合]]']},body);
@@ -11,6 +12,8 @@ const k=(id='K1')=>source({id,type:'知识点',title:'集合',aliases:['集合�
 
 function fixture(initial={},saved={}) {
   const nodes=new Map(),writes=[],reads=[],opened=[],previews=[];
+  const listeners=new Set();
+  const trigger=(event,...args)=>{for(const ref of [...listeners])if(ref.event===event)ref.callback(...args);};
   function folder(path) {
     if(nodes.has(path))return nodes.get(path);
     const parent=path.includes('/')?folder(path.slice(0,path.lastIndexOf('/'))):null;
@@ -24,11 +27,13 @@ function fixture(initial={},saved={}) {
   }
   Object.entries(initial).forEach(([path,body])=>file(path,body));
   const vault={getAbstractFileByPath:path=>nodes.get(path)||null,
+    on:(event,callback)=>{const ref={event,callback};listeners.add(ref);return ref;},
+    offref:ref=>listeners.delete(ref),
     getMarkdownFiles:()=>[...nodes.values()].filter(n=>n.extension==='md'),
     async read(node){if(!node||node.children)throw Error('not file');reads.push(node.path);return node.content;},
     async createFolder(path){if(nodes.has(path))throw Error('exists');writes.push(['folder',path]);return folder(path);},
-    async create(path,text){if(nodes.has(path))throw Error('exists');writes.push(['create',path]);return file(path,text);},
-    async modify(node,text){if(node.children)throw Error('not file');writes.push(['modify',node.path]);node.content=text;node.stat.mtime++;},
+    async create(path,text){if(nodes.has(path))throw Error('exists');writes.push(['create',path]);const node=file(path,text);trigger('create',node);return node;},
+    async modify(node,text){if(node.children)throw Error('not file');writes.push(['modify',node.path]);node.content=text;node.stat.mtime++;trigger('modify',node);},
   };
   let stored=JSON.parse(JSON.stringify(saved));
   const plugin={app:{vault,metadataCache:{getFirstLinkpathDest:(target,from)=>{
@@ -38,9 +43,10 @@ function fixture(initial={},saved={}) {
   }},workspace:{getLeaf:()=>({openFile:async node=>opened.push(node.path)})}},
     loadData:async()=>stored,saveData:async next=>{stored=JSON.parse(JSON.stringify(next));}};
   const deps={core,compileMarkdown,parseYaml:JSON.parse,previewFile:async node=>previews.push(node.path)};
-  return {nodes,writes,reads,opened,previews,vault,plugin,deps,file,folder,
+  return {nodes,writes,reads,opened,previews,vault,plugin,deps,file,folder,trigger,listenerCount:()=>listeners.size,
     service:createService(plugin,deps),getStored:()=>stored,
-    rename(oldPath,newPath){const node=nodes.get(oldPath);assert(node);nodes.delete(oldPath);node.parent.children=node.parent.children.filter(n=>n!==node);node.path=newPath;node.name=newPath.split('/').pop();node.basename=node.name.replace(/\.md$/,'');node.parent=folder(newPath.slice(0,newPath.lastIndexOf('/')));node.parent.children.push(node);nodes.set(newPath,node);}
+    rename(oldPath,newPath){const node=nodes.get(oldPath);assert(node);nodes.delete(oldPath);node.parent.children=node.parent.children.filter(n=>n!==node);node.path=newPath;node.name=newPath.split('/').pop();node.basename=node.name.replace(/\.md$/,'');node.parent=folder(newPath.slice(0,newPath.lastIndexOf('/')));node.parent.children.push(node);nodes.set(newPath,node);trigger('rename',node,oldPath);},
+    remove(path){const node=nodes.get(path);assert(node);nodes.delete(path);node.parent.children=node.parent.children.filter(n=>n!==node);trigger('delete',node);}
   };
 }
 const roots={questionRoots:['题库'],knowledgeRoots:['知识'],recursive:true};
@@ -224,4 +230,87 @@ test('source-relative links are resolved against the original source context',as
   const {markdown}=await f.service.compile(plan,index);
   assert.match(decodeURIComponent(markdown),/题库\/图片\.svg/);
   assert.equal(f.writes.length,0);
+});
+
+test('host compilation decodes Markdown URI paths once and keeps Wiki paths literal',async()=>{
+  const f=await prepared({'题库/题.md':q('Q1','![literal](a%2520b.png)\n![space](a%20b.png)\n![[a%20b.png|120]]\n![percent](rate%25.png)\n![Chinese](%E5%9B%BE.png)\n[note](n%2520x.md)\n[[n%20x]]'),
+    '题库/a%20b.png':'literal percent image','题库/a b.png':'space image','题库/rate%.png':'percent image','题库/图.png':'Chinese image',
+    '题库/n%20x.md':'literal percent note','题库/n x.md':'space note'});
+  const lookups=[],lookup=f.plugin.app.metadataCache.getFirstLinkpathDest;
+  f.plugin.app.metadataCache.getFirstLinkpathDest=(target,from)=>{lookups.push(target);return lookup(target,from);};
+  const {markdown}=await f.service.compile(f.plan,f.index);
+  assert.deepEqual(lookups.toSorted(),['a%20b.png','a b.png','a%20b.png','rate%.png','图.png','n%20x.md','n%20x'].toSorted());
+  assert(markdown.includes('![literal](../../%E9%A2%98%E5%BA%93/a%2520b.png)'));
+  assert(markdown.includes('![space](../../%E9%A2%98%E5%BA%93/a%20b.png)'));
+  assert(markdown.includes('![[题库/a%20b.png|120]]'));
+  assert(markdown.includes('![percent](../../%E9%A2%98%E5%BA%93/rate%25.png)'));
+  assert(markdown.includes('![Chinese](../../%E9%A2%98%E5%BA%93/%E5%9B%BE.png)'));
+  assert(markdown.includes('[note](../../%E9%A2%98%E5%BA%93/n%2520x.md)'));
+  assert(markdown.includes('[[题库/n%20x.md]]'));
+  assert.equal(f.writes.length,0);
+});
+
+async function selectionFixture() {
+  const initial=Object.fromEntries(Array.from({length:21},(_,i)=>[`题库/Q${String(i).padStart(2,'0')}.md`,q('Q'+i)]));
+  const f=fixture(initial,{assemblySettings:roots});
+  class ItemView {constructor(){this.app=f.plugin.app;this.contentEl={replaceChildren(){}};}}
+  const View=createView({ItemView,Notice:class{},core,service:f.service});
+  const view=new View({},f.plugin);view.closed=false;view.settings=roots;view.index=await f.service.scan(roots);
+  for(const method of ['renderSelection','populateFilters','renderTree','renderOutline','renderResults','updateSummary'])view[method]=()=>{};
+  view.setStatus=message=>{view.lastStatus=message;};
+  view.plan=core.addSection(core.createPlan(),'保留已有编排');
+  const result=core.selectQuestions(view.index,view.filters,view.plan,2,()=>0);
+  view.selection={...result,index:view.index,context:view.selectionContext()};
+  return {...f,view};
+}
+
+test('candidate application rejects source changes during later scan batches without publishing a stale index',async t=>{
+  for(const [name,change] of [
+    ['modify',async f=>{const node=f.nodes.get('题库/Q00.md');await f.vault.modify(node,node.content+'\n已修改');}],
+    ['delete',f=>f.remove('题库/Q00.md')],
+    ['rename',f=>f.rename('题库/Q00.md','题库/Q00-renamed.md')],
+    ['create duplicate ID',f=>f.vault.create('题库/新增冲突.md',q('Q0'))],
+    ['rename source root',f=>{const folder=f.nodes.get('题库');folder.path='其他';f.trigger('rename',folder,'题库');}],
+  ]) await t.test(name,async()=>{
+    const f=await selectionFixture(),{view}=f,planBefore=JSON.stringify(view.plan),indexBefore=view.index;
+    const read=f.vault.read;let release,reached;
+    const paused=new Promise(resolve=>{reached=resolve;});
+    f.vault.read=async node=>{if(node.path==='题库/Q20.md'){reached();await new Promise(resolve=>{release=resolve;});}return read(node);};
+    const applying=view.applySelection();await paused;
+    const listenersDuringScan=f.listenerCount();
+    try{await change(f);}finally{release();}
+    await applying;
+    assert.equal(JSON.stringify(view.plan),planBefore,'no selected candidate may be inserted');
+    assert.equal(view.index,indexBefore,'the invalidated scan must not be published');
+    assert.equal(view.selection,null);assert.match(view.lastStatus,/来源在核对期间发生变化/);
+    assert.equal(listenersDuringScan,4);assert.equal(f.listenerCount(),0);assert.equal(view.actionBusy,false);
+  });
+});
+
+test('candidate source watchers are released on success, scan error and close',async t=>{
+  await t.test('successful application ignores unrelated files and releases listeners',async()=>{
+    const f=await selectionFixture(),read=f.vault.read;
+    f.vault.read=async node=>{if(node.path==='题库/Q20.md')f.trigger('modify',{path:'其他/笔记.md',extension:'md'});return read(node);};
+    await f.view.applySelection();
+    assert.equal(f.view.plan.entries.length,3);assert.equal(f.view.selection,null);
+    assert.match(f.view.lastStatus,/已将 2 道题加入编排/);assert.equal(f.listenerCount(),0);
+  });
+  await t.test('scan error preserves plan and index and releases listeners',async()=>{
+    const f=await selectionFixture(),planBefore=JSON.stringify(f.view.plan),indexBefore=f.view.index;
+    f.vault.getMarkdownFiles=()=>{throw Error('模拟扫描异常');};
+    await f.view.applySelection();
+    assert.equal(JSON.stringify(f.view.plan),planBefore);assert.equal(f.view.index,indexBefore);
+    assert.equal(f.view.selection,null);assert.equal(f.listenerCount(),0);assert.match(f.view.lastStatus,/模拟扫描异常/);
+  });
+  await t.test('close releases listeners before pending scan finishes',async()=>{
+    const f=await selectionFixture(),planBefore=JSON.stringify(f.view.plan),indexBefore=f.view.index;
+    const read=f.vault.read;let release,reached;
+    const paused=new Promise(resolve=>{reached=resolve;});
+    f.vault.read=async node=>{if(node.path==='题库/Q20.md'){reached();await new Promise(resolve=>{release=resolve;});}return read(node);};
+    const applying=f.view.applySelection();await paused;
+    assert.equal(f.listenerCount(),4);await f.view.onClose();assert.equal(f.listenerCount(),0);
+    release();await applying;
+    assert.equal(JSON.stringify(f.view.plan),planBefore);assert.equal(f.view.index,indexBefore);
+    assert.equal(f.listenerCount(),0);assert.equal(f.view.actionBusy,false);
+  });
 });

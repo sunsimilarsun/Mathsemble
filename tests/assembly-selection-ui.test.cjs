@@ -22,7 +22,8 @@ test('conditional selection UI keeps review separate from atomic insertion and r
  let scans=0;
  const read=async()=>{scans++;return core.buildIndex(records);};
  const service={loadSettings:async()=>({questionRoots:['题库'],knowledgeRoots:['知识'],recursive:true}),scan:read,
-   listPlans:async()=>[],saveSettings:async()=>{},openSource:async()=>{}};
+   listPlans:async()=>[],saveSettings:async()=>{},openSource:async()=>{},
+   beginSourceCheck:()=>({isCurrent:()=>true,assertCurrent(){},dispose(){}})};
  class Component {load(){}unload(){}}
  class ItemView extends Component {constructor(){super();this.contentEl=document.querySelector('#view');this.app={workspace:{requestSaveLayout(){}}};}addChild(c){c.load();}removeChild(c){c.unload();}}
  const View=load(${source('assembly-view.cjs')})({ItemView,Notice:class{},Component,core,service,renderMarkdown:async(md,node)=>{node.textContent=md;}});

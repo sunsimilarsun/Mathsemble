@@ -32,7 +32,9 @@ test('saved alternative HTML receives only the acknowledged warning categories',
     const modal = Object.create(context.ReviewModal.prototype);
     Object.assign(modal, {
       layout:'two-column', file:{basename:'测试讲义'}, partialExportApproved:approved, renderWarnings:warnings,
-      rendered:{ownerDocument:{}}, status:{setText() {}}, app:{vault:{getAbstractFileByPath:() => ({}), create:async () => {}}},
+      rendered:{ownerDocument:{}}, status:{setText() {}}, app:{vault:{
+        getAbstractFileByPath:path => path === 'ExamExports' ? {path,children:[]} : null, create:async () => {},
+      }},
       beginExport:() => ({mode:'student', controller:new AbortController()}),
       preparePrintHtml:async () => '<main>测试讲义</main>', assertCurrentExport() {}, assertSourceCurrent:async () => {},
       resourceSummary:() => '', finishExport() {}, reportExportFailure(job, error) { throw error; },

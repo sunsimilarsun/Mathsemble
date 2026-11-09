@@ -34,6 +34,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.selectionCount = '10';
       this.selection = null;
       this.selectionNotice = '';
+      this.selectionSourceCheck = null;
     }
     getViewType() { return VIEW_TYPE; }
     getDisplayText() { return this.plan?.title || '知识与组题'; }
@@ -150,6 +151,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async onClose() {
       this.closed = true;
+      this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
       this.scanGeneration++; this.previewGeneration++;
       this.releasePreview();
       this.contentEl.replaceChildren();
@@ -414,15 +416,18 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const selection=this.selection;
       const settingsKey=JSON.stringify(this.settings);
       return this.runAction('核对候选题来源',async()=>{
-        let latest;
+        let latest,sourceCheck;
         try {
           // A visible result list is only a scan snapshot. Re-read the vault
           // before applying, so edits made since drawing cannot pass by using
           // the old fingerprint twice.
+          sourceCheck=service.beginSourceCheck(this.settings);
+          this.selectionSourceCheck=sourceCheck;
           latest=await service.scan(this.settings);
           if(this.closed)return;
           if(this.selection!==selection||!this.selectionIsCurrent())
             throw new Error('筛选或编排已变化，请重新生成候选');
+          sourceCheck.assertCurrent();
           const count=selection.items.length;
           const next=core.addSelectedQuestions(this.plan,latest,this.filters,selection.items);
           this.index=latest;this.selection=null;
@@ -432,8 +437,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         } catch(error) {
           if(this.closed)return;
           this.selection=null;this.selectionNotice=errorText(error);
-          if(latest&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
+          if(latest&&sourceCheck?.isCurrent()&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
           this.renderSelection();throw error;
+        } finally {
+          sourceCheck?.dispose();
+          if(this.selectionSourceCheck===sourceCheck)this.selectionSourceCheck=null;
         }
       });
     }

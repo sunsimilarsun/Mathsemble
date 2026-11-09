@@ -134,7 +134,9 @@ async function mapTarget(raw, sourcePath, options, image, wiki = false) {
   const parts = splitTarget(target);
   const suffix = wiki ? parts.suffix : parts.suffix ? '#' + encodeURIComponent(parts.suffix.slice(1)) : '';
   let decoded = parts.path;
-  try { decoded = decodeURIComponent(decoded); } catch (_) { /* Literal percent in a filename. */ }
+  // Markdown destinations are URLs; Wiki targets are literal vault paths.
+  // Pass a canonical path to the host resolver, which must not decode again.
+  if (!wiki) try { decoded = decodeURIComponent(decoded); } catch (_) { /* Literal percent in a filename. */ }
   const resolved = decoded ? await options.resolveLink(decoded, sourcePath) : {path:sourcePath, extension:'md'};
   if (!resolved) {
     if (image) throw new Error(`图片或嵌入无法定位：${raw}（来源：${sourcePath}）`);

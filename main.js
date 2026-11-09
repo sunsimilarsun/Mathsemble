@@ -4683,6 +4683,36 @@ function mwbUniqueDiagnosticLine(markdown, needle, kind = 'formula', range = nul
   const value = String(needle || '').trim();
   if (!value || value.length > 20000) return null;
   const rows = mwbMarkdownLines(text), matches = [];
+  if (kind === 'image') {
+    // The source scanner identifies complete resource tokens outside code,
+    // comments and HTML. Match their full destination, never an alt label or
+    // a filename substring (a.png must not claim other-a.png).
+    let uncertain = false;
+    for (const row of rows) {
+      if (row.yaml || row.code || (range && (row.index+1 < range.start || row.index+1 > range.end))) continue;
+      let tokens = 0;
+      // A partial image parser must not claim uniqueness if a reference image,
+      // raw HTML image or unsupported label could render the same destination.
+      if (/<img(?:\s|>)/i.test(row.line)) uncertain = true;
+      for (const literal of row.scan?.literals || []) {
+        const bang = literal.from - 1;
+        if (row.line[bang] !== '!') continue;
+        let slashes = 0;
+        for (let i = bang-1; i >= 0 && row.line[i] === '\\'; i--) slashes++;
+        if (slashes % 2) continue;
+        const token = row.line.slice(literal.from,literal.to);
+        const wiki = /^\[\[([^\]\n]+)\]\]$/.exec(token);
+        const inline = /^\[(?:\\.|[^\]\\])*\]\([ \t]*(?:<([^<>\r\n]+)>|((?:\\.|[^\s\\])+?))(?:[ \t]+(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'))?[ \t]*\)$/.exec(token);
+        if (!wiki && !inline) { uncertain = true; continue; }
+        tokens++;
+        const raw = wiki ? wiki[1].split('|')[0].trim() : (inline?.[1] ?? inline?.[2] ?? '');
+        const destination = wiki ? raw : raw.replace(/\\([ !"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g,'$1');
+        if (destination && destination === value) matches.push(row.index+1);
+      }
+      if ((row.line.match(/(?<!\\)!\[/g) || []).length !== tokens) uncertain = true;
+    }
+    return !uncertain && matches.length === 1 ? matches[0] : null;
+  }
   let offset = 0;
   while ((offset = text.indexOf(value, offset)) >= 0) {
     const start = offset; offset += Math.max(1, value.length);
@@ -4699,8 +4729,6 @@ function mwbUniqueDiagnosticLine(markdown, needle, kind = 'formula', range = nul
       if (!closing || !after.trimStart().startsWith(closing) || row.line.includes('`')) continue;
       const local = start - row.offset;
       if ((row.scan?.literals || []).some(range => range.from <= local && local < range.to)) continue;
-    } else if (kind === 'image') {
-      if (!/(?:!\[\[[^\]]*|!\[[^\]]*\]\([^)]*)$/.test(text.slice(row.offset, start))) continue;
     }
     matches.push(row.index + 1);
   }
@@ -4893,7 +4921,23 @@ function stamp() {
 function safeStem(s) { return s.replace(/[\\/:*?"<>|]/g, '_').slice(0, 90); }
 
 async function ensureExportFolder(app) {
-  if (!app.vault.getAbstractFileByPath(OUTPUT_DIR)) await app.vault.createFolder(OUTPUT_DIR);
+  const isFolder = node => Array.isArray(node?.children);
+  const occupied = () => new Error('导出目录被同名文件占用：' + OUTPUT_DIR);
+  const existing = app.vault.getAbstractFileByPath(OUTPUT_DIR);
+  if (existing) {
+    if (!isFolder(existing)) throw occupied();
+    return;
+  }
+  try { await app.vault.createFolder(OUTPUT_DIR); }
+  catch (error) {
+    // Independent preview windows can both observe a missing output folder.
+    // Accept only an actual competing mkdir success; unrelated failures retain
+    // their error even if a folder happens to appear before this continuation.
+    const current = app.vault.getAbstractFileByPath(OUTPUT_DIR);
+    if (current && !isFolder(current)) throw occupied();
+    const exists = error?.code === 'EEXIST' || (!error?.code && /^(?:Folder |File )?already exists[.!]?$/i.test(String(error?.message || error)));
+    if (!exists || !isFolder(current)) throw error;
+  }
 }
 
 // A preview owns an immutable text/path/metadata snapshot, not mutable TFiles
@@ -5505,7 +5549,9 @@ async function mapTarget(raw, sourcePath, options, image, wiki = false) {
   const parts = splitTarget(target);
   const suffix = wiki ? parts.suffix : parts.suffix ? '#' + encodeURIComponent(parts.suffix.slice(1)) : '';
   let decoded = parts.path;
-  try { decoded = decodeURIComponent(decoded); } catch (_) { /* Literal percent in a filename. */ }
+  // Markdown destinations are URLs; Wiki targets are literal vault paths.
+  // Pass a canonical path to the host resolver, which must not decode again.
+  if (!wiki) try { decoded = decodeURIComponent(decoded); } catch (_) { /* Literal percent in a filename. */ }
   const resolved = decoded ? await options.resolveLink(decoded, sourcePath) : {path:sourcePath, extension:'md'};
   if (!resolved) {
     if (image) throw new Error(`图片或嵌入无法定位：${raw}（来源：${sourcePath}）`);
@@ -5715,6 +5761,35 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
   }
   const excluded = path => /(^|\/)(?:\.[^/]+|_高中知识登记|assets|node_modules|ExamExports|模板&规范|Mathsemble)(\/|$)/i.test(path) ||
     /(?:【模板】|【示例】|复测样例|Q-DEMO-|Q-CANONICAL-|整卷验收_)/i.test(path);
+  function beginSourceCheck(raw) {
+    const config = normalizeSettings(raw), roots = [...config.questionRoots,...config.knowledgeRoots];
+    let changed = false, disposed = false;
+    const refs = [];
+    const relevant = (path,folder) => {
+      if (typeof path !== 'string') return false;
+      if (folder && roots.some(root => root === path || root.startsWith(path + '/'))) return true;
+      if (excluded(path) || !folder && !/\.md$/i.test(path)) return false;
+      return roots.some(root => path.startsWith(root + '/') &&
+        (folder || config.recursive || !path.slice(root.length + 1).includes('/')));
+    };
+    const invalidate = (file,oldPath) => {
+      const folder = Array.isArray(file?.children);
+      if (relevant(file?.path,folder) || relevant(oldPath,folder)) changed = true;
+    };
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      for (const ref of refs) vault.offref(ref);
+      refs.length = 0;
+    };
+    try {
+      // Watch the whole scan scope: a new/edited note can introduce a duplicate
+      // identity, even when it was not among the originally selected notes.
+      for (const event of ['create','modify','delete','rename']) refs.push(vault.on(event,invalidate));
+    } catch (error) { dispose(); throw error; }
+    return {isCurrent:() => !changed && !disposed,
+      assertCurrent:() => {if (changed || disposed) throw new Error('来源在核对期间发生变化，请重新读取内容后生成候选');},dispose};
+  }
   async function scan(raw) {
     const config = normalizeSettings(raw || await loadSettings());
     const inside = (path, roots) => roots.some(root => path.startsWith(root + '/') &&
@@ -5822,8 +5897,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     const outputPath = options.outputPath || `${outputFolder}/讲义.md`;
     const markdown = await compileMarkdown(plan,result.entries,{outputPath,
       resolveLink:async (target,sourcePath) => {
-        let decoded = target; try { decoded = decodeURIComponent(target); } catch (_) {}
-        const file = app.metadataCache.getFirstLinkpathDest(decoded,sourcePath);
+        const file = app.metadataCache.getFirstLinkpathDest(target,sourcePath);
         return file && !Array.isArray(file.children) ? {path:file.path,extension:file.extension} : null;
       }});
     // Recheck after async link resolution, before any output file is written.
@@ -5847,7 +5921,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     if (!file || file.extension !== 'md') throw new Error('源文件不存在');
     await app.workspace.getLeaf('tab').openFile(file);
   }
-  return {loadSettings,saveSettings,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource};
+  return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource};
 };
 
 return module.exports; })();
@@ -5888,6 +5962,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.selectionCount = '10';
       this.selection = null;
       this.selectionNotice = '';
+      this.selectionSourceCheck = null;
     }
     getViewType() { return VIEW_TYPE; }
     getDisplayText() { return this.plan?.title || '知识与组题'; }
@@ -6004,6 +6079,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async onClose() {
       this.closed = true;
+      this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
       this.scanGeneration++; this.previewGeneration++;
       this.releasePreview();
       this.contentEl.replaceChildren();
@@ -6268,15 +6344,18 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const selection=this.selection;
       const settingsKey=JSON.stringify(this.settings);
       return this.runAction('核对候选题来源',async()=>{
-        let latest;
+        let latest,sourceCheck;
         try {
           // A visible result list is only a scan snapshot. Re-read the vault
           // before applying, so edits made since drawing cannot pass by using
           // the old fingerprint twice.
+          sourceCheck=service.beginSourceCheck(this.settings);
+          this.selectionSourceCheck=sourceCheck;
           latest=await service.scan(this.settings);
           if(this.closed)return;
           if(this.selection!==selection||!this.selectionIsCurrent())
             throw new Error('筛选或编排已变化，请重新生成候选');
+          sourceCheck.assertCurrent();
           const count=selection.items.length;
           const next=core.addSelectedQuestions(this.plan,latest,this.filters,selection.items);
           this.index=latest;this.selection=null;
@@ -6286,8 +6365,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         } catch(error) {
           if(this.closed)return;
           this.selection=null;this.selectionNotice=errorText(error);
-          if(latest&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
+          if(latest&&sourceCheck?.isCurrent()&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
           this.renderSelection();throw error;
+        } finally {
+          sourceCheck?.dispose();
+          if(this.selectionSourceCheck===sourceCheck)this.selectionSourceCheck=null;
         }
       });
     }
@@ -7194,9 +7276,10 @@ class PreviewModal extends Modal {
       if (line) precision = 'formula';
     }
     if (!line && node?.matches?.('img')) {
-      // Obsidian normally retains the original vault link in alt. Resolved
-      // app:// URLs are not treated as a source path without an exact match.
-      const raw = node.getAttribute('alt') || node.getAttribute('src') || '';
+      // Markdown alt is prose, not a source destination. Wiki image wrappers
+      // retain their original src; otherwise require the image src itself to
+      // match a complete source target. Unrecoverable app:// URLs fall back.
+      const raw = node.closest('.image-embed[src]')?.getAttribute('src') || node.getAttribute('src') || '';
       line = mwbUniqueDiagnosticLine(record.markdown, raw, 'image', range);
       if (line) precision = 'image';
     }
@@ -7566,7 +7649,11 @@ class PreviewModal extends Modal {
         }
         const detail = String(e?.message || e);
         if (this.questionPlan?.errors?.length) this.updateQuestionBoundaryReport();
-        if (!this.diagnosticItems?.length && !this.questionPlan?.errors?.length)
+        const hasNavigation = this.diagnosticItems?.some(item => {
+          const target = this.resolveDiagnosticTarget(item.target);
+          return target.path || (target.node && this.rendered?.contains?.(target.node));
+        });
+        if (!hasNavigation && !this.questionPlan?.errors?.length)
           for (const [index,item] of (this.exam?.items || [{file:this.file}]).entries())
             this.addDiagnosticItem(this.exam ? `渲染未完成 · 检查来源题卡 ${index+1}` : '渲染未完成',null,item.file.path);
         this.lastRenderError = ['Mathsemble v' + (this.plugin.manifest?.version || 'unknown'),

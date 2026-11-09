@@ -48,6 +48,35 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
   }
   const excluded = path => /(^|\/)(?:\.[^/]+|_高中知识登记|assets|node_modules|ExamExports|模板&规范|Mathsemble)(\/|$)/i.test(path) ||
     /(?:【模板】|【示例】|复测样例|Q-DEMO-|Q-CANONICAL-|整卷验收_)/i.test(path);
+  function beginSourceCheck(raw) {
+    const config = normalizeSettings(raw), roots = [...config.questionRoots,...config.knowledgeRoots];
+    let changed = false, disposed = false;
+    const refs = [];
+    const relevant = (path,folder) => {
+      if (typeof path !== 'string') return false;
+      if (folder && roots.some(root => root === path || root.startsWith(path + '/'))) return true;
+      if (excluded(path) || !folder && !/\.md$/i.test(path)) return false;
+      return roots.some(root => path.startsWith(root + '/') &&
+        (folder || config.recursive || !path.slice(root.length + 1).includes('/')));
+    };
+    const invalidate = (file,oldPath) => {
+      const folder = Array.isArray(file?.children);
+      if (relevant(file?.path,folder) || relevant(oldPath,folder)) changed = true;
+    };
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      for (const ref of refs) vault.offref(ref);
+      refs.length = 0;
+    };
+    try {
+      // Watch the whole scan scope: a new/edited note can introduce a duplicate
+      // identity, even when it was not among the originally selected notes.
+      for (const event of ['create','modify','delete','rename']) refs.push(vault.on(event,invalidate));
+    } catch (error) { dispose(); throw error; }
+    return {isCurrent:() => !changed && !disposed,
+      assertCurrent:() => {if (changed || disposed) throw new Error('来源在核对期间发生变化，请重新读取内容后生成候选');},dispose};
+  }
   async function scan(raw) {
     const config = normalizeSettings(raw || await loadSettings());
     const inside = (path, roots) => roots.some(root => path.startsWith(root + '/') &&
@@ -155,8 +184,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     const outputPath = options.outputPath || `${outputFolder}/讲义.md`;
     const markdown = await compileMarkdown(plan,result.entries,{outputPath,
       resolveLink:async (target,sourcePath) => {
-        let decoded = target; try { decoded = decodeURIComponent(target); } catch (_) {}
-        const file = app.metadataCache.getFirstLinkpathDest(decoded,sourcePath);
+        const file = app.metadataCache.getFirstLinkpathDest(target,sourcePath);
         return file && !Array.isArray(file.children) ? {path:file.path,extension:file.extension} : null;
       }});
     // Recheck after async link resolution, before any output file is written.
@@ -180,5 +208,5 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     if (!file || file.extension !== 'md') throw new Error('源文件不存在');
     await app.workspace.getLeaf('tab').openFile(file);
   }
-  return {loadSettings,saveSettings,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource};
+  return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource};
 };

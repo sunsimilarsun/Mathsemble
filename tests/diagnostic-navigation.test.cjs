@@ -36,6 +36,28 @@ test('formula source mapping uses original lines and rejects ambiguous or litera
   assert.equal(mwbUniqueDiagnosticLine('![[a.png]]\n![[a.png]]','a.png','image'),null);
 });
 
+test('image mapping compares complete destinations and excludes labels, literals and ambiguous sources',()=>{
+  for (const [markdown,needle,line] of [
+    ['![图](a.png)','a.png',1],
+    ['![图](<figure one.png> "标题")','figure one.png',1],
+    ['![图](plot(x).png)','plot(x).png',1],
+    ['![[folder/a.png|图示]]','folder/a.png',1],
+    ['![a.png](other.png)','a.png',null],
+    ['![[other-a.png]]','a.png',null],
+    ['![](a.png.bak)','a.png',null],
+    ['![](folder/a.png)','a.png',null],
+    ['![[a.png]]\n![](a.png)','a.png',null],
+    ['<img src="a.png">\n![](a.png)','a.png',null],
+    ['![图][ref]\n[ref]: a.png\n![](a.png)','a.png',null],
+    ['![图]\n[图]: a.png\n![](a.png)','a.png',null],
+    ['![图 [注释]](a.png)\n![](a.png)','a.png',null],
+    ['`![[a.png]]`','a.png',null],
+    ['<!-- ![[a.png]] -->','a.png',null],
+    ['\\![[a.png]]','a.png',null],
+    ['```md\n![[a.png]]\n```','a.png',null],
+  ]) assert.equal(mwbUniqueDiagnosticLine(markdown,needle,'image'),line,markdown);
+});
+
 function sourceFixture({disk,edited,reading=false}={}) {
   const markdown = '---\ntitle: source\n---\n##### 题目\n$x+1$';
   const file = {path:'questions/a.md',extension:'md'};
@@ -193,7 +215,8 @@ async function browserCases() {
   });
   await check('broken image and malformed boundary retain original source lines',()=>{
     const view=modal('前言\n![[missing.png]]');
-    const img=document.createElement('img');img.alt='missing.png';view.rendered.append(img);
+    const wrapper=document.createElement('span');wrapper.className='image-embed';wrapper.setAttribute('src','missing.png');view.rendered.append(wrapper);
+    const img=document.createElement('img');img.alt='图示';img.src='app://vault/missing.png';wrapper.append(img);
     view.recordDiagnosticIssues(view.rendered,['存在未加载或加载失败的图片']);
     const target=view.resolveDiagnosticTarget(view.diagnosticItems[0].target);
     ok(target.line===2&&target.precision==='image','image source line not retained');
@@ -202,6 +225,53 @@ async function browserCases() {
     ok(view.questionBoundaryPanel.querySelector('button')?.textContent==='定位原文','boundary source navigation absent');
     ok(!view.questionBoundaryPanel.outerHTML.includes('BOUNDARY_SECRET'),'student boundary navigation leaked answer');
     view.contentEl.remove();
+  });
+  await check('image labels cannot steal another image destination; verified Markdown and Wiki targets remain exact',()=>{
+    const view=modal('##### 图题\n![示意图](missing.png)\n\n![](示意图.png)\n![[folder/wiki.png|示意图]]');
+    view.rendered.innerHTML='<section data-mwb-question-id="q1" data-mwb-source-start="1" data-mwb-source-end="5"><img alt="示意图" src="app://vault/missing.png"></section>';
+    const group=view.rendered.firstElementChild,img=group.firstElementChild;
+    let target=view.resolveDiagnosticTarget(view.diagnosticTarget(img));
+    ok(target.line===1&&target.precision==='block','alt caption claimed another image URL');
+    img.setAttribute('src','missing.png');target=view.resolveDiagnosticTarget(view.diagnosticTarget(img));
+    ok(target.line===2&&target.precision==='image','exact Markdown destination lost');
+    const wiki=document.createElement('span');wiki.className='image-embed';wiki.setAttribute('src','folder/wiki.png');group.append(wiki);
+    wiki.append(img);img.setAttribute('src','app://vault/folder/wiki.png');
+    target=view.resolveDiagnosticTarget(view.diagnosticTarget(img));
+    ok(target.line===5&&target.precision==='image','Wiki raw destination lost');
+    wiki.removeAttribute('src');img.setAttribute('src','wiki.png');
+    target=view.resolveDiagnosticTarget(view.diagnosticTarget(img));
+    ok(target.precision==='block','filename substring was considered exact');
+    group.removeAttribute('data-mwb-source-start');group.removeAttribute('data-mwb-source-end');
+    target=view.resolveDiagnosticTarget(view.diagnosticTarget(img));
+    ok(target.line===null&&target.precision==='file','unrecoverable source must fall back to file');
+    view.contentEl.remove();
+  });
+  await check('real exam measurement failure reaches render catch with usable source buttons after cleanup',async()=>{
+    const view=modal(''),source='题干\n\n> [!answer]- 标准答案\n> $x+1$';
+    const items=['q1.md','q2.md'].map(path=>({file:{path,extension:'md',basename:path.slice(0,-3)},markdown:source,number:1}));
+    Object.assign(view,{plugin:{manifest:{version:'0.2.4'}},app:{},renderQueue:Promise.resolve(),ready:false,
+      solutionOptions:{solutionSpaces:false,showSolution:true},metaSelections:{student:[],teacher:[]},
+      exam:{items,sections:[]},silentRender:true,sourceDirty:false,sourceReadJob:null,compactStatus:view.contentEl.createDiv()});
+    delete view.updateCompactStatus;
+    const oldRender=stub.MarkdownRenderer.render;let measurementRenders=0;
+    stub.MarkdownRenderer.render=async(app,text,target)=>{
+      ok(!!target.closest('.mwb-measure-layer'),'failure did not occur in real height measurement');
+      measurementRenders++;const p=document.createElement('p');p.textContent=text;target.append(p);
+    };
+    stub.mathFailure=new Error('test MathJax unavailable');
+    try { await view.renderMode('student'); }
+    finally {stub.MarkdownRenderer.render=oldRender;stub.mathFailure=null;}
+    ok(measurementRenders===2,'exam did not render both measurement contexts');
+    ok(!view.ready&&view.lastRenderError.includes('test MathJax unavailable'),'render catch was not reached');
+    ok(!view.measurePage&&!view.contentEl.querySelector('.mwb-measure-layer'),'failed measurement survived cleanup');
+    const buttons=[...view.diagnosticResourceDetails.querySelectorAll('button')];
+    ok(buttons.length===2&&buttons.every(button=>button.textContent==='打开原文件'),'generic measurement failure has no file navigation');
+    const opened=[];
+    view.app={vault:{getAbstractFileByPath:path=>items.find(item=>item.file.path===path)?.file,read:async()=>source},workspace:{getLeavesOfType:()=>[],getLeaf:()=>({view:{},openFile:async file=>opened.push(file.path)}),revealLeaf:async()=>{}}};
+    view.close=()=>{view.closed=true;};
+    buttons[1].click();await new Promise(resolve=>setTimeout(resolve,0));
+    ok(opened[0]==='q2.md','fallback button opened the wrong source');
+    ok(items.every(item=>item.markdown===source),'diagnosis changed source');view.contentEl.remove();
   });
   await check('long question pagination selects the matching later fragment and continuous fallback discards clone references',()=>{
     const view=modal();
@@ -267,7 +337,7 @@ test('real Chromium diagnostic navigation and export isolation',async t=>{
     '/usr/bin/chromium','/usr/bin/google-chrome'].find(candidate=>candidate&&fs.existsSync(candidate));
   if(!chrome){if(process.env.CI)throw Error('Chrome required');t.skip('Set CHROME_PATH');return;}
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'mwb-diagnostic-navigation-')),input=path.join(directory,'case.html');
-  const stub='const module={exports:{}};const stub={Plugin:class{},Modal:class{},Notice:class{},MarkdownRenderer:{},MarkdownView:class{}};function require(n){return n==="obsidian"?stub:{}};';
+  const stub='const module={exports:{}};const stub={Plugin:class{},Modal:class{},Notice:class{},MarkdownRenderer:{},MarkdownView:class{},finishRenderMath:()=>stub.mathFailure?Promise.reject(stub.mathFailure):Promise.resolve()};function require(n){return n==="obsidian"?stub:{}};';
   const script='(async()=>{'+stub+'\n'+source+expose+'\nawait ('+browserCases.toString()+')();})().catch(error=>{const output=document.createElement("pre");output.id="mwb-test-results";output.textContent=JSON.stringify([{name:"fixture initialization",ok:false,error:String(error.stack||error)}]);document.body.append(output);});';
   fs.writeFileSync(input,'<!doctype html><meta charset="utf-8"><style>'+css+'</style><body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>');
   const results=await runChromeDocument(chrome,input,path.join(directory,'profile'));
