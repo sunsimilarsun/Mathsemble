@@ -362,6 +362,41 @@
 .mwb-print-document .mwb-handout-question { display: flow-root; margin: 0; padding: 0; }
 .mwb-print-document .mwb-section-leaders { display: flow-root; margin: 0; padding: 0; }
 
+/* Physical layout is shared by the A4 preview, saved HTML and PDF. The
+ * paginator fills explicit column bodies in reading order, not CSS columns. */
+.mwb-print-document[data-mwb-layout="two-column"] .mwb-paper-two-column .mwb-paper-columns {
+  display: flex; height: 100%; gap: 8mm;
+}
+.mwb-print-document[data-mwb-layout="two-column"] .mwb-paper-two-column .mwb-paper-body {
+  flex: 1; min-width: 0; width: 0; height: 100%;
+}
+.mwb-print-document[data-mwb-layout="trial"] .mwb-paper.mwb-paper-trial {
+  display: flex; flex-direction: column;
+}
+.mwb-print-document .mwb-trial-header { flex: none; margin: 0; padding: 0; color: #141414; }
+.mwb-print-document table.mwb-trial-table {
+  table-layout: fixed; border-collapse: collapse; width: 100%; max-width: 100%;
+  margin: 0; font-size: 10.5pt; line-height: 1.55; background: #fff;
+}
+.mwb-print-document .mwb-trial-table :is(th, td) {
+  border: 1px solid #888; padding: 2mm; height: 10mm;
+  vertical-align: middle; color: #141414; background: #fff;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+}
+.mwb-print-document .mwb-trial-table th { text-align: center; font-weight: 700; }
+.mwb-print-document .mwb-trial-table td { text-align: left; font-weight: 400; }
+.mwb-print-document .mwb-trial-content-label {
+  box-sizing: border-box; border: 1px solid #888; border-top: 0; border-bottom: 0;
+  padding: 1.5mm; margin: 0; text-align: center; font-weight: 700;
+  color: #141414; background: #ddd; line-height: 1.5;
+  print-color-adjust: exact; -webkit-print-color-adjust: exact;
+}
+.mwb-print-document .mwb-trial-frame {
+  box-sizing: border-box; flex: 1; min-height: 0;
+  border: 1px solid #888; padding: 4mm;
+}
+.mwb-print-document .mwb-trial-frame > .mwb-paper-body { height: 100%; width: 100%; }
+
 /* Modal-only UI rules below are excluded from export CSS. */
 /* Isolate controls and A4 simulation from Obsidian's own note layout. */
 .mwb-modal {
@@ -384,6 +419,11 @@
   box-shadow: 0 2px 12px rgba(0,0,0,.22);
 }
 .mwb-modal .mwb-page .mwb-typography { max-width: none; }
+/* Teacher measurements and continuous source use the eventual body width. */
+.mwb-modal .mwb-page[data-mwb-layout="two-column"] > .mwb-print-document { width: 85mm; }
+.mwb-modal .mwb-page[data-mwb-layout="trial"] > .mwb-print-document { width: calc(170mm - 2px); }
+.mwb-modal .mwb-page[data-mwb-layout="two-column"] > .mwb-measure-layer,
+.mwb-modal .mwb-page[data-mwb-layout="trial"] > .mwb-measure-layer { right: auto; }
 /* The rendered source stays measurable for student-height/PDF checks, but
    the user sees separate sheets produced by the actual PDF paginator. */
 .mwb-modal .mwb-page.mwb-preview-source {
@@ -763,6 +803,10 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
 .mwb-modal .mwb-menu-panel > button { width: 100%; text-align: left; }
 .mwb-modal .mwb-menu-panel .mwb-setting-label { justify-content: space-between; }
 .mwb-modal .mwb-menu-panel input.mwb-exam-title-input { width: 100%; min-width: 0; max-width: none; }
+.mwb-modal .mwb-layout-picker select { max-width: 130px; }
+.mwb-modal .mwb-trial-fields label { display: flex; flex-direction: column; gap: 4px; }
+.mwb-modal .mwb-trial-fields :is(input, textarea) { box-sizing: border-box; width: 100%; min-width: 0; }
+.mwb-modal .mwb-trial-fields textarea { resize: vertical; }
 .mwb-modal .mwb-menu-panel .mwb-meta-selector { width: 100%; margin: 0; }
 .mwb-modal .mwb-source-status { margin: 5px 0; }
 .mwb-modal button.mwb-source-action { margin: 0 0 8px 0; }
