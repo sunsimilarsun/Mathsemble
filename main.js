@@ -6222,11 +6222,12 @@ function mwbNormalizeLayout(value) {
 
 function mwbTrialDetailsFromMetadata(metadata = {}) {
   const fields = {
+    teacher:['author'],
     student:['学生', '学生姓名', 'student', 'student_name', 'students'],
     time:['上课时间', '授课时间', 'lesson_time', 'class_time', 'time', 'date'],
     subject:['subject', '学科'],
     grade:['年级', 'grade'],
-    title:['课题名称', 'title'],
+    title:['titile'],
     objectives:['教学目标', '学习目标', 'learning_objectives', 'objectives'],
   };
   const text = value => {
@@ -6234,7 +6235,7 @@ function mwbTrialDetailsFromMetadata(metadata = {}) {
     const result = String(value).trim();
     return result === '待补' ? '' : result;
   };
-  const details = {teacher:'孙老师'};
+  const details = {};
   for (const [field, keys] of Object.entries(fields)) {
     // A present but empty primary property is intentional; do not resurrect
     // an outdated compatibility field, filename or invented default.
@@ -6244,6 +6245,7 @@ function mwbTrialDetailsFromMetadata(metadata = {}) {
       ? value.map(text).filter(Boolean).join(field === 'objectives' ? '\n' : '、')
       : text(value);
   }
+  if (!details.teacher) details.teacher = '孙老师';
   return details;
 }
 
