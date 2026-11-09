@@ -2,7 +2,7 @@
 
 Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作讲义、题卡和试卷，预览并导出 A4 学生版／教师版 PDF、打印稿及 HTML。
 
-**当前源码：0.2.3 发布候选。** 本轮默认、双列和试听排版、课程信息、长公式换行及双版 PDF 导出已获用户测试验收通过，候选以验收的 v8 为基线。保留“知识点与组题工作区”的跨目录筛选、知识与题卡混编、排序分区及学生／教师输出。候选 v4 已通过本地完整发布检查和 Linux／Windows CI，各 434 项全部通过、零跳过；[草稿 PR #21](https://github.com/sunsimilarsun/Mathsemble/pull/21) 尚未合并，未创建正式 GitHub Release。详见 [0.2.3 候选说明](docs/RELEASE_NOTES_0.2.3.md)及[发布检查记录](docs/TESTING_RELEASE_0.2.3.md)。
+**当前版本：0.2.3。** 默认、双列和试听排版、课程信息、长公式换行及双版 PDF 导出以用户验收的 v8 为基线，保留“知识点与组题工作区”的跨目录筛选、知识与题卡混编、排序分区及学生／教师输出。发布代码与候选 v4 一致，本地完整发布检查和 Linux／Windows CI 各 434 项全部通过、零跳过。下载见 [0.2.3 Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.3)，详情见[发布说明](docs/RELEASE_NOTES_0.2.3.md)及[发布检查记录](docs/TESTING_RELEASE_0.2.3.md)。
 
 ## 知识点与组题
 
