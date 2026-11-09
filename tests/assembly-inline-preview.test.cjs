@@ -45,7 +45,7 @@ async function browserCases(sources,css) {
     markdown:'---\ntitle: 元信息不能进入预览\n---\n第 '+i+' 道完整题干。\n\n$$\n\\frac{1}{x+1}+\\frac{1}{x-1}=2\n$$\n\n```text\n完整代码围栏\n```\n\n![图](../../图片/图.png)\n\n末尾条件 '+i}));
   const body=md=>md.replace(/^---\n[\s\S]*?\n---\n/,'');
 
-  async function fixture({manual=false,noObserver=false,deferred=false,fail=false}={}) {
+  async function fixture({manual=false,noObserver=false,deferred=false,fail=false,sourceRecords=records,extraParagraphs=8}={}) {
     const frame=document.createElement('iframe');frame.style.cssText='width:1440px;height:920px;border:0;';
     const loaded=new Promise(resolve=>{frame.onload=resolve;});
     frame.srcdoc='<!doctype html><meta charset="utf-8"><style>'+css.replace(/<\/style/gi,'<\\/style')+'</style><div id="view"></div>';
@@ -61,7 +61,7 @@ async function browserCases(sources,css) {
     if(manual)win.IntersectionObserver=Observer;
     if(noObserver)win.IntersectionObserver=undefined;
     const load=source=>{const module={exports:{}};new win.Function('module',source)(module);return module.exports;};
-    const core=load(sources.core),owners=[],calls=[],pending=[];let active=0,maxActive=0,index=core.buildIndex(records);
+    const core=load(sources.core),owners=[],calls=[],pending=[];let active=0,maxActive=0,index=core.buildIndex(sourceRecords);
     class Component {
       constructor(){this.loaded=false;this.unloadCount=0;owners.push(this);}
       load(){this.loaded=true;}
@@ -87,7 +87,7 @@ async function browserCases(sources,css) {
           const link=doc.createElement('a');link.href='#hidden';link.textContent='预览中的链接';node.append(link);
           // Give the compact preview real overflowing content without cutting
           // the Markdown sent to its renderer or inventing a MathJax layout.
-          for(let i=0;i<8;i++){const p=doc.createElement('p');p.textContent='完整正文的后续内容 '+i;node.append(p);}
+          for(let i=0;i<extraParagraphs;i++){const p=doc.createElement('p');p.textContent='完整正文的后续内容 '+i;node.append(p);}
         }
       } finally {if(inline)active--;}
     };
@@ -122,30 +122,37 @@ async function browserCases(sources,css) {
     const shell=call.node.closest('.mwb-assembly-snippet');
     ok(shell&&shell.inert,'clipped preview content remains keyboard-interactive');
     const link=call.node.querySelector('a');link.focus();ok(f.doc.activeElement!==link,'hidden snippet link can receive keyboard focus');
-    ok(shell.getBoundingClientRect().height<=125,'snippet is not height bounded');
+    const height=shell.getBoundingClientRect().height;
+    ok(height>112&&height<=330,'long preview did not gain readable space while staying bounded: '+height);
   });
 
-  await check('dense cards use multiple columns when space permits and remain reachable in a short narrow pane',async()=>{
+  await check('each question occupies one full row at every width and short previews use their natural height',async()=>{
     const f=await fixture();await until(()=>f.inlineCalls().length>0,'initial preview absent');
     const cards=()=>[...f.view.results.querySelectorAll('.mwb-assembly-result')];
     let a=cards()[0].getBoundingClientRect(),b=cards()[1].getBoundingClientRect();
-    ok(Math.abs(a.top-b.top)<2&&b.left>a.right-2,'wide workspace still uses only one question column');
-    ok(a.height<=280,'compact question card consumes excessive height');fit(f);
+    ok(Math.abs(a.left-b.left)<2&&b.top>=a.bottom-2,'wide workspace still puts questions beside one another');
+    ok(a.width>=f.view.results.getBoundingClientRect().width-2,'question preview does not use the full result width');fit(f);
     const widePane=f.view.center.getBoundingClientRect();
     const fullCards=cards().filter(card=>{const rect=card.getBoundingClientRect();return rect.top>=widePane.top&&rect.bottom<=widePane.bottom;}).length;
     const columns=new Set(cards().map(card=>Math.round(card.getBoundingClientRect().left))).size;
-    ok(fullCards>=4,'wide initial workspace shows fewer than four complete question cards: '+fullCards);
-    const measurements={wide:{width:1400,height:860,columns,fullyVisibleCards:fullCards,cardHeight:Math.round(a.height)}};
+    ok(columns===1,'wide result list contains multiple question columns');
+    const measurements={wide:{width:1400,height:860,columns,fullyVisibleCards:fullCards,cardHeight:Math.round(a.height),previewHeight:Math.round(snippets(cards()[0])[0].getBoundingClientRect().height)}};
     f.host.style.width='420px';f.host.style.height='600px';f.view.switchPane('library');await pause(30);
     a=cards()[0].getBoundingClientRect();b=cards()[1].getBoundingClientRect();
-    ok(Math.abs(a.left-b.left)<2&&b.top>=a.bottom-2,'narrow workspace did not fall back to one card column');
+    ok(Math.abs(a.left-b.left)<2&&b.top>=a.bottom-2,'narrow workspace does not keep one question per row');
+    measurements.narrow={width:420,height:600,columns:new Set(cards().map(card=>Math.round(card.getBoundingClientRect().left))).size,cardHeight:Math.round(a.height),previewHeight:Math.round(snippets(cards()[0])[0].getBoundingClientRect().height)};
     f.view.limit=10;f.view.renderResults();await pause();
     const more=button(f.view.results,'再显示 100 条');ok(more,'paging action missing');
     f.view.center.scrollTop=f.view.center.scrollHeight;await pause();
     const rect=more.getBoundingClientRect(),pane=f.view.center.getBoundingClientRect();
     ok(rect.top>=pane.top&&rect.bottom<=pane.bottom,'paging action cannot be reached in the short pane');
     more.click();await pause();ok(cards().length===records.length,'reachable paging action did not add results');fit(f);
-    measurements.narrow={width:420,height:600,columns:new Set(cards().map(card=>Math.round(card.getBoundingClientRect().left))).size,cardHeight:Math.round(cards()[0].getBoundingClientRect().height)};
+    const short=await fixture({sourceRecords:[{...records[0],markdown:'短题：求 $1+1$。'}],extraParagraphs:0});
+    await until(()=>snippets(short.view.results).some(node=>node.dataset.previewState==='ready'),'short question preview absent');
+    const shortShell=snippets(short.view.results)[0],shortHeight=shortShell.getBoundingClientRect().height;
+    ok(shortHeight>0&&shortHeight<112,'short question is padded to the long preview height: '+shortHeight);
+    ok(short.win.getComputedStyle(shortShell).maskImage==='none','short question text is faded despite fitting in the preview');
+    measurements.short={previewHeight:Math.round(shortHeight)};
     return measurements;
   });
 
@@ -186,6 +193,8 @@ async function browserCases(sources,css) {
     f.setDeferred(true);f.view.selectionCount='2';f.view.drawSelection();emit(f,f.view.selectionRows);await pause();
     const candidateCalls=f.inlineCalls().filter(call=>!!call.node.closest('.mwb-assembly-selection-row'));
     ok(candidateCalls.length===2,'candidate cards require an extra preview click');
+    const candidateRows=[...f.view.selectionRows.querySelectorAll('.mwb-assembly-selection-row')],a=candidateRows[0].getBoundingClientRect(),b=candidateRows[1].getBoundingClientRect();
+    ok(Math.abs(a.left-b.left)<2&&b.top>=a.bottom-2&&a.width>=f.view.selectionRows.getBoundingClientRect().width-2,'candidate questions do not each occupy one full row');
     ok(f.view.plan.entries.length===0,'automatic candidate previews added content to the plan');
     const input=f.view.selectionCountInput;input.focus();input.value='3';input.dispatchEvent(new f.win.Event('input'));await pause();
     ok(candidateCalls.every(call=>call.signal.aborted&&!call.owner.loaded),'quantity editing left candidate renders alive');

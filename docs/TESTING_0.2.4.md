@@ -69,12 +69,20 @@
 
 完整 `prepublish-check` **495 项通过，0 失败、0 跳过**；独立只读复核通过。`src/plugin.js` 与 `main.js` SHA-256 均为 `eced17c1d7f424a38322429fbbe6881e9412929594e29aede6932656d690c2d3`。打印 CSS 保持不变；组题入口仅增加自动预览取消信号接线，既有学生／教师分页和导出回归全部保留。
 
+## 候选 v5：每行一道题
+
+按用户反馈，普通结果与候选统一为单列，每道题占满列表宽度。正文预览从固定 112px 改为随内容增长、最高 320px，图片高度上限同步增至 280px；短题保持自然高度，移除预览底部渐隐。点击前自动渲染与“查看全文”入口保持不变。
+
+更新既有卡片几何断言，宽／窄容器及候选均为单列，分页操作可达；异步渲染与数据安全断言保留。四套定向 Chromium 测试 **23/23 通过**，夹具中宽容器正文预览为 286px、窄容器为 320px、短题为 52px。完整 `prepublish-check` **495 项通过，0 失败、0 跳过**。本轮仅调整组题 CSS，JavaScript 与打印 CSS 均保持 v4 内容；实际 Obsidian 视觉验收仍由用户负责。
+
 ## 证据边界与产物
 
 日志保存在工作树上一层 `features-20261109/`：首次候选为 `0.2.4-prepublish.log`，候选 v2 首轮为 `0.2.4-audit-fixes-prepublish.log`，通过的完整检查为 `0.2.4-audit-fixes-verified.log`；候选 v3 为 `0.2.4-ui-prepublish.log`，定向检查为 `0.2.4-ui-functional.log`。远程 Ubuntu／Windows 检查结果以该分支 PR 的精确提交状态为准，本页的测试总数是对应候选的本地结果。
 
 候选 v4 日志为 `0.2.4-inline-preview-prepublish.log` 与 `0.2.4-inline-preview-functional.log`。
 
-候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v4 摘要见 `release/SHA256SUMS_0.2.4-candidate-v4.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
+候选 v5 日志为 `0.2.4-single-row-prepublish.log` 与 `0.2.4-single-row-functional.log`。
+
+候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v5 摘要见 `release/SHA256SUMS_0.2.4-candidate-v5.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
 
 0.2.4 新功能的真实 Obsidian 操作、视觉和原生 PDF 验收：**NOT_RUN，由用户负责**。本轮未修改正式 Markdown 库或本机已安装插件，未创建正式 0.2.4 标签或 Release。既有 0.2.3 用户验收仅作为基线，不代表新功能已验收。
