@@ -31,6 +31,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.previewOwner = null;
       this.selectedItem = null;
       this.plans = [];
+      this.selectionCount = '10';
+      this.selection = null;
+      this.selectionNotice = '';
     }
     getViewType() { return VIEW_TYPE; }
     getDisplayText() { return this.plan?.title || '知识与组题'; }
@@ -77,6 +80,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       return this.el(tag, wrapper);
     }
     stateChanged() {
+      this.clearSelection('编排已变化，请重新生成候选。');
       this.dirty = true;
       this.pendingDiscard = null;
       this.app.workspace.requestSaveLayout?.();
@@ -122,12 +126,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.actionBusy = true;
       this.setStatus(label + '…');
       this.root?.classList.add('is-busy');
+      this.renderSelection();
       try { await action(); }
       catch (error) { this.setStatus(errorText(error), true); this.notice(errorText(error)); }
       finally {
         this.actionBusy = false;
         this.root?.classList.remove('is-busy');
         this.updateSummary();
+        if(!this.closed)this.renderSelection();
       }
     }
     async onOpen() {
@@ -289,6 +295,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       this.searchInput=this.field(tools,'搜索名称、正文与标签');this.searchInput.type='search';this.searchInput.value=this.filters.query||'';
       this.searchInput.addEventListener('input',()=>{this.filters.query=this.searchInput.value;this.limit=100;this.renderResults();});
+      this.selectionPanel=this.el('section',this.center,'mwb-assembly-selection');
+      this.selectionPanel.setAttribute('aria-label','条件抽题');
       this.resultsSummary=this.el('div',this.center,'mwb-assembly-muted');
       this.results=this.el('div',this.center,'mwb-assembly-results');
       this.preview=this.el('div',this.center,'mwb-assembly-preview');
@@ -302,6 +310,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderResults() {
       if(!this.results) return;
+      if(this.selection && !this.selectionIsCurrent()) this.clearSelection('筛选或内容已变化，请重新生成候选。');
+      this.renderSelection();
       this.results.replaceChildren();
       const items=core.filterItems(this.index,this.filters);
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
@@ -318,6 +328,114 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
       }
       if(items.length>this.limit) this.button(this.results,'再显示 100 条',()=>{this.limit+=100;this.renderResults();});
+    }
+    selectionContext() {
+      return JSON.stringify({filters:this.filters,plan:this.plan,count:this.selectionCount,scan:this.scanGeneration,settings:this.settings});
+    }
+    selectionIsCurrent() {
+      return !!this.selection && this.selection.index===this.index && this.selection.context===this.selectionContext();
+    }
+    clearSelection(message = '') {
+      if(this.selection) {
+        this.selection=null;
+        this.selectionNotice=message;
+        this.renderSelection();
+      }
+    }
+    renderSelection() {
+      if(!this.selectionPanel) return;
+      this.selectionPanel.replaceChildren();
+      this.selectionPanel.hidden=this.filters.kind!=='question';
+      if(this.selectionPanel.hidden) return;
+      this.el('h3',this.selectionPanel,'','条件抽题');
+      this.el('p',this.selectionPanel,'mwb-assembly-muted','按当前筛选生成候选题，已加入编排的题目不会重复抽取。');
+      const tools=this.el('div',this.selectionPanel,'mwb-assembly-selection-tools');
+      this.selectionCountInput=this.field(tools,'抽题数量');
+      this.selectionCountInput.type='number';this.selectionCountInput.min='1';this.selectionCountInput.max='1000';this.selectionCountInput.step='1';
+      this.selectionCountInput.value=this.selectionCount;
+      this.selectionCountInput.addEventListener('input',()=>{
+        this.selectionCount=this.selectionCountInput.value;
+        // Preserve focus while typing. The removed candidate list cannot be
+        // applied even if an old button is held by a delayed click handler.
+        if(this.selection) {
+          this.selection=null;this.selectionNotice='抽题数量已变化，请重新生成候选。';
+          this.selectionRows?.replaceChildren();
+          if(this.selectionSummary)this.selectionSummary.textContent=this.selectionNotice;
+          if(this.applySelectionButton)this.applySelectionButton.disabled=true;
+        }
+      });
+      const draw=this.button(tools,this.selection?'重新抽取':'生成候选',()=>this.drawSelection(),'mod-cta');
+      draw.disabled=this.actionBusy||this.scanBusy;
+      this.applySelectionButton=this.button(tools,'加入编排',()=>this.applySelection());
+      this.applySelectionButton.disabled=this.actionBusy||this.scanBusy||!this.selection?.items.length;
+      this.selectionSummary=this.el('div',this.selectionPanel,'mwb-assembly-selection-summary');
+      this.selectionSummary.setAttribute('role','status');this.selectionSummary.setAttribute('aria-live','polite');
+      const selection=this.selection;
+      if(selection) {
+        const short=(selection.available<selection.requested?`；符合条件且未加入编排的题目只有 ${selection.available} 道`:'')+
+          (selection.capacity<Math.min(selection.requested,selection.available)?`；当前编排最多还能加入 ${selection.capacity} 道`:'');
+        this.selectionSummary.textContent=`目标 ${selection.requested} 道，当前候选 ${selection.items.length} 道${short}。核对后点击“加入编排”。`;
+      } else this.selectionSummary.textContent=this.selectionNotice||'先生成候选，核对后再加入当前编排。';
+      this.selectionRows=this.el('div',this.selectionPanel,'mwb-assembly-selection-results');
+      for(const [position,item] of (selection?.items||[]).entries()) {
+        const row=this.el('article',this.selectionRows,'mwb-assembly-selection-row');
+        const preview=this.button(row,`${position+1}. ${item.title}`,()=>{
+          if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
+          return this.showItem(item);
+        },'mwb-assembly-result-title');
+        preview.title=item.path;
+        this.el('div',row,'mwb-assembly-muted',[typeNames[item.questionType]||item.questionType,item.tier,item.difficulty?`难度 ${item.difficulty}`:''].filter(Boolean).join(' · '));
+        this.el('div',row,'mwb-assembly-result-path',item.path);
+        const remove=this.button(row,'移出候选',()=>{
+          if(this.actionBusy||this.scanBusy) return;
+          if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
+          this.selection.items=this.selection.items.filter(candidate=>candidate!==item);
+          this.renderSelection();
+        });
+        remove.disabled=this.actionBusy||this.scanBusy;
+      }
+    }
+    drawSelection() {
+      if(this.closed||this.actionBusy||this.scanBusy) return;
+      if(this.filters.kind!=='question') return;
+      try {
+        const result=core.selectQuestions(this.index,this.filters,this.plan,Number(this.selectionCount));
+        this.selection={...result,index:this.index,context:this.selectionContext()};
+        this.selectionNotice='';this.renderSelection();
+        this.setStatus(`已生成 ${result.items.length} 道候选题，核对后可加入编排。`);
+      } catch(error) {
+        this.clearSelection();this.selectionNotice=errorText(error);this.renderSelection();
+        this.setStatus(errorText(error),true);
+      }
+    }
+    async applySelection() {
+      if(this.closed||this.actionBusy||this.scanBusy) return;
+      if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
+      const selection=this.selection;
+      const settingsKey=JSON.stringify(this.settings);
+      return this.runAction('核对候选题来源',async()=>{
+        let latest;
+        try {
+          // A visible result list is only a scan snapshot. Re-read the vault
+          // before applying, so edits made since drawing cannot pass by using
+          // the old fingerprint twice.
+          latest=await service.scan(this.settings);
+          if(this.closed)return;
+          if(this.selection!==selection||!this.selectionIsCurrent())
+            throw new Error('筛选或编排已变化，请重新生成候选');
+          const count=selection.items.length;
+          const next=core.addSelectedQuestions(this.plan,latest,this.filters,selection.items);
+          this.index=latest;this.selection=null;
+          this.selectionNotice=`已将 ${count} 道题加入编排，可在右侧调整顺序和角色。`;
+          this.populateFilters();this.renderTree();this.setPlan(next);
+          this.setStatus(this.selectionNotice);
+        } catch(error) {
+          if(this.closed)return;
+          this.selection=null;this.selectionNotice=errorText(error);
+          if(latest&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
+          this.renderSelection();throw error;
+        }
+      });
     }
     relatedKnowledge(item) {
       if(item.kind!=='question')return [];
@@ -420,6 +538,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     async scan() {
       if(this.actionBusy){this.notice('请等待当前操作完成');return;}
       const generation=++this.scanGeneration;this.scanBusy=true;
+      this.clearSelection('正在重新读取内容，请读取完成后生成候选。');this.renderSelection();
       this.setStatus('正在读取题库与知识笔记…');
       try {
         const index=await service.scan(this.settings);
@@ -434,7 +553,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         }
         return true;
       } catch(error){if(!this.closed&&generation===this.scanGeneration)this.setStatus(errorText(error),true);}
-      finally{if(generation===this.scanGeneration)this.scanBusy=false;}
+      finally{if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed)this.renderSelection();}}
     }
     async updateReferences() {
       if(this.actionBusy)return;

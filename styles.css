@@ -869,6 +869,18 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
   font-size: var(--font-ui-smaller, 12px);
   line-height: 1.55;
 }
+.mwb-modal .mwb-diagnostic-location {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 7px 0;
+  padding: 7px 0;
+  border-top: 1px solid var(--background-modifier-border);
+  white-space: normal;
+}
+.mwb-modal .mwb-diagnostic-location > span { flex: 1 1 100%; }
+.mwb-modal .mwb-diagnostic-focus { outline: 3px solid var(--interactive-accent); outline-offset: 3px; }
 .mwb-modal .mwb-diagnostic-summary { margin: 8px 0; font-weight: 600; }
 .mwb-modal .mwb-diagnostic-details {
   white-space: pre-wrap;
@@ -928,6 +940,17 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
 .mwb-assembly-search { display:grid; gap:8px; margin-bottom:8px; }
 .mwb-assembly-tabs { display:flex; gap:6px; }
 .mwb-assembly-tabs button.is-active { background:var(--interactive-accent); color:var(--text-on-accent); }
+.mwb-assembly-selection { border:1px solid var(--background-modifier-border); border-radius:var(--radius-s); padding:10px; margin-block:8px; background:var(--background-secondary); }
+.mwb-assembly-selection[hidden] { display:none; }
+.mwb-assembly-selection p { margin-block:6px 10px; }
+.mwb-assembly-selection-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
+.mwb-assembly-selection-tools .mwb-assembly-field { flex:0 1 110px; }
+.mwb-assembly-selection-summary { margin-top:8px; font-size:var(--font-small); overflow-wrap:anywhere; }
+.mwb-assembly-selection-results { max-height:28vh; overflow:auto; }
+.mwb-assembly-selection-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 8px; border-top:1px solid var(--background-modifier-border); padding-block:8px; margin-top:8px; }
+.mwb-assembly-selection-row > .mwb-assembly-result-title { grid-column:1; }
+.mwb-assembly-selection-row > .mwb-assembly-muted,.mwb-assembly-selection-row > .mwb-assembly-result-path { grid-column:1; }
+.mwb-assembly-selection-row > button:last-child { grid-column:2; grid-row:1 / span 3; align-self:center; font-size:var(--font-smallest); }
 .mwb-assembly-results { max-height:38vh; overflow:auto; border-block:1px solid var(--background-modifier-border); margin:8px 0; }
 .mwb-assembly-result { position:relative; padding:10px 65px 10px 3px; border-bottom:1px solid var(--background-modifier-border); }
 .mwb-assembly-result:last-child { border-bottom:0; }

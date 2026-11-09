@@ -163,6 +163,55 @@ function filterItems(index, filters = {}) {
   });
 }
 
+function eligibleQuestions(index, filters, plan) {
+  const current = validatePlan(plan);
+  const usedIds = new Set(current.entries.map(entry => entry.sourceId).filter(Boolean));
+  const usedPaths = new Set(current.entries.map(entry => entry.sourcePath).filter(Boolean));
+  const ids = new Set(), paths = new Set();
+  return filterItems(index, {...filters,kind:'question'}).filter(item => {
+    if (item.identityConflict || usedPaths.has(item.path) || item.id && usedIds.has(item.id) ||
+      paths.has(item.path) || item.id && ids.has(item.id)) return false;
+    paths.add(item.path);
+    if (item.id) ids.add(item.id);
+    return true;
+  });
+}
+
+function selectQuestions(index, filters, plan, count, random = Math.random) {
+  if (!Number.isInteger(count) || count < 1 || count > MAX_ENTRIES)
+    throw new Error(`抽题数量须为 1 到 ${MAX_ENTRIES} 的整数`);
+  if (typeof random !== 'function') throw new TypeError('抽题随机源无效');
+  const pool = eligibleQuestions(index, filters, plan);
+  const capacity = MAX_ENTRIES - validatePlan(plan).entries.length;
+  const take = Math.min(count,pool.length,capacity);
+  // Partial Fisher-Yates samples from every eligible item, not the first page
+  // of results. Its injected random source makes the boundary cases testable.
+  for (let i = 0; i < take; i++) {
+    const value = random();
+    if (!Number.isFinite(value) || value < 0 || value >= 1) throw new Error('抽题随机值无效');
+    const chosen = i + Math.floor(value * (pool.length - i));
+    [pool[i],pool[chosen]] = [pool[chosen],pool[i]];
+  }
+  return {requested:count,available:pool.length,capacity,items:pool.slice(0,take)};
+}
+
+function addSelectedQuestions(plan, index, filters, selected) {
+  if (!Array.isArray(selected) || !selected.length || selected.length > MAX_ENTRIES)
+    throw new Error('请先生成并保留至少一道候选题');
+  const eligible = eligibleQuestions(index,filters,plan);
+  let next = validatePlan(plan);
+  // Validate the complete batch against the latest index before publishing a
+  // new plan. A disappeared, edited or re-identified source never falls back.
+  const current = selected.map(item => {
+    const matches = eligible.filter(candidate => candidate.path === item?.path && candidate.id === item?.id);
+    if (matches.length !== 1 || matches[0].fingerprint !== item.fingerprint)
+      throw new Error('候选题来源或筛选条件已变化，请重新生成候选');
+    return matches[0];
+  });
+  for (const item of current) next = addItem(next,item);
+  return next;
+}
+
 let sequence = 0;
 function newEntryId() {
   return typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() :
@@ -271,5 +320,5 @@ function resolvePlan(plan,index) {
   return {entries,issues};
 }
 
-module.exports={buildIndex,filterItems,createPlan,addItem,addSection,removeEntry,moveEntry,updateEntry,
+module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,updateEntry,
   resolvePlan,validatePlan,normalizeRole,parseKnowledgeRef,fingerprint};

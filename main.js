@@ -1486,9 +1486,9 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
   // Checking only top-level section rectangles let such content disappear
   // behind .mwb-paper {overflow:hidden} without triggering an export error.
   // Check candidates during placement and all final page content afterwards.
-  let lastSpillDetail = null;
+  let lastSpillDetail = null, lastSpillTarget = null;
   const contentSpills = (candidate, printable = body, checkText = false) => {
-    lastSpillDetail = null;
+    lastSpillDetail = null; lastSpillTarget = null;
     if (!candidate) return false;
     const region = printable.getBoundingClientRect();
     const tolerance = 2.5;
@@ -1537,6 +1537,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
             if (outside(rect, current)) {
               const fmt = x => [x.left,x.top,x.right,x.bottom].map(v => Number(v).toFixed(1)).join(',');
               const direction = [rect.top < region.top - tolerance && 'top', rect.bottom > region.bottom + tolerance && 'bottom', rect.left < region.left - tolerance && 'left', rect.right > region.right + tolerance && 'right'].filter(Boolean).join(',');
+              lastSpillTarget = current.parentElement?.closest?.('[data-mwb-diagnostic-id]')?.getAttribute('data-mwb-diagnostic-id') || null;
               lastSpillDetail = `text-range direction=${direction}; rect=[${fmt(rect)}]; page=[${fmt(region)}]`;
               return true;
             }
@@ -1554,6 +1555,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
       if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') continue;
       const rect = current.getBoundingClientRect();
       const record = (kind, r) => {
+        lastSpillTarget = current.closest?.('[data-mwb-diagnostic-id]')?.getAttribute('data-mwb-diagnostic-id') || null;
         const directions = r ? [r.top < region.top - tolerance && 'top', r.bottom > region.bottom + tolerance && 'bottom', r.left < region.left - tolerance && 'left', r.right > region.right + tolerance && 'right'].filter(Boolean).join(',') : 'clipped';
         const fmt = x => [x.left,x.top,x.right,x.bottom].map(v => Number(v).toFixed(1)).join(',');
         lastSpillDetail = `${kind} ns=${String(current.namespaceURI || 'none').slice(0,80)} tag=${String(current.localName || current.tagName || 'element').slice(0,32)} defs=false direction=${directions}; rect=[${fmt(r || rect)}]; page=[${fmt(region)}]; scroll=${current.scrollWidth || 0},${current.scrollHeight || 0}; client=${current.clientWidth || 0},${current.clientHeight || 0}; clip=${style.overflowX || 'visible'},${style.overflowY || 'visible'}`;
@@ -1570,7 +1572,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
     return false;
   };
   const overflowed = (candidate = null) => {
-    lastSpillDetail = null;
+    lastSpillDetail = null; lastSpillTarget = null;
     if (used() > capacity() + 1.25) { lastSpillDetail = 'page-height capacity exceeded'; return true; }
     return !!(candidate && contentSpills(candidate));
   };
@@ -1609,7 +1611,9 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
   };
   const overflowError = (node) => {
     const kind = String(node?.localName || node?.tagName || '元素').slice(0,32);
-    throw new Error(`存在超过 A4 可打印区域的不可拆分内容（${kind}）；请拆成多个独立步骤${lastSpillDetail ? '；' + lastSpillDetail : ''}`);
+    const error = new Error(`存在超过 A4 可打印区域的不可拆分内容（${kind}）；请拆成多个独立步骤${lastSpillDetail ? '；' + lastSpillDetail : ''}`);
+    error.mwbDiagnosticTarget = lastSpillTarget || node?.closest?.('[data-mwb-diagnostic-id]')?.getAttribute('data-mwb-diagnostic-id') || null;
+    throw error;
   };
   const nextPage = (physical = false) => {
     // A page with *only* an unplaced heading must not be emitted.
@@ -2427,11 +2431,13 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
           .replace(/\s+/g, ' ').trim().slice(0, 65);
         const question = node.closest('[data-mwb-question-id]');
         const omitted = {index:omittedBlocks.length + 1, type, summary,
+          diagnosticTarget:node.closest?.('[data-mwb-diagnostic-id]')?.getAttribute('data-mwb-diagnostic-id') || null,
           questionId:question?.getAttribute('data-mwb-question-id') || null,
           source:question?.getAttribute('data-mwb-source-path') || null};
         const placeholder = doc.createElement('span');
         placeholder.className = 'mwb-overflow-placeholder';
         placeholder.setAttribute('data-mwb-omitted-index', String(omitted.index));
+        if (omitted.diagnosticTarget) placeholder.setAttribute('data-mwb-diagnostic-id',omitted.diagnosticTarget);
         placeholder.style.cssText = 'display:block;box-sizing:border-box;max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:10pt;line-height:1.5;color:#6b4900;border:1px dashed #9b7b35;padding:6px;margin:6px 0;';
         placeholder.textContent = `【已跳过${type} ${omitted.index}：超出 A4 可打印区域；原文保留】`;
         if (node === top) inputNodes[index] = placeholder;
@@ -3417,6 +3423,8 @@ function sanitizeClone(node) {
     if (el.hasAttribute('data-mwb-question-id')) el.removeAttribute('title');
     el.removeAttribute('data-mwb-question-label');
     el.removeAttribute('data-mwb-source-path');
+    el.removeAttribute('data-mwb-diagnostic-id');
+    el.classList?.remove('mwb-diagnostic-focus');
     for (const attr of [...el.attributes]) {
       const key = attr.name.toLowerCase();
       if (/^on/.test(key) || key === 'nonce' || key === 'srcdoc') el.removeAttribute(attr.name);
@@ -4649,6 +4657,63 @@ function expandPrintCallouts(root) {
   return expanded;
 }
 
+// Raw TeX stays out of DOM attributes and exported HTML. Only opaque navigation
+// IDs are copied into paginated previews; source locations are resolved from the
+// immutable Markdown snapshot, never from projected student line numbers.
+const mwbDiagnosticMath = new WeakMap();
+function mwbCaptureDiagnosticMath(element) {
+  if (!element?.closest?.('.mwb-print-document, .mwb-page')) return;
+  for (const node of [...(element.matches?.('.math:not(.is-loaded)') ? [element] : []),
+    ...element.querySelectorAll('.math:not(.is-loaded)')]) {
+    if (!mwbDiagnosticMath.has(node)) mwbDiagnosticMath.set(node, node.textContent || '');
+  }
+}
+function mwbDiagnosticTex(node) {
+  let wrapper = node?.matches?.('.math') ? node : node?.closest?.('.math');
+  if (!wrapper) {
+    const nested = node?.querySelectorAll?.('.math') || [];
+    if (nested.length === 1) wrapper = nested[0];
+  }
+  if (wrapper && mwbDiagnosticMath.has(wrapper)) return mwbDiagnosticMath.get(wrapper);
+  const annotations = node?.querySelectorAll?.('annotation[encoding="application/x-tex"]') || [];
+  return annotations.length === 1 ? annotations[0].textContent || '' : '';
+}
+function mwbUniqueDiagnosticLine(markdown, needle, kind = 'formula', range = null) {
+  const text = String(markdown || '').replace(/\r\n?/g, '\n');
+  const value = String(needle || '').trim();
+  if (!value || value.length > 20000) return null;
+  const rows = mwbMarkdownLines(text), matches = [];
+  let offset = 0;
+  while ((offset = text.indexOf(value, offset)) >= 0) {
+    const start = offset; offset += Math.max(1, value.length);
+    const row = rows.find(row => row.offset <= start && start < row.offset + row.line.length + 1);
+    if (!row || row.yaml || row.code || (range && (row.index+1 < range.start || row.index+1 > range.end))) continue;
+    if (kind === 'formula') {
+      // Unique complete delimited TeX only. Transformed answer slots, repeated
+      // equations and renderer-normalized multiline quotes deliberately fall
+      // back to their containing block/file instead of guessing a source line.
+      const before = text.slice(Math.max(0, start - 200), start);
+      const after = text.slice(start + value.length, start + value.length + 200);
+      const opening = /(?<![\\$])(\$\$|\$|\\\[|\\\()[ \t\n]*$/.exec(before)?.[1];
+      const closing = {'$':'$', '$$':'$$', '\\[':'\\]', '\\(':'\\)'}[opening];
+      if (!closing || !after.trimStart().startsWith(closing) || row.line.includes('`')) continue;
+      const local = start - row.offset;
+      if ((row.scan?.literals || []).some(range => range.from <= local && local < range.to)) continue;
+    } else if (kind === 'image') {
+      if (!/(?:!\[\[[^\]]*|!\[[^\]]*\]\([^)]*)$/.test(text.slice(row.offset, start))) continue;
+    }
+    matches.push(row.index + 1);
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+function mwbDiagnosticKind(message) {
+  const value = String(message || '');
+  if (/图片/.test(value)) return {kind:'image',label:'图片未加载'};
+  if (/TikZ/.test(value)) return {kind:'code',label:'TikZ 渲染异常'};
+  if (/公式|MathJax|KaTeX/.test(value)) return {kind:'formula',label:/超出|裁切|不可见/.test(value) ? '公式超出可用区域' : '公式渲染异常'};
+  return {kind:'render',label:'渲染问题'};
+}
+
 function mathDiagnosticContext(math, number) {
   // Give the author a stable formula index and nearby human-readable context.
   // The source TeX is not always exposed by Obsidian's MathJax DOM.
@@ -5142,6 +5207,55 @@ function filterItems(index, filters = {}) {
   });
 }
 
+function eligibleQuestions(index, filters, plan) {
+  const current = validatePlan(plan);
+  const usedIds = new Set(current.entries.map(entry => entry.sourceId).filter(Boolean));
+  const usedPaths = new Set(current.entries.map(entry => entry.sourcePath).filter(Boolean));
+  const ids = new Set(), paths = new Set();
+  return filterItems(index, {...filters,kind:'question'}).filter(item => {
+    if (item.identityConflict || usedPaths.has(item.path) || item.id && usedIds.has(item.id) ||
+      paths.has(item.path) || item.id && ids.has(item.id)) return false;
+    paths.add(item.path);
+    if (item.id) ids.add(item.id);
+    return true;
+  });
+}
+
+function selectQuestions(index, filters, plan, count, random = Math.random) {
+  if (!Number.isInteger(count) || count < 1 || count > MAX_ENTRIES)
+    throw new Error(`抽题数量须为 1 到 ${MAX_ENTRIES} 的整数`);
+  if (typeof random !== 'function') throw new TypeError('抽题随机源无效');
+  const pool = eligibleQuestions(index, filters, plan);
+  const capacity = MAX_ENTRIES - validatePlan(plan).entries.length;
+  const take = Math.min(count,pool.length,capacity);
+  // Partial Fisher-Yates samples from every eligible item, not the first page
+  // of results. Its injected random source makes the boundary cases testable.
+  for (let i = 0; i < take; i++) {
+    const value = random();
+    if (!Number.isFinite(value) || value < 0 || value >= 1) throw new Error('抽题随机值无效');
+    const chosen = i + Math.floor(value * (pool.length - i));
+    [pool[i],pool[chosen]] = [pool[chosen],pool[i]];
+  }
+  return {requested:count,available:pool.length,capacity,items:pool.slice(0,take)};
+}
+
+function addSelectedQuestions(plan, index, filters, selected) {
+  if (!Array.isArray(selected) || !selected.length || selected.length > MAX_ENTRIES)
+    throw new Error('请先生成并保留至少一道候选题');
+  const eligible = eligibleQuestions(index,filters,plan);
+  let next = validatePlan(plan);
+  // Validate the complete batch against the latest index before publishing a
+  // new plan. A disappeared, edited or re-identified source never falls back.
+  const current = selected.map(item => {
+    const matches = eligible.filter(candidate => candidate.path === item?.path && candidate.id === item?.id);
+    if (matches.length !== 1 || matches[0].fingerprint !== item.fingerprint)
+      throw new Error('候选题来源或筛选条件已变化，请重新生成候选');
+    return matches[0];
+  });
+  for (const item of current) next = addItem(next,item);
+  return next;
+}
+
 let sequence = 0;
 function newEntryId() {
   return typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() :
@@ -5250,7 +5364,7 @@ function resolvePlan(plan,index) {
   return {entries,issues};
 }
 
-module.exports={buildIndex,filterItems,createPlan,addItem,addSection,removeEntry,moveEntry,updateEntry,
+module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,updateEntry,
   resolvePlan,validatePlan,normalizeRole,parseKnowledgeRef,fingerprint};
 
 return module.exports; })();
@@ -5771,6 +5885,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.previewOwner = null;
       this.selectedItem = null;
       this.plans = [];
+      this.selectionCount = '10';
+      this.selection = null;
+      this.selectionNotice = '';
     }
     getViewType() { return VIEW_TYPE; }
     getDisplayText() { return this.plan?.title || '知识与组题'; }
@@ -5817,6 +5934,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       return this.el(tag, wrapper);
     }
     stateChanged() {
+      this.clearSelection('编排已变化，请重新生成候选。');
       this.dirty = true;
       this.pendingDiscard = null;
       this.app.workspace.requestSaveLayout?.();
@@ -5862,12 +5980,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.actionBusy = true;
       this.setStatus(label + '…');
       this.root?.classList.add('is-busy');
+      this.renderSelection();
       try { await action(); }
       catch (error) { this.setStatus(errorText(error), true); this.notice(errorText(error)); }
       finally {
         this.actionBusy = false;
         this.root?.classList.remove('is-busy');
         this.updateSummary();
+        if(!this.closed)this.renderSelection();
       }
     }
     async onOpen() {
@@ -6029,6 +6149,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       this.searchInput=this.field(tools,'搜索名称、正文与标签');this.searchInput.type='search';this.searchInput.value=this.filters.query||'';
       this.searchInput.addEventListener('input',()=>{this.filters.query=this.searchInput.value;this.limit=100;this.renderResults();});
+      this.selectionPanel=this.el('section',this.center,'mwb-assembly-selection');
+      this.selectionPanel.setAttribute('aria-label','条件抽题');
       this.resultsSummary=this.el('div',this.center,'mwb-assembly-muted');
       this.results=this.el('div',this.center,'mwb-assembly-results');
       this.preview=this.el('div',this.center,'mwb-assembly-preview');
@@ -6042,6 +6164,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderResults() {
       if(!this.results) return;
+      if(this.selection && !this.selectionIsCurrent()) this.clearSelection('筛选或内容已变化，请重新生成候选。');
+      this.renderSelection();
       this.results.replaceChildren();
       const items=core.filterItems(this.index,this.filters);
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
@@ -6058,6 +6182,114 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
       }
       if(items.length>this.limit) this.button(this.results,'再显示 100 条',()=>{this.limit+=100;this.renderResults();});
+    }
+    selectionContext() {
+      return JSON.stringify({filters:this.filters,plan:this.plan,count:this.selectionCount,scan:this.scanGeneration,settings:this.settings});
+    }
+    selectionIsCurrent() {
+      return !!this.selection && this.selection.index===this.index && this.selection.context===this.selectionContext();
+    }
+    clearSelection(message = '') {
+      if(this.selection) {
+        this.selection=null;
+        this.selectionNotice=message;
+        this.renderSelection();
+      }
+    }
+    renderSelection() {
+      if(!this.selectionPanel) return;
+      this.selectionPanel.replaceChildren();
+      this.selectionPanel.hidden=this.filters.kind!=='question';
+      if(this.selectionPanel.hidden) return;
+      this.el('h3',this.selectionPanel,'','条件抽题');
+      this.el('p',this.selectionPanel,'mwb-assembly-muted','按当前筛选生成候选题，已加入编排的题目不会重复抽取。');
+      const tools=this.el('div',this.selectionPanel,'mwb-assembly-selection-tools');
+      this.selectionCountInput=this.field(tools,'抽题数量');
+      this.selectionCountInput.type='number';this.selectionCountInput.min='1';this.selectionCountInput.max='1000';this.selectionCountInput.step='1';
+      this.selectionCountInput.value=this.selectionCount;
+      this.selectionCountInput.addEventListener('input',()=>{
+        this.selectionCount=this.selectionCountInput.value;
+        // Preserve focus while typing. The removed candidate list cannot be
+        // applied even if an old button is held by a delayed click handler.
+        if(this.selection) {
+          this.selection=null;this.selectionNotice='抽题数量已变化，请重新生成候选。';
+          this.selectionRows?.replaceChildren();
+          if(this.selectionSummary)this.selectionSummary.textContent=this.selectionNotice;
+          if(this.applySelectionButton)this.applySelectionButton.disabled=true;
+        }
+      });
+      const draw=this.button(tools,this.selection?'重新抽取':'生成候选',()=>this.drawSelection(),'mod-cta');
+      draw.disabled=this.actionBusy||this.scanBusy;
+      this.applySelectionButton=this.button(tools,'加入编排',()=>this.applySelection());
+      this.applySelectionButton.disabled=this.actionBusy||this.scanBusy||!this.selection?.items.length;
+      this.selectionSummary=this.el('div',this.selectionPanel,'mwb-assembly-selection-summary');
+      this.selectionSummary.setAttribute('role','status');this.selectionSummary.setAttribute('aria-live','polite');
+      const selection=this.selection;
+      if(selection) {
+        const short=(selection.available<selection.requested?`；符合条件且未加入编排的题目只有 ${selection.available} 道`:'')+
+          (selection.capacity<Math.min(selection.requested,selection.available)?`；当前编排最多还能加入 ${selection.capacity} 道`:'');
+        this.selectionSummary.textContent=`目标 ${selection.requested} 道，当前候选 ${selection.items.length} 道${short}。核对后点击“加入编排”。`;
+      } else this.selectionSummary.textContent=this.selectionNotice||'先生成候选，核对后再加入当前编排。';
+      this.selectionRows=this.el('div',this.selectionPanel,'mwb-assembly-selection-results');
+      for(const [position,item] of (selection?.items||[]).entries()) {
+        const row=this.el('article',this.selectionRows,'mwb-assembly-selection-row');
+        const preview=this.button(row,`${position+1}. ${item.title}`,()=>{
+          if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
+          return this.showItem(item);
+        },'mwb-assembly-result-title');
+        preview.title=item.path;
+        this.el('div',row,'mwb-assembly-muted',[typeNames[item.questionType]||item.questionType,item.tier,item.difficulty?`难度 ${item.difficulty}`:''].filter(Boolean).join(' · '));
+        this.el('div',row,'mwb-assembly-result-path',item.path);
+        const remove=this.button(row,'移出候选',()=>{
+          if(this.actionBusy||this.scanBusy) return;
+          if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
+          this.selection.items=this.selection.items.filter(candidate=>candidate!==item);
+          this.renderSelection();
+        });
+        remove.disabled=this.actionBusy||this.scanBusy;
+      }
+    }
+    drawSelection() {
+      if(this.closed||this.actionBusy||this.scanBusy) return;
+      if(this.filters.kind!=='question') return;
+      try {
+        const result=core.selectQuestions(this.index,this.filters,this.plan,Number(this.selectionCount));
+        this.selection={...result,index:this.index,context:this.selectionContext()};
+        this.selectionNotice='';this.renderSelection();
+        this.setStatus(`已生成 ${result.items.length} 道候选题，核对后可加入编排。`);
+      } catch(error) {
+        this.clearSelection();this.selectionNotice=errorText(error);this.renderSelection();
+        this.setStatus(errorText(error),true);
+      }
+    }
+    async applySelection() {
+      if(this.closed||this.actionBusy||this.scanBusy) return;
+      if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
+      const selection=this.selection;
+      const settingsKey=JSON.stringify(this.settings);
+      return this.runAction('核对候选题来源',async()=>{
+        let latest;
+        try {
+          // A visible result list is only a scan snapshot. Re-read the vault
+          // before applying, so edits made since drawing cannot pass by using
+          // the old fingerprint twice.
+          latest=await service.scan(this.settings);
+          if(this.closed)return;
+          if(this.selection!==selection||!this.selectionIsCurrent())
+            throw new Error('筛选或编排已变化，请重新生成候选');
+          const count=selection.items.length;
+          const next=core.addSelectedQuestions(this.plan,latest,this.filters,selection.items);
+          this.index=latest;this.selection=null;
+          this.selectionNotice=`已将 ${count} 道题加入编排，可在右侧调整顺序和角色。`;
+          this.populateFilters();this.renderTree();this.setPlan(next);
+          this.setStatus(this.selectionNotice);
+        } catch(error) {
+          if(this.closed)return;
+          this.selection=null;this.selectionNotice=errorText(error);
+          if(latest&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
+          this.renderSelection();throw error;
+        }
+      });
     }
     relatedKnowledge(item) {
       if(item.kind!=='question')return [];
@@ -6160,6 +6392,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     async scan() {
       if(this.actionBusy){this.notice('请等待当前操作完成');return;}
       const generation=++this.scanGeneration;this.scanBusy=true;
+      this.clearSelection('正在重新读取内容，请读取完成后生成候选。');this.renderSelection();
       this.setStatus('正在读取题库与知识笔记…');
       try {
         const index=await service.scan(this.settings);
@@ -6174,7 +6407,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         }
         return true;
       } catch(error){if(!this.closed&&generation===this.scanGeneration)this.setStatus(errorText(error),true);}
-      finally{if(generation===this.scanGeneration)this.scanBusy=false;}
+      finally{if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed)this.renderSelection();}}
     }
     async updateReferences() {
       if(this.actionBusy)return;
@@ -6384,6 +6617,9 @@ class PreviewModal extends Modal {
     this.previewPaginationReport = null;
     this.questionPlan = null;
     this.showQuestionBounds = false;
+    this.diagnosticItems = [];
+    this.diagnosticTargets = new Map();
+    this.diagnosticSequence = 0;
   }
 
   startSourceWatch() {
@@ -6915,6 +7151,160 @@ class PreviewModal extends Modal {
     }
   }
 
+  diagnosticRecord(path) {
+    return (this.exam?.items || [{file:this.file,markdown:this.markdown}])
+      .find(item => item.file?.path === path) || null;
+  }
+
+  diagnosticTarget(node, path = '') {
+    this.diagnosticTargets ||= new Map();
+    let id = node?.getAttribute?.('data-mwb-diagnostic-id');
+    if (!id || !this.diagnosticTargets.has(id)) {
+      id = 'mwb-diag-' + this.generation + '-' + (++this.diagnosticSequence || (this.diagnosticSequence = 1));
+      node?.setAttribute?.('data-mwb-diagnostic-id', id);
+      this.diagnosticTargets.set(id, {id,node,path,generation:this.generation,revision:this.sourceRevision});
+    }
+    return this.diagnosticTargets.get(id);
+  }
+
+  prepareDiagnosticTargets() {
+    for (const node of this.rendered?.querySelectorAll?.('.math, mjx-container, .MathJax, .katex, img, table, pre, p, li, h1, h2, h3, h4, h5, [data-mwb-question-id], .mwb-exam-question') || [])
+      this.diagnosticTarget(node);
+  }
+
+  resolveDiagnosticTarget(target) {
+    const node = target?.node;
+    const group = node?.closest?.('[data-mwb-question-id], .mwb-exam-question');
+    const path = target?.path || node?.closest?.('[data-mwb-source-path]')?.getAttribute('data-mwb-source-path') ||
+      (!this.exam ? this.file?.path : '');
+    const record = this.diagnosticRecord(path);
+    if (!record) return {...target,path:'',line:null,precision:'file'};
+    const first = Number(group?.getAttribute('data-mwb-source-start'));
+    const last = Number(group?.getAttribute('data-mwb-source-end'));
+    const range = first > 0 ? {start:first,end:last >= first ? last : first} : null;
+    let line = Number.isInteger(target.line) ? target.line : null;
+    let precision = line ? (target.precision || 'line') : 'file';
+    const tex = mwbDiagnosticTex(node);
+    // Answer projection can produce TeX already present elsewhere in the
+    // original (even in this block). Such synthetic blanks/answer colors have
+    // no reliable textual inverse; keep their block/file fallback explicit.
+    const projectedAnswer = /[?!]\{/.test(record.markdown) && /\\(?:hspace\s*\{|color\s*\{\s*red\s*\})/.test(tex);
+    if (!line && tex && !projectedAnswer) {
+      line = mwbUniqueDiagnosticLine(record.markdown, tex, 'formula', range);
+      if (line) precision = 'formula';
+    }
+    if (!line && node?.matches?.('img')) {
+      // Obsidian normally retains the original vault link in alt. Resolved
+      // app:// URLs are not treated as a source path without an exact match.
+      const raw = node.getAttribute('alt') || node.getAttribute('src') || '';
+      line = mwbUniqueDiagnosticLine(record.markdown, raw, 'image', range);
+      if (line) precision = 'image';
+    }
+    if (!line) {
+      if (Number.isInteger(first) && first > 0) {line = first; precision = 'block';}
+    }
+    return {...target,path,line,precision};
+  }
+
+  addDiagnosticItem(label, node, path = '', line = null) {
+    this.diagnosticItems ||= [];
+    const target = this.diagnosticTarget(node, path);
+    const key = target.id + ':' + label + ':' + (line || '');
+    if (!this.diagnosticItems.some(item => item.key === key))
+      this.diagnosticItems.push({key,label,target:line ? {...target,line} : target});
+  }
+
+  recordDiagnosticIssues(root, issues, path = '') {
+    const maths = [...root.querySelectorAll('mjx-container, .MathJax, .katex')];
+    for (const issue of issues || []) {
+      const {kind,label} = mwbDiagnosticKind(issue);
+      const index = /^公式 #(\d+)/.exec(issue);
+      if (index && maths[Number(index[1])-1]) {
+        this.addDiagnosticItem(label, maths[Number(index[1])-1], path); continue;
+      }
+      if (kind === 'image') {
+        const images = [...root.querySelectorAll('img')].filter(img => !img.complete || !img.naturalWidth);
+        if (images.length) {for (const img of images) this.addDiagnosticItem(label,img,path); continue;}
+      }
+      if (kind === 'code') {
+        const code = root.querySelector('pre code.language-tikz, pre code.language-tikzjax');
+        if (code) {this.addDiagnosticItem(label,code.closest('pre'),path);continue;}
+      }
+      this.addDiagnosticItem(label,root,path);
+    }
+  }
+
+  appendDiagnosticLink(parent, label, rawTarget) {
+    const target = this.resolveDiagnosticTarget(rawTarget);
+    const doc = parent.ownerDocument;
+    const row = doc.createElement('div'); row.className = 'mwb-diagnostic-location';
+    const caption = doc.createElement('span');
+    const location = target.line ? (target.precision === 'block' ? '所属块第 ' : '原文第 ') + target.line + ' 行' : '文件级定位';
+    caption.textContent = label + ' · ' + location;
+    row.appendChild(caption);
+    const add = (text, action) => {
+      const button = doc.createElement('button');button.type='button';button.textContent=text;
+      button.addEventListener('click', () => {
+        Promise.resolve().then(action).catch(error => {new Notice(String(error?.message || error),7000);});
+      });
+      row.appendChild(button);
+    };
+    if (target.node && this.rendered?.contains?.(target.node)) add('定位预览', () => this.navigateDiagnosticPreview(target));
+    if (target.path) add(target.line ? '定位原文' : '打开原文件', () => this.navigateDiagnosticSource(target));
+    if (!target.path && !(target.node && this.rendered?.contains?.(target.node))) return;
+    parent.appendChild(row);
+  }
+
+  navigateDiagnosticPreview(target) {
+    if (this.closed || this.renderBusy || target.generation !== this.generation)
+      throw new Error('预览已变化，请从当前诊断重新定位');
+    const root = this.previewPages || this.rendered;
+    // Opaque IDs survive pagination and avoid confusing identical formulas in
+    // separate files. Query by equality, never interpolate source into CSS.
+    const node = [root,...root.querySelectorAll('[data-mwb-diagnostic-id]')]
+      .find(node => node.getAttribute('data-mwb-diagnostic-id') === target.id) ||
+      (!this.previewPages && root.contains(target.node) ? target.node : null);
+    if (!node) throw new Error('此内容不在当前预览中，请定位原文检查');
+    for (const old of this.contentEl.querySelectorAll('.mwb-diagnostic-focus')) old.classList.remove('mwb-diagnostic-focus');
+    node.classList.add('mwb-diagnostic-focus');
+    node.scrollIntoView({block:'center',inline:'nearest',behavior:'smooth'});
+  }
+
+  async navigateDiagnosticSource(target) {
+    const current = () => {
+      if (this.closed || this.renderBusy || this.sourceDirty || this.sourceReadJob ||
+          target.generation !== this.generation || target.revision !== this.sourceRevision)
+        throw new Error('源文或预览已变化，请先读取最新内容后再定位');
+    };
+    current();
+    const record = this.diagnosticRecord(target.path);
+    const live = this.app.vault.getAbstractFileByPath(target.path);
+    if (!record || !live || live.extension !== 'md') throw new Error('原文件已移动或删除，请读取最新内容');
+    const source = await this.app.vault.read(live); current();
+    if (source !== record.markdown) throw new Error('源文已变化，请先读取最新内容后再定位');
+    const leaves = this.app.workspace.getLeavesOfType?.('markdown') || [];
+    const editors = leaves.filter(leaf => leaf.view?.file?.path === target.path && leaf.view?.editor);
+    if (editors.some(leaf => leaf.view.editor.getValue() !== record.markdown))
+      throw new Error('原文件有尚未同步到预览的编辑，请保存并读取最新内容');
+    const leaf = editors[0] || this.app.workspace.getLeaf('tab');
+    if (target.line && (target.line < 1 || target.line > source.split(/\r?\n/).length))
+      throw new Error('源码行映射已失效，请读取最新内容');
+    // OpenViewState.state is public API. Request edit mode for a line jump;
+    // otherwise Reading View can expose an editor that is still off screen.
+    await leaf.openFile(live, {active:true,...(target.line ? {state:{mode:'source'}} : {})}); current();
+    await this.app.workspace.revealLeaf?.(leaf); current();
+    const editor = leaf.view?.editor;
+    const canLocate = editor && leaf.view?.file?.path === target.path && leaf.view?.getMode?.() !== 'preview';
+    if (target.line && canLocate) {
+      if (editor.getValue() !== record.markdown) throw new Error('源文已变化，请先读取最新内容后再定位');
+      const position = {line:target.line-1,ch:0};
+      editor.setCursor(position);
+      editor.scrollIntoView?.({from:position,to:position},true);
+    } else if (target.line) new Notice('原文件已打开；当前视图不支持行定位',6000);
+    this.close();
+    if (target.line && canLocate) editor.focus?.();
+  }
+
   updateDiagnostics() {
     if (this.diagnosticSpaceSummary) {
       const rows = this.spaceDiagnostics || [];
@@ -6935,6 +7325,13 @@ class PreviewModal extends Modal {
       if (this.previewPaginationIssue) details.push(this.previewPaginationIssue);
       if (this.diagnosticResourceDetails) this.diagnosticResourceDetails.setText(details.length
         ? details.join('\n') : '未记录局部渲染警告；资源是否完整仍以导出前复检为准。');
+      if (this.diagnosticResourceDetails && this.appendDiagnosticLink) {
+        for (const item of this.diagnosticItems || []) this.appendDiagnosticLink(this.diagnosticResourceDetails,item.label,item.target);
+        for (const omitted of this.previewPaginationReport?.omittedBlocks || []) {
+          const target = this.diagnosticTargets?.get(omitted.diagnosticTarget);
+          if (target) this.appendDiagnosticLink(this.diagnosticResourceDetails,'已跳过' + omitted.type,target);
+        }
+      }
     }
   }
 
@@ -6995,10 +7392,17 @@ class PreviewModal extends Modal {
   }
 
   async collectRenderWarnings(stage, root, source, signal) {
-    const warnings = await waitForStableRender(root, source, undefined, undefined, signal);
+    let warnings;
+    try { warnings = await waitForStableRender(root, source, undefined, undefined, signal); }
+    catch (error) {
+      mwbThrowIfRenderAborted(signal);
+      this.recordDiagnosticIssues?.(root,issuesInRenderedNode(root,source));
+      throw error;
+    }
     // The signal may be cancelled after the awaited promise settles but before
     // this continuation runs. Never leak warnings into the next generation.
     mwbThrowIfRenderAborted(signal);
+    this.recordDiagnosticIssues?.(root,warnings);
     this.addRenderWarnings(stage, warnings);
   }
 
@@ -7013,6 +7417,9 @@ class PreviewModal extends Modal {
     // Serialize renderer writes so quick mode/setting changes cannot let an
     // outdated MarkdownRenderer invocation corrupt the current preview.
     const generation = ++this.generation;
+    this.diagnosticItems = [];
+    this.diagnosticTargets = new Map();
+    this.diagnosticSequence = 0;
     this.mode = mode;
     if (this.solutionModeLabels) {
       this.solutionModeLabels.student.style.display = mode === 'student' ? '' : 'none';
@@ -7158,6 +7565,10 @@ class PreviewModal extends Modal {
           return;
         }
         const detail = String(e?.message || e);
+        if (this.questionPlan?.errors?.length) this.updateQuestionBoundaryReport();
+        if (!this.diagnosticItems?.length && !this.questionPlan?.errors?.length)
+          for (const [index,item] of (this.exam?.items || [{file:this.file}]).entries())
+            this.addDiagnosticItem(this.exam ? `渲染未完成 · 检查来源题卡 ${index+1}` : '渲染未完成',null,item.file.path);
         this.lastRenderError = ['Mathsemble v' + (this.plugin.manifest?.version || 'unknown'),
           '模式：' + (mode === 'student' ? '学生版' : mode === 'teacher' ? '教师版' : '原文'),
           '入口：' + (this.documentMode ? '长 Markdown 讲义' : this.exam ? '当前文件夹整卷' : '当前题卡'),
@@ -7194,6 +7605,13 @@ class PreviewModal extends Modal {
     ] : ['题卡／文件夹组卷：沿用一题一容器，短题不拆，长题新页起排。'];
     if(plan && !plan.groups.length)rows.push('当前没有五级内容块；普通正文不享有整块分页保护。请使用 ##### 标题 开始一个块。');
     this.questionBoundaryPanel.setText(rows.join('\n'));
+    if (plan && this.appendDiagnosticLink) for (const warning of [...plan.warnings,...plan.errors]) {
+      const group = plan.groups.find(group => group.start < warning.line && warning.line <= group.end);
+      const node = group && [...this.rendered.querySelectorAll('[data-mwb-question-id]')]
+        .find(node => node.getAttribute('data-mwb-question-id') === group.id);
+      const target = {...this.diagnosticTarget(node || null,this.file.path),line:warning.line};
+      this.appendDiagnosticLink(this.questionBoundaryPanel,'块边界提示',target);
+    }
   }
 
   updateQuestionBounds() {
@@ -7219,6 +7637,7 @@ class PreviewModal extends Modal {
     this.clearPaginatedPreview();
     // Reuse the already typeset MathJax/SVG DOM, without editing the source
     // needed for subsequent PDF/HTML export and writing-height audits.
+    this.prepareDiagnosticTargets?.();
     const view = this.rendered.cloneNode(true);
     view.classList.add('mwb-export-doc', 'mwb-preview-pages');
     if (this.layout === 'trial') view.prepend(mwbCreateTrialHeader(view.ownerDocument, this.trialDetails));
@@ -7235,6 +7654,10 @@ class PreviewModal extends Modal {
       this.page.setAttribute('aria-hidden', 'true');
       return report;
     } catch (error) {
+      const target = this.diagnosticTargets?.get(error?.mwbDiagnosticTarget);
+      if (target) this.addDiagnosticItem('内容超出 A4 可打印区域', target.node, target.path);
+      else if (this.addDiagnosticItem) for (const [index,item] of (this.exam?.items || [{file:this.file}]).entries())
+        if (item.file?.path) this.addDiagnosticItem(this.exam ? `A4 分页未完成 · 检查来源题卡 ${index+1}` : 'A4 分页未完成',null,item.file.path);
       view.remove();
       throw error;
     }
@@ -7344,6 +7767,7 @@ class PreviewModal extends Modal {
   validateExamContexts(contexts, stage = '整卷题卡') {
     for (const {content, source, path} of contexts) {
       const {warnings, blockers} = divideRenderIssues(content, issuesInRenderedNode(content, source));
+      this.recordDiagnosticIssues?.(content,[...warnings,...blockers],path);
       if (blockers.length) throw new Error(`${path}：${summarizeRenderIssues(blockers)}`);
       this.addRenderWarnings(`${stage}/${path}`, warnings);
     }
@@ -7363,6 +7787,7 @@ class PreviewModal extends Modal {
         mwbThrowIfRenderAborted(signal);
         if (generation !== this.generation) return new Map();
         const holder = page.createDiv({cls:'mwb-exam-question-content'});
+        holder.setAttribute('data-mwb-source-path', item.file.path);
         const measurement = mwbWithAnswerMeasurement(this.rendered, () => mwbTeacherMeasurementPlan(item.markdown, this.solutionOptions));
         const source = measurement.markdown;
         await mwbRenderMarkdown(this.app, source, holder, item.file.path, owner, undefined, signal);
@@ -7548,12 +7973,35 @@ class PreviewModal extends Modal {
     return job.resources ? `；资源读取 ${job.resources.reads} 次，缓存复用 ${job.resources.cacheHits} 次` : '';
   }
 
+  exportDiagnosticItems(error) {
+    // Isolated printing intentionally carries no preview IDs/source metadata.
+    // A worker can return snapshot locations; otherwise make the file-level
+    // fallback explicit instead of attributing an unknown failure to a line.
+    const located = this.diagnosticTargets?.get(error?.mwbDiagnosticTarget);
+    if (located) return [{label:'导出检查未通过',target:located}];
+    const locations = (error?.mwbDiagnosticLocations || []).filter(location =>
+      this.diagnosticRecord(location.path));
+    if (locations.length) return locations.map(location => ({label:'导出检查未通过',target:{
+      ...this.diagnosticTarget(null,location.path),line:location.line,precision:location.precision,
+    }}));
+    return (this.exam?.items || [{file:this.file}]).filter(item => item.file?.path).map((item,index) => ({
+      label:this.exam ? `导出检查未通过 · 来源题卡 ${index+1}` : '导出检查未通过',
+      target:this.diagnosticTarget(null,item.file.path),
+    }));
+  }
+
   reportExportFailure(job, error) {
     if (!this.isCurrentExport(job)) return; // Never overwrite a newer render's status.
     const cancelled = error?.name === 'AbortError';
     const prefix = job.savedPath ? `已保存：${job.savedPath}；后续操作` : '导出';
     const message = prefix + (cancelled ? '已取消：' : '失败：') + (error?.message || String(error));
     this.status.setText(message);
+    if (!cancelled && this.exportDiagnosticItems) {
+      this.diagnosticItems ||= [];
+      this.diagnosticItems.push(...this.exportDiagnosticItems(error));
+      this.updateDiagnostics();
+      this.selectDiagnosticsTab('resources');
+    }
     new Notice(message, cancelled ? 5000 : 10000);
   }
 
@@ -7715,6 +8163,13 @@ class PreviewModal extends Modal {
         allowPartialMath:false, allowPartialImage:false});
       this.assertDualExport(job);
       return {pdf, pages:pdf.mwbPrintReport?.pages || 0, resources};
+    } catch (error) {
+      if (error && typeof error === 'object' && error.name !== 'AbortError') {
+        error.mwbDiagnosticLocations = (worker.diagnosticItems || [])
+          .map(item => worker.resolveDiagnosticTarget(item.target)).filter(target => target.path)
+          .map(({path,line,precision}) => ({path,line,precision}));
+      }
+      throw error;
     } finally {
       signal.removeEventListener('abort', stop);
       context.dispose();
@@ -7742,6 +8197,8 @@ class PreviewModal extends Modal {
       }
     }
     if (report.error) panel.createEl('p', {text:report.error});
+    if (this.appendDiagnosticLink) for (const item of report.diagnosticItems || [])
+      this.appendDiagnosticLink(panel,item.label,item.target);
     this.updateCompactStatus();
   }
 
@@ -7825,6 +8282,8 @@ class PreviewModal extends Modal {
     } catch (error) {
       const cancelled = error?.name === 'AbortError';
       report.error = error?.message || String(error);
+      if (!cancelled && this.isCurrentExport(job) && this.exportDiagnosticItems)
+        report.diagnosticItems = this.exportDiagnosticItems(error);
       if (active?.state === 'saving') {
         // An I/O rejection may occur after bytes reached disk. Never label an
         // unconfirmed write as either a valid PDF or definitely no file.
@@ -7991,8 +8450,10 @@ module.exports = class MathsemblePlugin extends Plugin {
     });
     // Claim column math before Obsidian's default math processor (order 0).
     // The helper only touches connected two-column/trial export/measurement DOM.
-    this.registerMarkdownPostProcessor(element =>
-      mwbRenderColumnMath(element, {signal:mwbRenderSignalFor(element), deadline:mwbRenderDeadlineFor(element)}), -100);
+    this.registerMarkdownPostProcessor(element => {
+      mwbCaptureDiagnosticMath(element);
+      return mwbRenderColumnMath(element, {signal:mwbRenderSignalFor(element), deadline:mwbRenderDeadlineFor(element)});
+    }, -100);
     // Markdown postprocessors run in Reading View, not CodeMirror Live Preview.
     // A processor root may not yet be connected to a reading view: annotate its
     // marks immediately rather than returning early based on element.closest().

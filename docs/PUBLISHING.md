@@ -1,6 +1,6 @@
 # Mathsemble 发布指引
 
-当前版本为 0.2.3，以用户验收通过的外观 v8 为基线，发布代码与候选 v4 一致。变更由 [PR #21](https://github.com/sunsimilarsun/Mathsemble/pull/21) 集成，本地及 Linux／Windows 检查见[验证记录](TESTING_RELEASE_0.2.3.md)；安装文件由精确标签 `0.2.3` 的发布工作流生成，下载见 [Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.3)。社区目录提交与 GitHub Release 分开，本轮不提交社区目录。
+当前开发版为 0.2.4，包含错误定位和条件抽题；正式稳定版为 [0.2.3](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.3)。开发、验收、正式标签发布和社区目录提交分别记录，0.2.4 尚未正式发布。
 
 ## 本地与 CI 门槛
 
