@@ -732,8 +732,16 @@ async function mwbRenderColumnMath(element, {signal, deadline:renderDeadline} = 
       for (const formula of wrapped) {
         current(formula.node);
         const bounds = contentBounds(formula.node);
-        const width = formula.node.querySelector('mjx-math').getBoundingClientRect().width;
-        const excess = width - bounds.width;
+        const container = formula.node.querySelector('mjx-container[display="true"]');
+        const style = element.ownerDocument.defaultView.getComputedStyle(container);
+        const inset = ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
+          .reduce((sum, key) => sum + (parseFloat(style[key]) || 0), 0);
+        const rect = formula.node.querySelector('mjx-math').getBoundingClientRect();
+        // Display CHTML has its own horizontal padding. A formula whose width
+        // alone seems acceptable can still cross the right edge after that
+        // inset is applied; use actual edges as well as usable content width.
+        const excess = Math.max(rect.width - (bounds.width - inset),
+          bounds.left - rect.left, rect.right - bounds.right);
         if (!(excess > 2.5)) continue;
         const target = Math.min(formula.metrics.containerWidth, bounds.width) - excess - 2.5;
         if (target > 0) retries.push({...formula, metrics:{...formula.metrics, containerWidth:target}});

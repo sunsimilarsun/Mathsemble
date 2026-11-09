@@ -255,16 +255,29 @@ async function browserCases() {
     await check('only overflowing inline tables use display line breaking while preserving source semantics and inline fraction sizes', async () => {
       const fractionCase=String.raw`\frac{x^2+1}{x-1}+\begin{cases} a+b+c+d+e+f+g+h+i+j+k+l+m+n & x>0 \\ -x & x\le0 \end{cases}`;
       for(const value of [...inlineCases,fractionCase]) {
-        const fixture=create(), normal=create('default'), original=MathJax.tex2chtml, calls=[];
+        const fixture=create(), normal=create('default'), original=MathJax.tex2chtml, calls=[], completed=[];
         try {
           const baseline=await nativeMath(value,{...MathJax.getMetricsFor(normal.body,false),display:false});
           normal.body.append(baseline); await ready();
           const {item,raw}=addFoldedList(fixture.body,value,1);
+          // This case exercises the overflowing path. Native CJK font widths
+          // vary by OS, so reserve less than the measured unwrapped formula.
+          const naturalWidth=baseline.querySelector('mjx-math').getBoundingClientRect().width;
+          item.style.maxWidth=Math.min(180,naturalWidth*0.7)+'px';
           raw.classList.remove('math-block'); raw.classList.add('math-inline'); item.prepend('条件说明：');
-          MathJax.tex2chtml=function(input,metrics){calls.push({...metrics});return original.call(this,input,metrics);};
+          MathJax.tex2chtml=function(input,metrics){
+            calls.push({...metrics});
+            const result=original.call(this,input,metrics);completed.push({...metrics});return result;
+          };
           ok(await mwbRenderColumnMath(raw)===1,'inline table was not rendered exactly once'); await ready();
           const container=raw.querySelector('mjx-container'), math=raw.querySelector('mjx-math'), bounds=item.getBoundingClientRect();
-          ok(calls.length>=2&&calls.every(metrics=>metrics.display===false),'fallback reparsed inline math in display style');
+          ok(naturalWidth>contentWidth(item)+2.5,'long inline fixture must naturally exceed its list width');
+          ok(completed.length>=2&&completed.length<=4&&calls.every(metrics=>metrics.display===false),
+            'inline fallback was unbounded or reparsed inline math in display style');
+          ok(completed.every((metrics,index)=>['em','ex','scale'].every(key=>metrics[key]===completed[0][key])&&
+            (index<2?Math.abs(metrics.containerWidth-contentWidth(item))<0.5:
+              metrics.containerWidth<completed[index-1].containerWidth)),
+            'inline correction changed font metrics or did not narrow only its correction attempts');
           ok(container?.getAttribute('display')==='true','overflowing inline table did not receive display line breaking');
           ok(raw.querySelectorAll('mjx-linebox').length>=2,'table cell contents were not line broken');
           ok(!raw.querySelector('mjx-merror,[data-mjx-error]'),'inline table fallback produced a MathJax error');
@@ -362,16 +375,26 @@ async function browserCases() {
     });
 
     await check('a display fallback font retry retains a fresh bounded wait after lengthy first-pass work', async () => {
-      const fixture=create(), original=MathJax.tex2chtml, clock=elapsedMathClock(); let attempts=0;
+      const fixture=create(), normal=create('default'), original=MathJax.tex2chtml, clock=elapsedMathClock(), calls=[], completed=[]; let attempts=0;
       try {
-        const {raw}=addFoldedList(fixture.body,inlineCases[0],1);raw.classList.remove('math-block');
-        MathJax.tex2chtml=function(...args){
+        const baseline=await nativeMath(inlineCases[0],{...MathJax.getMetricsFor(normal.body,false),display:false});
+        normal.body.append(baseline);await ready();
+        const {item,raw}=addFoldedList(fixture.body,inlineCases[0],1);raw.classList.remove('math-block');
+        item.style.maxWidth=Math.min(180,baseline.querySelector('mjx-math').getBoundingClientRect().width*0.7)+'px';
+        MathJax.tex2chtml=function(value,metrics){
+          calls.push({...metrics});
           if(++attempts===2){clock.advance(16000);throw {retry:Promise.resolve()};}
-          return original.apply(this,args);
+          const result=original.call(this,value,metrics);completed.push({...metrics});return result;
         };
-        ok(await mwbRenderColumnMath(raw)===1&&attempts===3,'second-pass font retry expired or lost the formula');
+        ok(await mwbRenderColumnMath(raw)===1&&attempts>=3&&completed.length>=2&&completed.length<=4,
+          'second-pass font retry expired, lost the formula or retried correction without a bound');
+        ok(calls.every(metrics=>metrics.display===false&&['em','ex','scale'].every(key=>metrics[key]===calls[0][key]))&&
+          calls[1].containerWidth===calls[2].containerWidth,
+          'font retry changed the inline parse style or its requested metrics');
+        ok(completed.every((metrics,index)=>index<2||metrics.containerWidth<completed[index-1].containerWidth),
+          'additional successful renders were not narrower correction attempts');
         await ready();ok(raw.querySelector('mjx-container')?.getAttribute('display')==='true','font retry lost the adapted table');sameGlobals();
-      } finally {clock.restore();MathJax.tex2chtml=original;fixture.host.remove();}
+      } finally {clock.restore();MathJax.tex2chtml=original;fixture.host.remove();normal.host.remove();}
     });
 
     await check('a long Markdown render shares its bounded work deadline with nested formula processing', async () => {
@@ -477,9 +500,14 @@ async function browserCases() {
         await ready();
         for(const [raw,parent] of [[direct,fixture.body],[calloutMath,outer],[nestedMath,inner]]) {
           const container=raw.querySelector('mjx-container'), math=raw.querySelector('mjx-math');
+          const box=math.getBoundingClientRect(), parentBox=parent.getBoundingClientRect(), style=getComputedStyle(parent);
+          const left=parentBox.left+(parseFloat(style.paddingLeft)||0)+(parseFloat(style.borderLeftWidth)||0);
+          const right=parentBox.right-(parseFloat(style.paddingRight)||0)-(parseFloat(style.borderRightWidth)||0);
           ok(!raw.querySelector('mjx-merror,[data-mjx-error]'),'trial formula produced a MathJax error');
           ok(raw.querySelectorAll('mjx-linebox').length>=2,'wide trial formula did not wrap');
-          ok(math.getBoundingClientRect().width<=contentWidth(parent)+2.5,'formula exceeds its actual callout/body content width: '+math.getBoundingClientRect().width+' > '+contentWidth(parent));
+          ok(box.width<=contentWidth(parent)+2.5,'formula exceeds its actual callout/body content width: '+box.width+' > '+contentWidth(parent));
+          ok(box.left>=left-2.5&&box.right<=right+2.5,
+            'formula exceeds its actual callout/body edges: '+JSON.stringify({math:[box.left,box.right],content:[left,right]}));
           ok(getComputedStyle(container).fontSize===getComputedStyle(baseline).fontSize&&getComputedStyle(container).transform==='none','trial math was scaled down');
           ok(glyphs(container)===glyphs(baseline),'trial line breaking changed the formula glyphs');
         }
@@ -528,6 +556,42 @@ async function browserCases() {
       } finally {fixture.host.remove();}
     });
 
+    await check('display padding triggers correction when width alone fits but the painted edge does not', async () => {
+      const fixture=create('trial'), normal=create('default'), original=MathJax.tex2chtml, targets=[];
+      const wide=tex+'+'+tex;let raw, firstGeometry;
+      try {
+        const baseline=await nativeMath(wide,{...MathJax.getMetricsFor(normal.body,true),display:true});
+        normal.body.append(baseline);await ready();
+        raw=addMath(fixture.body,wide);
+        MathJax.tex2chtml=function(value,metrics) {
+          if(targets.length===1) {
+            const box=raw.querySelector('mjx-math').getBoundingClientRect(), parentBox=fixture.body.getBoundingClientRect();
+            firstGeometry={width:box.width,available:contentWidth(fixture.body),right:box.right,parentRight:parentBox.right};
+          }
+          const result=original.call(this,value,metrics);targets.push(metrics.containerWidth);
+          if(targets.length===1) {
+            // Actual MathJax display padding remains in effect. Its inset can
+            // put the right edge outside although a width-only audit accepts it.
+            result.querySelector('mjx-math').style.width=(metrics.containerWidth+1)+'px';
+            result.querySelector('mjx-math').style.minWidth=(metrics.containerWidth+1)+'px';
+          }
+          return result;
+        };
+        ok(await mwbRenderColumnMath(fixture.body)===1,'edge correction lost the formula');await ready();
+        ok(firstGeometry&&firstGeometry.width<=firstGeometry.available+2.5&&firstGeometry.right>firstGeometry.parentRight+2.5,
+          'fixture did not isolate a width-fitting, edge-overflowing display: '+JSON.stringify(firstGeometry));
+        ok(targets.length>=2&&targets.length<=3&&targets.every((width,index)=>index===0||width<targets[index-1]),
+          'edge overflow was not corrected with bounded narrower targets');
+        const container=raw.querySelector('mjx-container'), box=raw.querySelector('mjx-math').getBoundingClientRect();
+        const bounds=fixture.body.getBoundingClientRect();
+        ok(box.left>=bounds.left-2.5&&box.right<=bounds.right+2.5,'corrected display still exceeds its content edges');
+        ok(glyphs(container)===glyphs(baseline),'edge correction changed the formula glyphs');
+        ok(getComputedStyle(container).fontSize===getComputedStyle(baseline).fontSize&&getComputedStyle(container).transform==='none',
+          'edge correction scaled the formula');
+        ok(paginate(fixture).report.pages===1&&paginate(fixture,false).report.pages===1,'edge correction did not survive preview and print');sameGlobals();
+      } finally {MathJax.tex2chtml=original;fixture.host.remove();normal.host.remove();}
+    });
+
     await check('cancellation and the parent deadline stop a pending overflow correction without late writes', async () => {
       for (const stop of ['cancel','deadline']) {
         const fixture=create('trial'), controller=new AbortController(), clock=elapsedMathClock();
@@ -537,7 +601,11 @@ async function browserCases() {
         MathJax.tex2chtml=function(value,metrics) {
           if (firstWidth===undefined) firstWidth=metrics.containerWidth;
           if (metrics.containerWidth<firstWidth) {correcting=true;throw {retry:gate};}
-          return original.call(this,value,metrics);
+          const result=original.call(this,value,metrics);
+          // Force an actual oversized first result on every platform. Whether
+          // this polynomial naturally needs correction depends on CJK fonts.
+          result.querySelector('mjx-math').style.minWidth=(firstWidth+20)+'px';
+          return result;
         };
         try {
           const raw=addMath(addCallout(fixture.body,'等待纠正'),wide);
@@ -545,7 +613,9 @@ async function browserCases() {
           // Attach the rejection handler before stopping the active operation.
           const outcome=pending.then(value=>({value}),error=>({error}));
           for(let turn=0;turn<100&&!correcting;turn++)await new Promise(resolve=>setTimeout(resolve,0));
-          ok(correcting&&raw.querySelector('mjx-linebox'),'fixture did not enter correction of an already rendered formula');
+          ok(correcting&&raw.querySelector('mjx-linebox')&&
+            raw.querySelector('mjx-math').getBoundingClientRect().width>firstWidth+2.5,
+            'fixture did not enter correction of an actually oversized rendered formula');
           const before=raw.outerHTML; sameGlobals();
           if(stop==='cancel')controller.abort();
           else {clock.advance(60001);release();}
