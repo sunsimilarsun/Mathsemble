@@ -39,6 +39,8 @@ test('conditional selection UI keeps review separate from atomic insertion and r
  const first=view.selection.items[0];
  button(view.selectionRows,'1. '+first.title).click();await pause();
  check(view.preview.textContent.includes(first.markdown),'candidate can be previewed before inclusion');
+ await click(view.preview,'收起预览');
+ check(view.selection.items.length===3,'returning from candidate preview preserves the review batch');
  await click(view.selectionPanel,'移出候选');
  check(view.selection.items.length===2&&view.plan.entries.length===0,'removing a candidate leaves the plan alone');
  const kept=view.selection.items.map(item=>item.id),scanBefore=scans;
