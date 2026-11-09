@@ -199,16 +199,25 @@ async function browserCases() {
           const {content,callout,item,raw}=addFoldedList(fixture.body,value,levels), measurements=[];
           ok(item.getBoundingClientRect().width===0,'folded list must begin with no measurable width');
           MathJax.tex2chtml=function(input,metrics) {
-            measurements.push({width:metrics.containerWidth,item:contentWidth(item)});
-            return original.call(this,input,metrics);
+            const entry={width:metrics.containerWidth,item:contentWidth(item),em:metrics.em,ex:metrics.ex,
+              scale:metrics.scale,display:metrics.display,completed:false};
+            measurements.push(entry);
+            const result=original.call(this,input,metrics);entry.completed=true;return result;
           };
           // Postprocessing may receive only the math subtree, not its folded ancestor.
           ok(await mwbRenderColumnMath(raw)===1,'folded list formula was not rendered');
           await ready();
           const width=contentWidth(item), container=raw.querySelector('mjx-container');
           ok(width>0&&width<contentWidth(fixture.body)-levels*39,'list indentation was not deducted');
-          ok(measurements.length>0&&measurements.every(entry=>entry.item>0&&Math.abs(entry.width-width)<0.5),
+          ok(measurements.length>0&&Math.abs(measurements[0].width-width)<0.5&&
+            measurements.every(entry=>entry.item>0&&Math.abs(entry.item-width)<0.5),
             layout+' formula measured a hidden list or an outer container: '+JSON.stringify(measurements)+'; LI width '+width);
+          const completed=measurements.filter(entry=>entry.completed);
+          ok(completed.length>=1&&completed.length<=3&&measurements.every((entry,index)=>
+            ['em','ex','scale','display'].every(key=>entry[key]===measurements[0][key])&&
+            (index===0||(measurements[index-1].completed?entry.width<measurements[index-1].width:
+              entry.width===measurements[index-1].width))),
+            'folded-list correction changed font metrics, exceeded two retries or did not narrow its target: '+JSON.stringify(measurements));
           ok(!callout.classList.contains('is-collapsed')&&callout.getAttribute('aria-expanded')==='true','temporary export callout remained folded');
           ok(getComputedStyle(content).display!=='none'&&content.getAttribute('aria-hidden')!=='true','temporary callout content remained hidden');
           ok(!raw.querySelector('mjx-merror,[data-mjx-error]'),'folded-list formula produced a MathJax error');
