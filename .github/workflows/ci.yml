@@ -37,7 +37,7 @@ jobs:
           "CHROME_PATH=$chromeExecutable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Emulate Community scanner clean build (remove all main.js outputs)
         run: |
-          find . -type f -name main.js -delete
+          find . -path ./node_modules -prune -o -type f -name main.js -exec rm {} +
           test ! -e main.js
           test -s src/plugin.js
       - run: npm run check

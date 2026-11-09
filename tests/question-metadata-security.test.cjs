@@ -5,22 +5,38 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const {runChromeDocument} = require('./helpers/run-chromium.cjs');
+const {createMathJaxFixture, assertLocalMathJaxResources} = require('./helpers/mathjax-fixture.cjs');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(process.env.MATHSEMBLE_TEST_SOURCE || path.join(root, 'src/plugin.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 const chrome = [process.env.CHROME_PATH, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/usr/bin/chromium', '/usr/bin/google-chrome'].find(p => p && fs.existsSync(p));
-const stub = `const module={exports:{}};const stub={Plugin:class{},Modal:class{},Notice:class{},MarkdownRenderer:{},MarkdownView:class{},renderMath:tex=>MathJax.tex2chtml(tex)};function require(n){return n==='obsidian'?stub:{}};`;
+// The desktop host supplies Node Buffer. The browser fixture only needs its
+// byte-array/base64 operation, while keeping production resource fetching real.
+const stub = `const Buffer={from(input){const bytes=new Uint8Array(input);return {length:bytes.length,toString(encoding){if(encoding!=='base64')throw Error('Unexpected Buffer encoding');let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary);}};}};const module={exports:{}};const stub={Plugin:class{},Modal:class{},Notice:class{},MarkdownRenderer:{},MarkdownView:class{},renderMath:tex=>MathJax.tex2chtml(tex)};function require(n){return n==='obsidian'?stub:{}};`;
 const expose = '\nglobalThis.qa={handoutPlan,mwbHandoutQuestionPlan,mwbApplyHandoutQuestions,exportHtml,paginatePreviewDocument,PreviewModal};';
 
 async function browserCases(realMath, fonts) {
   const results = [];
+  let activeMathStyle;
+  const loadedMathFonts = new Set();
+  let phase = 'MathJax startup', published = false;
+  const publish = () => {
+    if (published) return;
+    published = true; clearTimeout(watchdog);
+    const result=document.createElement('pre');result.id='mwb-test-results';
+    result.textContent=JSON.stringify(results);document.body.appendChild(result);
+  };
+  const watchdog = setTimeout(() => {
+    results.push({name:'metadata fixture deadline',ok:false,error:'Timed out during '+phase});
+    publish();
+  },20000);
   const ok = (v, reason) => {if (!v) throw Error(reason);};
-  const check = async (name, f) => {try {await f(); results.push({name, ok:true});} catch(e) {results.push({name, ok:false, error:String(e.stack || e)});}};
+  const check = async (name, f) => {phase=name;try {await f(); results.push({name, ok:true});} catch(e) {results.push({name, ok:false, error:String(e.stack || e)});}};
   // A deliberately small H5/plain-paragraph adapter. Projection, grouping,
   // range tooltips, pagination and HTML serialization are production code.
-  // With the optional host bundle, every formula is real MathJax CHTML.
+  // The real branch uses pinned MathJax CHTML or an explicit host override.
   async function render(markdown) {
     const root = document.createElement('main');
     root.className = 'mwb-export-doc mwb-typography mwb-print-document';
@@ -39,10 +55,19 @@ async function browserCases(realMath, fonts) {
       root.appendChild(node);
     }
     if (realMath) {
+      const style = MathJax.chtmlStylesheet();
+      if (style !== activeMathStyle) {
+        activeMathStyle?.remove(); activeMathStyle = style; document.head.append(style);
+      }
       for (const style of document.querySelectorAll('style[id^="MJX-"]'))
         style.textContent = style.textContent.replace(/url\(["']?[^)"']*\/([^/()"']+\.woff2?)["']?\)/g,
           (all, name) => fonts[name] ? 'url("'+fonts[name]+'")' : all);
+      // Start font loads for the newly inserted adaptive stylesheet before
+      // asking for its readiness; the old ready promise can already be settled.
+      root.getBoundingClientRect();
       await document.fonts.ready;
+      for (const font of document.fonts)
+        if (font.status === 'loaded' && /^MJX/i.test(font.family)) loadedMathFonts.add(font.family);
       ok(!root.querySelector('mjx-merror,[data-mjx-error]'), 'MathJax error in fixture');
     }
     return root;
@@ -76,6 +101,8 @@ async function browserCases(realMath, fonts) {
       ok(report.strictQuestionPages.length===2,'pagination lost question associations');
       const before=root.innerHTML;
       const html=await qa.exportHtml(root,'metadata regression','',document);
+      if (realMath && root.querySelector('mjx-container'))
+        ok(/data:font\/woff2;base64,/.test(html), 'real MathJax export did not embed its font bytes');
       ok(root.innerHTML===before,'export mutated the preview');
       const final=new DOMParser().parseFromString(html,'text/html');
       ok(final.querySelectorAll('[data-mwb-question-id]').length===2,'export lost source IDs');
@@ -112,21 +139,28 @@ async function browserCases(realMath, fonts) {
     qa.PreviewModal.prototype.updateQuestionBoundaryReport.call({questionPlan:plan,rendered:document.createElement('main'),questionBoundaryPanel:panel,mode:'teacher'});
     ok(panel.text.includes('WARNING_SECRET_9971'),'teacher source diagnostic lost detail');
   });
-  const result=document.createElement('pre');result.id='mwb-test-results';result.textContent=JSON.stringify(results);document.body.appendChild(result);
+  if (realMath) await check('real MathJax fonts load entirely from local assets',()=>{
+    ok(loadedMathFonts.size > 0, 'real MathJax fonts did not load while formulas were mounted');
+    assertLocalMathJaxResources();
+  });
+  publish();
 }
 
 for (const realMath of [false,true]) test('H5 metadata security in Chromium'+(realMath?' with real MathJax':''),async t=>{
   if (!chrome) {if(process.env.CI)throw Error('Chrome required');t.skip('Set CHROME_PATH');return;}
-  const mathPath=process.env.MATHSEMBLE_MATHJAX_BUNDLE;
-  if (realMath&&!mathPath) {t.skip('Set MATHSEMBLE_MATHJAX_BUNDLE and MATHSEMBLE_MATHJAX_FONTS for host-math coverage');return;}
-  const fonts=realMath?JSON.parse(fs.readFileSync(process.env.MATHSEMBLE_MATHJAX_FONTS,'utf8')):{};
-  const bundle=realMath?fs.readFileSync(mathPath,'utf8'):'';
+  const fixture=realMath?await createMathJaxFixture({allowLegacyBundle:true}):null;
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'mwb-metadata-'));
   const input=path.join(directory,'case.html');
-  const config=process.env.MATHSEMBLE_MATHJAX_CONFIG ? JSON.parse(fs.readFileSync(process.env.MATHSEMBLE_MATHJAX_CONFIG,'utf8')) : {startup:{typeset:false},options:{enableMenu:false}};
-  const scripts=[realMath?'globalThis.MathJax='+JSON.stringify(config)+';':'',bundle,stub+'\n'+source+expose+'\n('+browserCases.toString()+')('+realMath+','+JSON.stringify(fonts)+');'];
-  fs.writeFileSync(input,'<!doctype html><meta charset="utf-8"><style>'+css+'</style><body>'+scripts.map(s=>'<script>'+s.replace(/<\/script/gi,'<\\/script')+'</script>').join(''));
-  // Preserve test input/profile on failure as local evidence, not user data.
-  const results=await runChromeDocument(chrome,input,path.join(directory,'profile'));
-  for (const r of results) await t.test(r.name,()=>assert.equal(r.ok,true,r.error));
+  // Keep the CommonJS/Obsidian shim private: MathJax's asynchronous component
+  // loader must not mistake our test require() for the host's module loader.
+  const script='(async()=>{'+stub+'\n'+source+expose+'\n'+assertLocalMathJaxResources.toString()+'\nawait ('+browserCases.toString()+')('+realMath+','+JSON.stringify(fixture?.fonts||{})+');})().catch(error=>{const output=document.createElement("pre");output.id="mwb-test-results";output.textContent=JSON.stringify([{name:"fixture initialization",ok:false,error:String(error.stack||error)}]);document.body.append(output);});';
+  const html='<!doctype html><meta charset="utf-8"><style>'+css+'</style>'+(fixture?.bootstrap||'')+'<body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>';
+  fs.writeFileSync(input,html);
+  fixture?.setHtml(html);
+  try {
+    // Preserve test input/profile on failure as local evidence, not user data.
+    const results=await runChromeDocument(chrome,input,path.join(directory,'profile'),fixture?{url:fixture.url}:{});
+    fixture?.assertAssets();
+    for (const r of results) await t.test(r.name,()=>assert.equal(r.ok,true,r.error));
+  } finally { await fixture?.close(); }
 });

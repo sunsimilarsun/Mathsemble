@@ -2,7 +2,7 @@
 
 Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作讲义、题卡和试卷，预览并导出 A4 学生版／教师版 PDF、打印稿及 HTML。
 
-**当前源码：0.2.3 发布候选。** 本轮默认、双列和试听排版、课程信息、长公式换行及双版 PDF 导出已获用户测试验收通过，候选以验收的 v8 为基线。保留“知识点与组题工作区”的跨目录筛选、知识与题卡混编、排序分区及学生／教师输出。当前仍有既有自动化测试失败，尚未创建正式 GitHub Release。详见 [0.2.3 候选说明](docs/RELEASE_NOTES_0.2.3.md)。
+**当前源码：0.2.3 发布候选。** 本轮默认、双列和试听排版、课程信息、长公式换行及双版 PDF 导出已获用户测试验收通过，候选以验收的 v8 为基线。保留“知识点与组题工作区”的跨目录筛选、知识与题卡混编、排序分区及学生／教师输出。候选 v3 已通过完整本地发布检查：433 项全部通过、零跳过；尚未创建正式 GitHub Release。详见 [0.2.3 候选说明](docs/RELEASE_NOTES_0.2.3.md)及[发布检查记录](docs/TESTING_RELEASE_0.2.3.md)。
 
 ## 知识点与组题
 
@@ -39,7 +39,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 ## 书写规则与模板
 
-**唯一现行书写规范：[Markdown 规范](docs/MARKDOWN_SPEC.md)。** 本地配套模板维护在相邻 Markdown 内容库，入口为[模板清单](../../Markdown/数学教学/模板&规范/README.md)，可从[讲义最小示例](../../Markdown/数学教学/模板&规范/讲义【最小示例】.md)开始。模板不在本仓库内；更换设备时按实际内容库位置定位。
+**唯一现行书写规范：[Markdown 规范](docs/MARKDOWN_SPEC.md)。** 本地配套模板维护在相邻 Markdown 内容库，入口为[模板清单](../../Markdown/数学教学/模板&规范/README.md)，可从[通用讲义模板](../../Markdown/数学教学/模板&规范/讲义【通用模板】.md)开始。生产模板不在本仓库内；更换设备时按实际内容库位置定位。
 
 ```markdown
 # 二次函数专题
@@ -115,7 +115,9 @@ npm run prepublish-check
 
 CI 配置覆盖 Linux 和 Windows；CI 缺少浏览器时应失败。本地未指定可用浏览器会跳过对应测试，不能据此声称完成布局验收。模板回归会检查题目边界、答案投影和元信息；数学正确性另需审校。自动化验证不能代替真实 Obsidian 和完整 PDF 验收。
 
-模板单独验收时，将 `MATHSEMBLE_TEMPLATE_DIR` 设为内容库中 `数学教学/模板&规范/` 的实际路径，再运行 `node --test tests/templates.test.cjs`；未设置时兼容读取仓库根的 `templates/`。运行包含模板回归的全量检查时也须提供该目录。
+模板回归默认读取仓库内 [版本化测试样例](tests/fixtures/templates/v1/README.md)，不依赖个人内容库。需只读核验生产模板时，可将 `MATHSEMBLE_TEMPLATE_DIR` 设为内容库中 `数学教学/模板&规范/` 的实际路径，再运行 `node --test tests/templates.test.cjs`。
+
+真实公式回归默认使用 `npm ci` 安装的固定版本 MathJax 4 与 TeX 字体，由本地临时服务器提供资源，并禁止测试页面访问外部 CDN。宿主对照可额外设置 `MATHSEMBLE_MATHJAX4_DIR`，指向本机 Obsidian 的完整 `lib/mathjax` 资源目录；常规测试和 CI 不需要本机 Obsidian。
 
 ## Network access and files outside the vault
 

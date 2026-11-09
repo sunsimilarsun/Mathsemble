@@ -13,5 +13,9 @@
     "verify": "node scripts/verify.mjs",
     "check": "npm run build && npm test && npm run verify",
     "prepublish-check": "npm run check && node scripts/prepublish.mjs"
+  },
+  "devDependencies": {
+    "@mathjax/mathjax-tex-font": "4.1.3",
+    "mathjax": "4.1.3"
   }
 }

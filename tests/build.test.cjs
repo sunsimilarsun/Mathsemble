@@ -112,7 +112,7 @@ test('build fails safely for missing CSS or malformed/ambiguous generated bounda
 test('verify without build rejects CSS drift even if source equals main.js',()=>{
   const temp=mkdtempSync(join(tmpdir(),'mathsemble-css-verification-'));
   try {
-    cpSync(resolve(__dirname,'..'),temp,{recursive:true,filter:p=>!p.split(pathSeparator()).includes('.git')});
+    cpSync(resolve(__dirname,'..'),temp,{recursive:true,filter:p=>!p.split(pathSeparator()).some(part=>part==='.git'||part==='node_modules')});
     const file=join(temp,'styles.css');writeFileSync(file,readFileSync(file,'utf8').replace('#141414','#121212'));
     const verify=()=>spawnSync(process.execPath,[join(temp,'scripts/verify.mjs')],{encoding:'utf8'});
     const stale=verify();assert.notEqual(stale.status,0);assert.match(stale.stderr,/Embedded print CSS is stale/);

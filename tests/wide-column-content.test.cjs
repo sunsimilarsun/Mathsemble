@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const http = require('node:http');
 const {runChromeDocument} = require('./helpers/run-chromium.cjs');
+const {createMathJaxFixture, assertLocalMathJaxResources} = require('./helpers/mathjax-fixture.cjs');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'src/plugin.js'), 'utf8');
@@ -24,55 +24,26 @@ const chrome = [process.env.CHROME_PATH, '/usr/bin/chromium', '/usr/bin/google-c
   .find(candidate => candidate && fs.existsSync(candidate));
 
 test('real MathJax 4: long column and trial formulas wrap before measurement and retain pagination', async t => {
-  const assets = process.env.MATHSEMBLE_MATHJAX4_DIR;
   if (!chrome) { if (process.env.CI) throw Error('Chrome/Chromium required'); t.skip('Set CHROME_PATH'); return; }
-  if (!assets) { t.skip('Set MATHSEMBLE_MATHJAX4_DIR to an Obsidian MathJax 4 lib/mathjax directory'); return; }
-  const base = path.resolve(assets);
-  const requests = [];
-  let fixtureHtml = '';
-  assert.ok(fs.existsSync(path.join(base, 'obsidian-mathjax.js')), 'MathJax 4 bundle must exist');
-  // The existing Chromium runner loads a local HTML string. A loopback asset
-  // server makes its real font/extension loads possible without external IO.
-  const server = http.createServer((req, res) => {
-    requests.push(req.url);
-    if (req.url === '/fixture.html') {
-      res.setHeader('Content-Type','text/html; charset=utf-8'); res.end(fixtureHtml); return;
-    }
-    let target;
-    try { target = path.resolve(base, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname)); }
-    catch (_) { res.writeHead(400).end(); return; }
-    if (!target.startsWith(base + path.sep)) { res.writeHead(403).end(); return; }
-    fs.readFile(target, (error, bytes) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      if (error) { res.writeHead(404).end(); return; }
-      res.setHeader('Content-Type', target.endsWith('.js') ? 'application/javascript' : target.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream');
-      res.end(bytes);
-    });
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const url = 'http://127.0.0.1:' + server.address().port;
-  const config = {startup:{typeset:false}, options:{enableMenu:false,enableEnrichment:false,
-    enableSpeech:false,enableBraille:false,enableExplorer:false,enableAssistiveMml:false},
-    loader:{paths:{'mathjax-tex':url+'/tex-font','mathjax-mhchem-extension':url+'/mhchem-font-extension'}},
-    output:{font:'mathjax-tex',fontExtensions:['mathjax-mhchem']}};
+  const fixture = await createMathJaxFixture();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mwb-column-real-math-'));
   try {
     // The host Markdown parser is stubbed only in deadline tests; those inputs
     // contain no page-break markers and use the real staging/ownership code.
-    const script = `${abort}\n${renderScopes}\n${renderOwners}\n${expand}\n${helper}\n${markdown}\n${paginator}\nlet MarkdownRenderer={render:async()=>{throw Error('Unexpected host Markdown render');}};\nconst mwbProjectPageBreaks=source=>source;\nlet loadMathJax=()=>MathJax.startup.promise;\nlet activeMathStyle;\nlet finishRenderMath=async()=>{const style=MathJax.chtmlStylesheet();if(style!==activeMathStyle){activeMathStyle?.remove();activeMathStyle=style;document.head.append(style);}await document.fonts.ready;};\n(${browserCases.toString()})();`;
+    const script = `${abort}\n${renderScopes}\n${renderOwners}\n${expand}\n${helper}\n${markdown}\n${paginator}\nlet MarkdownRenderer={render:async()=>{throw Error('Unexpected host Markdown render');}};\nconst mwbProjectPageBreaks=source=>source;\nlet loadMathJax=()=>MathJax.startup.promise;\nlet activeMathStyle;\nlet finishRenderMath=async()=>{const style=MathJax.chtmlStylesheet();if(style!==activeMathStyle){activeMathStyle?.remove();activeMathStyle=style;document.head.append(style);}document.body.getBoundingClientRect();await document.fonts.ready;};\n${assertLocalMathJaxResources.toString()}\n(${browserCases.toString()})();`;
     new (require('node:vm').Script)(script);
     const input = path.join(directory, 'case.html');
-    // Obsidian's extracted renderer assets omit the optional SRE worker. This
-    // geometry test uses MathJax's built-in no-worker path, as file fixtures do.
-    fixtureHtml = '<!doctype html><meta charset="utf-8"><style>'+css+'</style><script>globalThis.Worker=undefined;MathJax='+JSON.stringify(config)+
-      '</script><script src="'+url+'/obsidian-mathjax.js"></script><body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>';
+    const fixtureHtml = '<!doctype html><meta charset="utf-8"><style>'+css+'</style>'+fixture.bootstrap+
+      '<body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>';
+    fixture.setHtml(fixtureHtml);
     fs.writeFileSync(input, fixtureHtml);
     let results;
-    try { results = await runChromeDocument(chrome, input, path.join(directory, 'profile'), {url:url+'/fixture.html'}); }
-    catch (error) { throw new Error(error.message + '\nAsset requests: '+requests.join(', ')); }
+    try { results = await runChromeDocument(chrome, input, path.join(directory, 'profile'), {url:fixture.url}); }
+    catch (error) { throw new Error(error.message + '\nAsset requests: '+fixture.requests.join(', ')); }
+    fixture.assertAssets();
     for (const result of results) await t.test(result.name, () => assert.equal(result.ok, true, result.error || ''));
   } finally {
-    await new Promise(resolve => server.close(resolve));
+    await fixture.close();
     fs.rmSync(directory, {recursive:true, force:true, maxRetries:10, retryDelay:100});
   }
 });
@@ -557,6 +528,37 @@ async function browserCases() {
       } finally {fixture.host.remove();}
     });
 
+    await check('cancellation and the parent deadline stop a pending overflow correction without late writes', async () => {
+      for (const stop of ['cancel','deadline']) {
+        const fixture=create('trial'), controller=new AbortController(), clock=elapsedMathClock();
+        const original=MathJax.tex2chtml, wide=tex+'+'+tex;
+        let firstWidth, correcting=false, release;
+        const gate=new Promise(resolve=>{release=resolve;});
+        MathJax.tex2chtml=function(value,metrics) {
+          if (firstWidth===undefined) firstWidth=metrics.containerWidth;
+          if (metrics.containerWidth<firstWidth) {correcting=true;throw {retry:gate};}
+          return original.call(this,value,metrics);
+        };
+        try {
+          const raw=addMath(addCallout(fixture.body,'等待纠正'),wide);
+          const pending=mwbRenderColumnMath(fixture.body,{signal:controller.signal,deadline:performance.now()+60000});
+          // Attach the rejection handler before stopping the active operation.
+          const outcome=pending.then(value=>({value}),error=>({error}));
+          for(let turn=0;turn<100&&!correcting;turn++)await new Promise(resolve=>setTimeout(resolve,0));
+          ok(correcting&&raw.querySelector('mjx-linebox'),'fixture did not enter correction of an already rendered formula');
+          const before=raw.outerHTML; sameGlobals();
+          if(stop==='cancel')controller.abort();
+          else {clock.advance(60001);release();}
+          const {error}=await outcome;
+          ok(stop==='cancel'?error?.code==='MWB_RENDER_ABORTED':/超时.*打印公式处理总预算/.test(error?.message||''),
+            stop+' did not stop the pending correction');
+          ok(raw.outerHTML===before,'stopped correction replaced the existing formula');
+          release();await new Promise(resolve=>setTimeout(resolve,0));
+          ok(raw.outerHTML===before,'late correction settlement overwrote the stopped render');sameGlobals();
+        } finally {release();MathJax.tex2chtml=original;clock.restore();fixture.host.remove();}
+      }
+    });
+
     await check('an asynchronous MathJax font retry removes the temporary filter before another render can run', async () => {
       const fixture=create(), original=MathJax.tex2chtml; let release, attempts=0;
       const retry=new Promise(resolve=>{release=resolve;});
@@ -615,21 +617,29 @@ async function browserCases() {
       } finally {fixture.host.remove();}
     });
 
-    await check('a renderer result that still exceeds the column remains a blocking overflow', async () => {
-      const fixture=create();
+    await check('persistent wrapped overflow has bounded correction attempts and remains a blocking error', async () => {
+      const fixture=create(), original=MathJax.tex2chtml, targets=[];
+      MathJax.tex2chtml=function(value,metrics) {
+        const result=original.call(this,value,metrics);
+        targets.push(metrics.containerWidth);
+        // Model a renderer that cannot realize the requested width, keeping
+        // real MathJax glyphs and line boxes for the correction and final audit.
+        result.querySelector('mjx-math').style.minWidth=(contentWidth(fixture.body)+20)+'px';
+        return result;
+      };
       try {
-        addMath(fixture.body,String.raw`\rule{150mm}{2mm}`);
+        addMath(fixture.body,tex+'+'+tex);
         await mwbRenderColumnMath(fixture.body); await ready(); let failure;
-        // Model a still-unbreakable renderer output, independently of whether
-        // a particular MathJax release adapts \rule or \text internally.
-        const oversized=fixture.body.querySelector('mjx-container');
-        oversized.style.cssText='display:block;width:150mm;height:10mm;min-width:150mm;';
-        ok(oversized.getBoundingClientRect().width>fixture.body.getBoundingClientRect().width+100,
+        ok(targets.length>1&&targets.length<=3,'persistent overflow was ignored or retried without a bound');
+        ok(targets.every((width,index)=>index===0||width<targets[index-1]),'correction did not reduce its requested width');
+        const oversized=fixture.body.querySelector('mjx-math');
+        ok(oversized.getBoundingClientRect().width>contentWidth(fixture.body)+2.5,
           'oversized renderer fixture must really exceed the column');
         try {paginate(fixture);} catch(error) {failure=error;}
         ok(failure&&/超过 A4|不可拆分|仍然溢出/.test(failure.message),'indivisible math was silently accepted'); sameGlobals();
-      } finally {fixture.host.remove();}
+      } finally {MathJax.tex2chtml=original;fixture.host.remove();}
     });
   } catch(error) {results.push({name:'MathJax initialization',ok:false,error:String(error.stack||error)});}
+  await check('renderer and font assets stay local', assertLocalMathJaxResources);
   publish();
 }

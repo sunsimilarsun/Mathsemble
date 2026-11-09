@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "capturedAt": "2026-11-09",
+  "scope": "Versioned regression examples; not a live mirror or an editable production template directory.",
+  "sourceCollection": "数学教学/模板&规范",
+  "sourceContracts": [
+    "题库/题目文件规范.md v1.2（2026-11-08），11个核心字段",
+    "README.md 通用模板更新（2026-11-09）",
+    "Mathsemble docs/MARKDOWN_SPEC.md 的题目边界及答案投影约定"
+  ],
+  "acquisition": "从现行内容库只读复制列出的8份通用数学模板；作者名称匿名化。没有复制学生资料、记录、未登记文件或本机绝对路径。第9份最小样例独立编写，仅作为软件回归夹具。",
+  "handouts": [
+    {
+      "name": "讲义最小回归样例.md",
+      "sourcePath": null,
+      "questions": 6,
+      "slots": 3,
+      "fixtureSha256": "38312901dd0cdd9804711d69c6f1843e896baab016880c81e2a8f5304ce5346e",
+      "changes": [
+        "独立编写的最小软件回归样例，不来源于已缺失的生产最小模板。"
+      ]
+    },
+    {
+      "name": "讲义【通用模板】.md",
+      "questions": 15,
+      "slots": 12,
+      "sourcePath": "讲义【通用模板】.md",
+      "sourceSha256": "46de6388b65ea9bcce75e873714df6c51e4b08e896c782a599bd15225a1f07d8",
+      "changes": [
+        "作者名称替换为通用的“示例教师”；其余正文及属性保留。"
+      ],
+      "fixtureSha256": "e0d6661cc39b95089e6cc490652836445246d67f34c862f4b77bde33750de81d"
+    },
+    {
+      "name": "考前复习讲义【示例】.md",
+      "questions": 8,
+      "slots": 27,
+      "sourcePath": "考前复习讲义【示例】.md",
+      "sourceSha256": "350dec066e3160a5b0db814a0169f65a5a578a94eee31dfafb9d32802e2b0d3d",
+      "changes": [],
+      "fixtureSha256": "350dec066e3160a5b0db814a0169f65a5a578a94eee31dfafb9d32802e2b0d3d"
+    },
+    {
+      "name": "试卷【模板】.md",
+      "questions": 5,
+      "slots": 6,
+      "sourcePath": "试卷【模板】.md",
+      "sourceSha256": "2b6343e549eb69ee47870ff23bf9f37461442e48fa98cc4c3455cdfc65ea84e3",
+      "changes": [],
+      "fixtureSha256": "2b6343e549eb69ee47870ff23bf9f37461442e48fa98cc4c3455cdfc65ea84e3"
+    }
+  ],
+  "cards": [
+    {
+      "name": "题库/单选题【模板】.md",
+      "id": "TEMPLATE-CHOICE-001",
+      "type": "choice",
+      "group": "single",
+      "slots": 1,
+      "nodes": [
+        "[[二次函数]]",
+        "[[函数的极值与最值]]"
+      ],
+      "roleKnown": true,
+      "sourcePath": "题库/单选题【模板】.md",
+      "sourceSha256": "ddaf85f56275a1336d541b0bf2384dc22d151ca7ed58b747b9d34ed631d79c4c",
+      "changes": [],
+      "fixtureSha256": "ddaf85f56275a1336d541b0bf2384dc22d151ca7ed58b747b9d34ed631d79c4c"
+    },
+    {
+      "name": "题库/多选题【模板】.md",
+      "id": "MATH-20261019-003",
+      "type": "multiple_choice",
+      "group": "multiple",
+      "node": "[[函数的极值与最值]]",
+      "slots": 1,
+      "sourcePath": "题库/多选题【模板】.md",
+      "sourceSha256": "d488dfa3c10757703ce020fd39b56160bb3695012963de3032633642aa2c417e",
+      "changes": [],
+      "fixtureSha256": "d488dfa3c10757703ce020fd39b56160bb3695012963de3032633642aa2c417e"
+    },
+    {
+      "name": "填空题【模板】.md",
+      "id": "MATH-20261019-002",
+      "type": "fill_blank",
+      "group": "fill",
+      "node": "切线问题",
+      "slots": 2,
+      "sourcePath": "填空题【模板】.md",
+      "sourceSha256": "3ccc04468f32d9e23ddd17b9ba5b848e5fadfdac969a073e6cef5080d8458123",
+      "changes": [],
+      "fixtureSha256": "3ccc04468f32d9e23ddd17b9ba5b848e5fadfdac969a073e6cef5080d8458123"
+    },
+    {
+      "name": "题库/判断题【模板】.md",
+      "id": "TEMPLATE-JUDGMENT-001",
+      "type": "true_false",
+      "group": "judgment",
+      "slots": 2,
+      "unclassified": true,
+      "sourcePath": "题库/判断题【模板】.md",
+      "sourceSha256": "4dcb1af7e21d4095f56dea113d22f9b99ab0ed9e576409ed6d3caefc2b374dfc",
+      "changes": [],
+      "fixtureSha256": "4dcb1af7e21d4095f56dea113d22f9b99ab0ed9e576409ed6d3caefc2b374dfc"
+    },
+    {
+      "name": "题库/解答题【模板】.md",
+      "id": "MATH-20261019-001",
+      "type": "short_answer",
+      "group": "solution",
+      "node": "切线问题",
+      "slots": 0,
+      "sourcePath": "题库/解答题【模板】.md",
+      "sourceSha256": "dd0b5e77fea246d27569e59a3120f967cf57ed39ec757ab7e8a767240cf16d6c",
+      "changes": [
+        "移除文件末尾多余空行，正文及属性不变。"
+      ],
+      "fixtureSha256": "bf0f8ded9ca53fb2afaa5898a75e4105b9ef6d0b07e6a8d7f3c0376e1683782f"
+    }
+  ],
+  "fixtureDigest": "SHA-256 of UTF-8 text after CRLF-to-LF normalization; sourceSha256 describes original source bytes."
+}

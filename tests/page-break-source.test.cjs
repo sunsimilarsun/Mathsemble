@@ -4,19 +4,44 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const {performance} = require('node:perf_hooks');
 
 const source = fs.readFileSync(path.resolve(__dirname, '../src/plugin.js'), 'utf8');
 const renders = [];
+class Component {
+  constructor() { this.children = []; }
+  addChild(child) { this.children.push(child); return child; }
+  removeChild(child) { this.children.splice(this.children.indexOf(child),1); child.unload(); }
+  unload() { this.unloaded = true; }
+}
+// Model the renderer's owned staging tree rather than assuming the native
+// host receives the published preview directly. No HTML parser is needed here.
+function createTarget() {
+  class Node {
+    constructor(doc, tag) { this.ownerDocument=doc; this.tagName=tag; this.childNodes=[]; this.parentNode=null; }
+    get parentElement() { return this.parentNode; }
+    get firstChild() { return this.childNodes[0] || null; }
+    appendChild(child) { child.remove(); this.childNodes.push(child); child.parentNode=this; return child; }
+    insertBefore(child,before) { child.remove(); this.childNodes.splice(this.childNodes.indexOf(before),0,child); child.parentNode=this; return child; }
+    remove() { if(this.parentNode){this.parentNode.childNodes.splice(this.parentNode.childNodes.indexOf(this),1);this.parentNode=null;} }
+  }
+  const doc={createElement:tag=>new Node(doc,tag)};
+  return doc.createElement('main');
+}
 const context = {
-  console, Buffer, module: {exports:{}},
+  console, Buffer, performance, setTimeout, clearTimeout, module: {exports:{}},
   require: name => name === 'obsidian' ? {
-    Plugin:class {}, Modal:class {}, Notice:class {}, MarkdownView:class {},
-    MarkdownRenderer:{render:async (...args) => {renders.push(args);return 'rendered';}},
+    Plugin:class {}, Component, Modal:class {}, Notice:class {}, MarkdownView:class {},
+    MarkdownRenderer:{render:async (...args) => {
+      renders.push(args);
+      const result=args[2].ownerDocument.createElement('render-result');result.textContent=args[1];args[2].appendChild(result);
+      return 'rendered';
+    }},
     finishRenderMath:() => Promise.resolve(),
     renderMath:() => {throw Error('No MathJax host in source projection tests');},
   } : require(name),
 };
-vm.runInNewContext(source + '\nglobalThis.pageBreaks={mwbPageBreakLines,mwbProjectPageBreaks,mwbRenderMarkdown,mwbHandoutQuestionPlan,handoutPlan,studentSpacePlan,mwbTeacherMeasurementPlan};', context);
+vm.runInNewContext(source + '\nglobalThis.pageBreaks={mwbPageBreakLines,mwbProjectPageBreaks,mwbRenderMarkdown,mwbRenderSignalFor,mwbRenderDeadlineFor,mwbHandoutQuestionPlan,handoutPlan,studentSpacePlan,mwbTeacherMeasurementPlan};', context);
 const a = context.pageBreaks;
 const indices = text => Array.from(a.mwbPageBreakLines(text));
 
@@ -68,7 +93,7 @@ test('a six-hyphen boundary after prose never becomes a Setext question boundary
   const text = '##### 例1\n题干\n------\n补充条件\n\n> [!answer]- 完整答案\n> SECRET\n\n##### 方法总结\n总结';
   const p = a.mwbHandoutQuestionPlan(text);
   assert.equal(p.headings.length, 2);
-  assert.equal(p.groups.length, 1);
+  assert.deepEqual(Array.from(p.groups,group=>group.title), ['例1','方法总结']);
   assert.equal(p.groups[0].end, 8);
   assert.equal(p.groups[0].answerCount, 1);
   assert.equal(p.markdown.split('\n').length, text.split('\n').length);
@@ -90,14 +115,23 @@ test('page break projection is shared by raw, student, teacher and measurement r
   plans.push(a.mwbTeacherMeasurementPlan(text));
   renders.length = 0;
   for (const plan of plans) {
-    const app = {}, target = {}, component = {};
+    const app = {}, target = createTarget(), component = new Component();
     assert.equal(await a.mwbRenderMarkdown(app, plan.markdown, target, '讲义.md', component), 'rendered');
     const args = renders.at(-1);
     assert.equal(args[0], app);
     assert.match(args[1], /data-mwb-page-break="true"/);
-    assert.equal(args[2], target);
+    assert.notEqual(args[2], target, 'native rendering must stay isolated in staging until successful');
+    assert.equal(args[2].ownerDocument, target.ownerDocument);
+    assert.equal(args[2].parentNode, null, 'successful staging is detached');
+    assert.equal(args[2].childNodes.length, 0, 'rendered nodes moved out of staging');
+    assert.equal(target.childNodes.length, 1, 'only the rendered result is published');
+    assert.equal(target.firstChild.textContent, args[1]);
+    assert.equal(a.mwbRenderSignalFor(args[2]), undefined);
+    assert.equal(a.mwbRenderDeadlineFor(args[2]), undefined, 'completed staging cannot retain a render deadline');
     assert.equal(args[3], '讲义.md');
-    assert.equal(args[4], component);
+    assert.notEqual(args[4], component, 'each native render has an owned child component');
+    assert.equal(component.children[0], args[4]);
+    assert.equal(args[4].unloaded, undefined, 'successful render ownership remains attached');
   }
   assert.equal((source.match(/MarkdownRenderer\.render\(/g) || []).length, 1, 'native renderer must only be called by the shared projection wrapper');
   assert.equal((source.match(/await mwbRenderMarkdown\(/g) || []).length, 7, 'all preview/measurement routes share the wrapper');

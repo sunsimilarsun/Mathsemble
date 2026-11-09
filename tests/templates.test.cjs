@@ -4,14 +4,24 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 
 const root = path.resolve(__dirname, '..');
-// Templates live in the user's Markdown content library. An explicit path also
-// permits a separate checkout without copying a second editable template set.
-const templateDir = process.env.MATHSEMBLE_TEMPLATE_DIR
-  ? path.resolve(process.env.MATHSEMBLE_TEMPLATE_DIR)
-  : path.join(root, 'templates');
-const readTemplate = name => fs.readFileSync(path.join(templateDir, name), 'utf8');
+// CI uses versioned public regression data. An explicit external directory is
+// an opt-in production audit, never a dependency of a portable checkout.
+const fixtureDir = path.join(__dirname, 'fixtures', 'templates', 'v1');
+const manifest = JSON.parse(fs.readFileSync(path.join(fixtureDir, 'manifest.json'), 'utf8'));
+const externalDir = process.env.MATHSEMBLE_TEMPLATE_DIR ? path.resolve(process.env.MATHSEMBLE_TEMPLATE_DIR) : null;
+const handouts = manifest.handouts;
+const cards = manifest.cards;
+const materialTemplates = [...handouts, ...cards];
+const recordsByName = new Map(materialTemplates.map(fixture => [fixture.name, fixture]));
+const templatePath = name => {
+  const fixture = recordsByName.get(name);
+  return externalDir && fixture?.sourcePath ? path.join(externalDir, fixture.sourcePath) : path.join(fixtureDir, name);
+};
+const readTemplate = name => fs.readFileSync(templatePath(name), 'utf8');
+const isSnapshot = fixture => !externalDir || !fixture.sourcePath;
 // Exercise the editable source, so template validation never depends on a
 // previously generated main.js or writes build output.
 const source = fs.readFileSync(path.join(root, 'src/plugin.js'), 'utf8');
@@ -28,35 +38,26 @@ const ctx = {
 vm.runInNewContext(source + '\n;globalThis.templateApi = {mwbHandoutQuestionPlan,handoutPlan,mwbTypedSlots,mwbCalloutDocument,mwbValidateTypedAnswers,collectExamItems};', ctx);
 const api = ctx.templateApi;
 
-const handouts = [
-  {name: '讲义【最小示例】.md', questions: 6, slots: 3},
-  {name: '讲义【通用模板】.md', questions: 10, slots: 11},
-  {name: '考前复习讲义【示例】.md', questions: 8, slots: 27},
-  {name: '试卷【模板】.md', questions: 5, slots: 6},
-];
-const cards = [
-  {name: '单选题【模板】.md', id: 'TEMPLATE-CHOICE-001', type: 'choice', group: 'single', slots: 1, nodes: ['[[二次函数]]', '[[函数的极值与最值]]'], roleKnown:true},
-  {name: '多选题【模板】.md', id: 'MATH-20261019-003', type: 'multiple_choice', group: 'multiple', node: '[[函数的极值与最值]]', slots: 1},
-  {name: '填空题【模板】.md', id: 'MATH-20261019-002', type: 'fill_blank', group: 'fill', node: '切线问题', slots: 2},
-  {name: '判断题【模板】.md', id: 'TEMPLATE-JUDGMENT-001', type: 'true_false', group: 'judgment', slots: 2, unclassified: true},
-  {name: '解答题【模板】.md', id: 'MATH-20261019-001', type: 'short_answer', group: 'solution', node: '切线问题', slots: 0},
-];
-const materialTemplates = [...handouts, ...cards];
 // An intentional, ordinary highlight may be added here after review. Answer
 // examples must use typed slots; accepting every highlight would miss migration.
 const ordinaryHighlights = new Map();
 const studentForbiddenAnswers = new Map([
   ['讲义【通用模板】.md', ['答案1', '答案2', '答案3']],
   ['考前复习讲义【示例】.md', ['3+4\\sqrt{2}']],
-  ['多选题【模板】.md', ['ACD']],
+  ['题库/多选题【模板】.md', ['ACD']],
   ['试卷【模板】.md', ['ABC', 'x=3', '最小值 $-4$']],
-  ['解答题【模板】.md', ['y=-2x+1', 'y=-5']],
+  ['题库/解答题【模板】.md', ['y=-2x+1', 'y=-5']],
 ]);
 
 for (const fixture of handouts) {
   test('template question boundaries: ' + fixture.name, () => {
-    const plan = api.mwbHandoutQuestionPlan(readTemplate(fixture.name));
-    assert.equal(plan.groups.length, fixture.questions);
+    const markdown = readTemplate(fixture.name);
+    const plan = api.mwbHandoutQuestionPlan(markdown);
+    // Snapshot counts detect lost fixture blocks. A live template may grow;
+    // its actual top-level H5 headings define the current content boundaries.
+    const expected = isSnapshot(fixture) ? fixture.questions : markdown.split(/\r?\n/).filter(line => /^#####\s+/.test(line)).length;
+    assert.ok(expected > 0, 'handout needs explicit H5 content blocks');
+    assert.equal(plan.groups.length, expected);
     assert.deepEqual(Array.from(plan.warnings), []);
     assert.deepEqual(Array.from(plan.errors), []);
     for (const group of plan.groups) assert.ok(group.end > group.start + 1);
@@ -74,10 +75,13 @@ for (const fixture of materialTemplates) {
       assert.ok(!actualStudent.includes(answer), 'student output retained answer: ' + answer);
     }
 
-    const slots = Array.from(api.mwbTypedSlots(markdown));
-    assert.equal(slots.length, fixture.slots, 'unexpected typed answer count');
+    // Token offsets refer to the parser's normalized LF text. Keep the raw
+    // input above for projection checks, but inject canaries at matching offsets.
+    let marked = markdown.replace(/\r\n?/g, '\n');
+    const slots = Array.from(api.mwbTypedSlots(marked));
+    if (isSnapshot(fixture)) assert.equal(slots.length, fixture.slots, 'unexpected typed answer count');
+    else assert.ok(slots.length > 0 || fixture.group === 'solution', 'objective examples must retain their typed answers');
     const secrets = slots.map((_, i) => 'TEMPLATE_SLOT_SECRET_' + i);
-    let marked = markdown;
     for (let i = slots.length - 1; i >= 0; i--) {
       const slot = slots[i], marker = slot.kind === 'choice' ? '!' : '?';
       marked = marked.slice(0, slot.from) + marker + '{' + secrets[i] + '}' + marked.slice(slot.to);
@@ -112,10 +116,11 @@ for (const fixture of cards) {
     const markdown = readTemplate(fixture.name);
     const frontmatter = markdown.split(/\r?\n---(?:\r?\n|$)/)[0];
     const fields = new Set(Array.from(frontmatter.matchAll(/^([A-Za-z_][\w-]*):/gm), match => match[1]));
-    assert.deepEqual([...fields].sort(), ['id','subject','question_type','difficulty','teaching_tier','source','role','knowledge_nodes','family_id','methods'].sort());
+    assert.deepEqual([...fields].sort(), ['type','id','subject','question_type','difficulty','teaching_tier','source','role','knowledge_nodes','family_id','methods'].sort());
+    assert.match(frontmatter, /^type: ["']?题卡["']?$/m);
     assert.match(frontmatter, new RegExp('^id: [\"\']?' + fixture.id + '[\"\']?$', 'm'));
     assert.match(frontmatter, new RegExp('^question_type: ' + fixture.type + '$', 'm'));
-    assert.doesNotMatch(frontmatter, /^(?:type|level|知识点|来源):/m);
+    assert.doesNotMatch(frontmatter, /^(?:level|知识点|来源):/m);
 
     // Pass no metadata object: this exercises the actual offline YAML fallback.
     // Unknown IDs/role must remain missing, not become fabricated string values.
@@ -142,9 +147,9 @@ for (const fixture of cards) {
 test('template corrected mathematical examples retain their intended answers', () => {
   const fill = readTemplate('填空题【模板】.md');
   assert.deepEqual(Array.from(api.mwbTypedSlots(fill), slot => slot.raw), ['$1$', '$0$']);
-  const choice = readTemplate('多选题【模板】.md');
+  const choice = readTemplate('题库/多选题【模板】.md');
   assert.deepEqual(Array.from(api.mwbTypedSlots(choice), slot => slot.raw), ['ACD']);
-  const constructed = readTemplate('解答题【模板】.md');
+  const constructed = readTemplate('题库/解答题【模板】.md');
   assert.match(constructed, /横坐标为 \$2\$ 的点处的切线平行于 \$x\$ 轴/);
   assert.match(constructed, /y=-2x\+1/);
   assert.match(constructed, /y=-5/);
@@ -158,20 +163,33 @@ test('template documents do not become cards during folder assembly', () => {
   assert.deepEqual(Array.from(result.items, item => item.file.path).sort(), cards.map(fixture => fixture.name).sort());
 });
 
-test('template list has no duplicate pointers and links to existing local files', () => {
-  const readme = readTemplate('README.md');
+test('versioned template inventory, source contracts and local documentation links remain complete', () => {
+  assert.equal(manifest.version, 1);
+  const walk = (directory, prefix = '') => fs.readdirSync(directory, {withFileTypes:true}).flatMap(entry => {
+    const name = prefix + entry.name;
+    return entry.isDirectory() ? walk(path.join(directory, entry.name), name + '/') : [name];
+  });
+  assert.deepEqual(walk(fixtureDir).sort(), ['README.md','manifest.json',...materialTemplates.map(fixture => fixture.name)].sort());
+  assert.equal(new Set(materialTemplates.map(fixture => fs.realpathSync(templatePath(fixture.name)))).size, materialTemplates.length, 'duplicate template pointer');
   for (const fixture of materialTemplates) {
-    assert.ok(readme.includes('](' + fixture.name + ')'), 'unlisted template: ' + fixture.name);
+    const bytes = fs.readFileSync(path.join(fixtureDir, fixture.name));
+    // Git autocrlf may change working-tree line endings on Windows; it must
+    // not turn an unchanged teaching example into a different fixture.
+    assert.equal(crypto.createHash('sha256').update(bytes.toString('utf8').replace(/\r\n/g, '\n')).digest('hex'), fixture.fixtureSha256, 'unreviewed fixture change: ' + fixture.name);
+    if (fixture.sourcePath) assert.match(fixture.sourceSha256, /^[a-f0-9]{64}$/);
+    assert.doesNotMatch(bytes.toString('utf8'), /(?:\/Users\/|[A-Z]:\\Users\\)/, 'fixture contains a private local path');
   }
-  assert.deepEqual(fs.readdirSync(templateDir).sort(), ['README.md', ...materialTemplates.map(fixture => fixture.name)].sort());
-  const instructions = ['README.md'];
-  for (const name of instructions) {
-    const text = readTemplate(name);
-    const links = Array.from(text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g), match => match[1]);
-    assert.ok(links.some(target => path.resolve(templateDir, target.split('#')[0]) === path.join(root, 'docs', 'MARKDOWN_SPEC.md')), 'must link to the authoritative writing spec');
-    for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
-      const target = match[1].split('#')[0];
-      assert.ok(fs.existsSync(path.resolve(templateDir, target)), name + ': broken link ' + target);
+  const directories = externalDir ? [fixtureDir, externalDir] : [fixtureDir];
+  for (const directory of directories) {
+    const readme = fs.readFileSync(path.join(directory, 'README.md'), 'utf8');
+    for (const fixture of materialTemplates.filter(item => directory === fixtureDir || item.sourcePath))
+      assert.ok(readme.includes('](' + fixture.name + ')'), 'unlisted template: ' + fixture.name);
+    const links = Array.from(readme.matchAll(/\[[^\]]+\]\(([^)]+)\)/g), match => match[1]);
+    assert.ok(links.some(target => /(?:^|\/)docs\/MARKDOWN_SPEC\.md(?:#|$)/.test(target)), 'must link to the authoritative writing spec');
+    for (const href of links) {
+      if (/^(?:[a-z]+:|#)/i.test(href)) continue;
+      const target = decodeURIComponent(href.split('#')[0]);
+      assert.ok(fs.existsSync(path.resolve(directory, target)), 'README.md: broken link ' + target);
     }
   }
 });

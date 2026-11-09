@@ -692,15 +692,20 @@ async function mwbRenderColumnMath(element, {signal, deadline:renderDeadline} = 
       if (rendered % 32 === 0)
         await waitStage(() => new Promise(resolve => setTimeout(resolve, 0)), '打印公式批处理');
     }
+    const settleMath = async () => {
+      if (typeof finishRenderMath === 'function')
+        await waitStage(() => { current(formulas[0].node); return finishRenderMath(); }, '打印公式样式');
+      // Start font requests for the newly installed styles before reading ready.
+      element.getBoundingClientRect();
+      const fontsReady = element.ownerDocument.fonts?.ready;
+      if (fontsReady)
+        await waitStage(() => fontsReady, '打印公式字体测量');
+    };
     if (inlineTables.length) {
       // A table's outer box can already be constrained while one of its cells
       // still overflows. Inspect actual painted cells after CHTML styles/fonts
       // settle; short inline cases and ordinary inline formulas stay inline.
-      if (typeof finishRenderMath === 'function')
-        await waitStage(() => { current(inlineTables[0].node); return finishRenderMath(); }, '打印公式样式');
-      const fontsReady = element.ownerDocument.fonts?.ready;
-      if (fontsReady)
-        await waitStage(() => fontsReady, '打印公式字体测量');
+      await settleMath();
       for (const formula of inlineTables) {
         current(formula.node);
         const bounds = contentBounds(formula.node);
@@ -716,6 +721,35 @@ async function mwbRenderColumnMath(element, {signal, deadline:renderDeadline} = 
         current(formula.node); formula.node.replaceChildren(result);
       }
     }
+    // MathJax chooses breaks using internal glyph boxes. Their CSS realization
+    // can be slightly wider even with the correct pixel containerWidth. Retry
+    // only already-wrapped displays that actually overflow after fonts settle;
+    // never shrink fonts or edit TeX, and leave irreducible overflow to the audit.
+    let wrapped = supportsLinebreaks ? measured.filter(formula => formula.node.querySelector('mjx-container[display="true"] mjx-linebox')) : [];
+    for (let pass = 0; wrapped.length && pass < 2; pass++) {
+      await settleMath();
+      const retries = [];
+      for (const formula of wrapped) {
+        current(formula.node);
+        const bounds = contentBounds(formula.node);
+        const width = formula.node.querySelector('mjx-math').getBoundingClientRect().width;
+        const excess = width - bounds.width;
+        if (!(excess > 2.5)) continue;
+        const target = Math.min(formula.metrics.containerWidth, bounds.width) - excess - 2.5;
+        if (target > 0) retries.push({...formula, metrics:{...formula.metrics, containerWidth:target}});
+      }
+      // Read every width before writing; long handouts must not force a full
+      // document reflow between individual formulas during this correction.
+      for (let index = 0; index < retries.length; index++) {
+        const formula = retries[index];
+        const result = await typeset(formula, !formula.display);
+        current(formula.node); formula.node.replaceChildren(result);
+        if ((index + 1) % 32 === 0)
+          await waitStage(() => new Promise(resolve => setTimeout(resolve, 0)), '打印公式批处理');
+      }
+      wrapped = retries;
+    }
+    if (wrapped.length) await settleMath();
     current(formulas[0].node);
     return rendered;
   } catch (error) {
@@ -4133,7 +4167,9 @@ function metadataAudit(meta) {
   const warnings=[];
   const formal = classifyQuestionType(meta?.question_type);
   const legacy = classifyQuestionType(meta?.type);
-  if (meta?.question_type && meta?.type && formal !== legacy) warnings.push('question_type 与 type 题型冲突');
+  // Current templates use type for the document kind (for example 题卡).
+  // Only a recognized legacy question type can conflict with question_type.
+  if (meta?.question_type && legacy !== 'other' && formal !== legacy) warnings.push('question_type 与 type 题型冲突');
   if (meta?.question_type && !['choice','multiple_choice','fill_blank','true_false','short_answer','calculation','proof','comprehensive'].includes(String(meta.question_type).toLowerCase())) {
     warnings.push('question_type 不在正式题型枚举中');
   }
