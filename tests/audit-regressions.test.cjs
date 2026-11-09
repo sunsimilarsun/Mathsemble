@@ -88,11 +88,12 @@ test('F06 indented lines inside display math remain mathematics, not literal cod
 test('multiple bundled editions use one projection implementation, not divergent copies',()=>{
  assert.equal((js.match(/return mwbProjectCallouts\(source, mode, options\)\.markdown;/g)||[]).length,4);
  assert.equal((js.match(/return mwbStudentSpacePlan\(markdown, options\);/g)||[]).length,2);
- assert.equal((js.match(/const measurement = mwbTeacherMeasurementPlan/g)||[]).length,3);
+ for(const route of ['measureDocumentSolutions','measureSolutions','measureExamSolutions'])
+  assert.match(a.PreviewModal.prototype[route].toString(),/\bmwbTeacherMeasurementPlan\(/,route+' must use the shared measurement projection');
 });
 
 test('real Chromium: nested mapping, solution measurement isolation, title refresh',async t=>{
- const chrome=[process.env.CHROME_PATH,'/usr/bin/chromium','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(p=>p&&fs.existsSync(p));
+ const chrome=[process.env.CHROME_PATH,'/usr/bin/chromium','/usr/bin/google-chrome','/usr/bin/google-chrome-stable','/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(p=>p&&fs.existsSync(p));
  if(!chrome){if(process.env.CI)throw Error('Chrome required in CI');t.skip('Set CHROME_PATH');return;}
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'mathsemble-audit-'));
  const css=fs.readFileSync(path.resolve(__dirname,'../styles.css'),'utf8');
@@ -133,7 +134,10 @@ async function browserCases(){
    const host=mount.createDiv({cls:'mwb-modal'}),paper=host.createDiv({cls:'mwb-page'}),rendered=paper.createDiv({cls:'mwb-typography mwb-print-document'});
    const render=async(_app,src,target)=>{target.innerHTML=box('answer','<p>正确解答</p>')+(src.includes('OVERSIZE')?box('solution','<mjx-container style="display:block;width:1000px;height:20px">broken</mjx-container>'):'');};
    mockObsidian.MarkdownRenderer.render=render;
-   const proto=a.PreviewModal.prototype,m={page:paper,rendered,app:{},plugin:{},file:{path:'sample.md'},markdown:md,generation:1,solutionOptions:{solutionSpaces:enabled,showSolution:false},status:{setText(){}},measurePage:null,removeMeasurement:proto.removeMeasurement,addRenderWarnings(){},validateExamContexts:proto.validateExamContexts,renderDocumentSource:async(src,target)=>render(null,src,target)};
+   // Use the real modal so staging ownership, measurement creation and render
+   // guards remain part of the regression instead of a stale partial mock.
+   const proto=a.PreviewModal.prototype,m=new a.PreviewModal({}, {}, {path:'sample.md',basename:'sample',extension:'md'}, md);
+   Object.assign(m,{page:paper,rendered,generation:1,solutionOptions:{solutionSpaces:enabled,showSolution:false},status:{setText(){}}});
    let value,error;try{value=await proto[route].call(m,...(route==='measureExamSolutions'?[[{file:{path:'sample.md'},markdown:md}]]:route==='measureDocumentSolutions'?[enabled?2:1,1]:[enabled?2:1]));}catch(e){error=e.message;}
    if(enabled)ok(error&&/版心|公式/.test(error),'enabled bad solution should be diagnosed');
    else ok(!error&&value&&(value instanceof Map?value.get('sample.md')[0]:value[0])>0,error||'measurement missing');

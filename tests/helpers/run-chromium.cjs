@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs');
 const {spawn}=require('node:child_process');
-async function runChromeDocument(executable, input, profile){
+async function runChromeDocument(executable, input, profile, {url} = {}){
  const proc=spawn(executable,['--headless','--no-sandbox','--disable-dev-shm-usage',
   '--disable-background-networking','--disable-extensions','--disable-component-update',
   '--disable-features=Translate,MediaRouter,OptimizationHints','--no-first-run','--no-default-browser-check',
@@ -33,7 +33,10 @@ async function runChromeDocument(executable, input, profile){
   const {targetId}=await send('Target.createTarget',{url:'about:blank'});
   const {sessionId}=await send('Target.attachToTarget',{targetId,flatten:true});
   const {frameTree}=await send('Page.getFrameTree',{},sessionId);
-  await send('Page.setDocumentContent',{frameId:frameTree.frame.id,html:fs.readFileSync(input,'utf8')},sessionId);
+  // Real renderer bundles may start same-origin workers. Existing self-contained
+  // fixtures keep their about:blank behavior; a served fixture can opt into navigation.
+  if(url) await send('Page.navigate',{url},sessionId);
+  else await send('Page.setDocumentContent',{frameId:frameTree.frame.id,html:fs.readFileSync(input,'utf8')},sessionId);
   const deadline=Date.now()+25000;
   while(Date.now()<deadline){
    const response=await send('Runtime.evaluate',{expression:"document.getElementById('mwb-test-results')?.textContent",returnByValue:true},sessionId);

@@ -1,6 +1,6 @@
 # Mathsemble 发布指引
 
-当前源码为 0.1.15 开发版。发布历史见 [变更索引](CHANGELOG.md)；本轮本地优化不执行发布或社区提交。
+当前版本为 0.2.3，以用户验收通过的外观 v8 为基线，发布代码与候选 v4 一致。变更由 [PR #21](https://github.com/sunsimilarsun/Mathsemble/pull/21) 集成，本地及 Linux／Windows 检查见[验证记录](TESTING_RELEASE_0.2.3.md)；安装文件由精确标签 `0.2.3` 的发布工作流生成，下载见 [Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.3)。社区目录提交与 GitHub Release 分开，本轮不提交社区目录。
 
 ## 本地与 CI 门槛
 
@@ -20,4 +20,4 @@
 
 社区提交应按 [Obsidian 官方发布指引](https://docs.obsidian.md/Plugins/Releasing/Submit%20your%20plugin)核对当前步骤。只有实际审核结果能确认上架；本地构建通过不代表社区审核通过。
 
-插件 ID 保持 `math-teaching-workbench`，桌面限定保持 `isDesktopOnly: true`。打印可能请求远程图片／字体并在库外临时写入 HTML，详见 [隐私说明](PRIVACY.md)。
+插件 ID 保持 `mathsemble`，桌面限定保持 `isDesktopOnly: true`。打印可能请求远程图片／字体并在库外临时写入 HTML，详见 [隐私说明](PRIVACY.md)。

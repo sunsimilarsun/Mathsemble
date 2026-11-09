@@ -43,8 +43,8 @@ test('quoted null-like tokens remain literal strings', () => {
 });
 
 test('null required values are audited as missing without inventing metadata', () => {
-  const required = ['id', 'chapter_id', 'section_id', 'question_type', 'role', 'teaching_tier', 'difficulty', 'knowledge_nodes'];
-  const nullable = ['family_id', 'parent_id', 'question_group_id', 'methods', 'source', 'assets'];
+  const required = ['id', 'subject', 'question_type', 'role', 'teaching_tier', 'difficulty', 'source'];
+  const nullable = ['family_id', 'knowledge_nodes', 'methods'];
   const fields = [...required, ...nullable].map(key => `${key}: null`).join('\n');
   const meta = fromFields(fields);
   const audit = metadataAudit(meta);
@@ -56,10 +56,10 @@ test('null required values are audited as missing without inventing metadata', (
   for (const key of [...required, ...nullable]) assert.ok(absent.missing.includes(key), key);
 });
 
-test('a variant with a null parent remains an unresolved relationship', () => {
+test('a variant does not require a parent field in the ten-field contract', () => {
   const meta = fromFields('role: variant\nparent_id: null');
   assert.equal(meta.parent_id, null);
-  assert.ok(metadataAudit(meta).warnings.includes('变式缺少 parent_id，需人工确认母题关系'));
+  assert.equal(metadataAudit(meta).warnings.some(x => x.includes('parent_id')), false);
   assert.equal(fromFields('parent_id: "null"').parent_id, 'null');
 });
 
@@ -89,4 +89,15 @@ test('host metadata remains authoritative over the narrow offline fallback', () 
   assert.equal(metadataOf(record), metadata);
   assert.equal(metadata.parent_id, 'null');
   assert.deepEqual(metadata.knowledge_nodes, ['K1']);
+});
+
+test('document-kind type does not conflict with question_type while legacy question-type conflicts remain visible', () => {
+  for (const questionType of ['choice','multiple_choice','fill_blank','true_false','short_answer']) {
+    const audit = metadataAudit(fromFields(`type: 题卡\nquestion_type: ${questionType}`));
+    assert.deepEqual(Array.from(audit.warnings), []);
+  }
+  assert.deepEqual(Array.from(metadataAudit(fromFields('type: 多选题\nquestion_type: multiple_choice')).warnings), []);
+  assert.deepEqual(Array.from(metadataAudit(fromFields('type: fill_blank\nquestion_type: choice')).warnings),
+    ['question_type 与 type 题型冲突']);
+  assert.ok(metadataAudit(fromFields('type: 题卡\nquestion_type: unknown')).warnings.includes('question_type 不在正式题型枚举中'));
 });

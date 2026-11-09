@@ -6,21 +6,31 @@ const stub=`const module={exports:{}};const stub={Plugin:class{},Modal:class{con
 const load=stub+'\n'+source+'\nglobalThis.h5={mwbHandoutQuestionPlan,mwbApplyHandoutQuestions,mwbQuestionTitle,mwbQuestionHeadingEdit,mwbWrapSingleQuestion,handoutPlan,studentSpacePlan,mwbTeacherMeasurementPlan,injectSpaceNodes,exportHtml,PreviewModal,paginate:paginatePreviewDocument};globalThis.mockObsidian=stub;';
 const ctx={console,Buffer};vm.runInNewContext(load,ctx);const a=ctx.h5;
 const named=['例1','例一','例题１','变式1','变式一','练习1','练习题2','检测1','检测题3','题1','第1题','例1 二次函数','【例1】 标题'];
-test('strict H5: explicit vocabulary, fifth-level only, H6 subheads remain inside',()=>{
- for(const title of named){
+// 8d3cea5 generalized the original question-only policy to every top-level H5.
+// Labels still support legacy diagnostics; they no longer decide block scope.
+test('strict H5: every fifth-level title starts a block, while H6 stays inside',()=>{
+ for(const title of named)assert.equal(a.mwbQuestionTitle(title),true,'legacy diagnostic vocabulary: '+title);
+ for(const title of ['知识点：单调性','概念辨析','例1已知函数'])assert.equal(a.mwbQuestionTitle(title),false,'ordinary titles must not become legacy question labels');
+ for(const title of [...named,'知识点：单调性','概念辨析','例1已知函数']){
   const plan=a.mwbHandoutQuestionPlan('##### '+title+'\n\n题干\n\n###### 第（1）问\n\n答案\n\n##### 方法总结\n内容');
-  assert.equal(plan.groups.length,1,title);assert.equal(plan.groups[0].end,8,title);
+  assert.deepEqual(Array.from(plan.groups,g=>g.title),[title,'方法总结'],title);
+  assert.equal(plan.groups[0].end,8,title);assert.equal(plan.groups[1].start,8,title);
+  assert.equal(plan.groups[1].end,10,title);assert.equal(plan.headings.length,2,'H6 must remain inside the first block');
  }
  for(const depth of [1,2,3,4,6]){
   const plan=a.mwbHandoutQuestionPlan('#'.repeat(depth)+' 例1\n正文');
-  assert.equal(plan.groups.length,0);assert.ok(plan.warnings.length);
+  assert.equal(plan.groups.length,0,'only H5 protects a block');
+  assert.equal(plan.warnings.length,0,'valid H1-H4/H6 are not guessed to be mistyped questions');
+  assert.equal(plan.candidates[0].title,'例1','explicit heading conversion remains available');
  }
 });
 test('strict H5: interleaved subquestion answers, rules, and plain text never split a question',()=>{
  const src='##### 例1\n共同条件\n\n（1）求值\n\n> [!answer]- 答案1\n> A1\n\n（2）证明\n\n> [!answer]- 答案2\n> A2\n\n---\n\n补充条件\n\n###### 解法二\n\n> [!solution]- 思路\n> S\n\n##### 方法总结\n一般正文\n\n##### 变式1\n另一个题目';
  const plan=a.mwbHandoutQuestionPlan(src);
- assert.equal(plan.groups.length,2);assert.equal(plan.groups[0].answerCount,2);assert.equal(plan.groups[0].solutionCount,1);
- assert.equal(plan.groups[0].end,22);assert.equal(plan.groups[1].start,25);
+ assert.deepEqual(Array.from(plan.groups,g=>g.title),['例1','方法总结','变式1']);
+ assert.equal(plan.groups[0].answerCount,2);assert.equal(plan.groups[0].solutionCount,1);
+ assert.equal(plan.groups[0].end,22);assert.equal(plan.groups[1].start,22);assert.equal(plan.groups[1].end,25);assert.equal(plan.groups[2].start,25);
+ assert.equal(plan.groups[1].answerCount,0);assert.equal(plan.groups[1].solutionCount,0,'summary cannot inherit the preceding answers');
  assert.equal(plan.markdown.split('\n').length,src.split('\n').length,'markers cannot change Callout source line IDs');
  for(const solutionSpaces of [false,true]){
   const off=a.studentSpacePlan(src,{solutionSpaces}),tagged=a.studentSpacePlan(plan.markdown,{solutionSpaces});
@@ -31,20 +41,26 @@ test('strict H5: fenced and indented code, quotes, comments, HTML and math do no
  const invalid=['```md\n##### 例1\n```','~~~~\n##### 例1\n~~~~','    ##### 例1','> ##### 例1','> [!note]\n> ##### 例1','<!--\n##### 例1\n-->','<pre>\n##### 例1\n</pre>','<div>\n##### 例1\n</div>','$$\n##### 例1\n$$','\\[\n##### 例1\n\\]','---\nname: t\n##### 例1\n---'];
  for(const text of invalid){const p=a.mwbHandoutQuestionPlan(text+'\n\n##### 题2\n真实题干');assert.equal(p.groups.length,1,text);assert.equal(p.groups[0].title,'题2');}
 });
-test('strict H5: non-question H1-H5 and setext close, but empty titles are errors',()=>{
+test('strict H5: H1-H5 and setext close a block, H5 starts the next, and empty bodies are errors',()=>{
  for(let depth=1;depth<=5;depth++){
   const p=a.mwbHandoutQuestionPlan('##### 例1\n题干\n\n'+'#'.repeat(depth)+' 总结\n正文');
   assert.equal(p.groups[0].end,3);
+  assert.equal(p.groups.length,depth===5?2:1);
+  if(depth===5)assert.equal(p.groups[1].title,'总结');
  }
  assert.equal(a.mwbHandoutQuestionPlan('##### 例1\n题干\n\n总结\n====\n说明').groups[0].end,3);
  assert.equal(a.mwbHandoutQuestionPlan('##### 例1\n\n##### 例2\n题干').errors.length,1);
  assert.equal(a.mwbHandoutQuestionPlan('##### 例1\n<!--\n备注\n-->').errors.length,1);
+ const untitled=a.mwbHandoutQuestionPlan('#####\n正文');
+ assert.equal(untitled.groups.length,1);assert.equal(untitled.errors.length,0);
+ assert.equal(untitled.warnings[0].code,'empty-block-title');
 });
 test('strict H5: legacy labels/orphan answers warn; repeated labels have distinct source IDs',()=>{
  const p=a.mwbHandoutQuestionPlan('**例1**\n题干\n\n> [!answer]- 解\n> a\n\n##### 例1\n正文\n\n##### 例1\n正文');
  assert.equal(p.groups.length,2);assert.notEqual(p.groups[0].id,p.groups[1].id);
  assert.ok(p.warnings.some(w=>w.code==='legacy-label'));assert.ok(p.warnings.some(w=>w.code==='orphan-answer'));
  assert.equal(a.mwbQuestionHeadingEdit('**例1** 二次函数',1),'##### 例1 二次函数');
+ assert.equal(a.mwbQuestionHeadingEdit('方法总结',1),'##### 方法总结');
  assert.equal(a.mwbQuestionHeadingEdit('```\n例1\n```',2),null);
  assert.equal(a.mwbQuestionHeadingEdit('> 例1',1),null);
 });
@@ -155,10 +171,13 @@ async function browserCases(fixtures,math){
   for(const header of plan.headings){const h=document.createElement('h'+header.level);h.innerHTML=`<span data-mwb-heading-token="${header.token}"></span>${header.title}`;root.appendChild(h);const b=document.createElement('p');b.textContent='body';root.appendChild(b);}
   return root;
  };
- await check('source mapping makes exactly two source-ID questions and excludes standalone summary',()=>{
+ await check('source mapping gives the standalone summary its own source-ID block',()=>{
   const root=raw();a.mwbApplyHandoutQuestions(root,plan,'notes.md');
-  ok(root.querySelectorAll('.mwb-handout-question').length===2,'wrong wrappers');
-  ok(root.children[1].tagName==='H5'&&root.children[1].textContent==='方法总结','summary swallowed');
+  const blocks=[...root.querySelectorAll(':scope > .mwb-handout-question')];
+  ok(blocks.length===3,'wrong wrappers');
+  ok(JSON.stringify(blocks.map(block=>block.querySelector('h5').textContent))===JSON.stringify(['例1','方法总结','变式1']),'block order or summary boundary changed');
+  ok(new Set(blocks.map(block=>block.getAttribute('data-mwb-question-id'))).size===3,'source IDs were reused');
+  ok(!blocks[0].textContent.includes('方法总结')&&!blocks[1].textContent.includes('变式1'),'adjacent blocks merged');
   ok(!root.querySelector('[data-mwb-heading-token]'),'internal marker retained');
  });
  await check('missing marker aborts before content is moved',()=>{
@@ -176,7 +195,9 @@ async function browserCases(fixtures,math){
   const plan=a.mwbHandoutQuestionPlan(fixture.source),projection=a.handoutPlan(plan.markdown,fixture.mode,fixture.options||{});
   ok(projection.markdown===fixture.projected,'fixture is stale');
   const root=document.createElement('div');root.innerHTML=fixture.html;a.mwbApplyHandoutQuestions(root,plan,'fixture.md');
-  ok(root.querySelectorAll('.mwb-handout-question').length===fixture.count,'CommonMark question count');
+  const blocks=[...root.querySelectorAll('.mwb-handout-question')];
+  ok(blocks.length===fixture.count,'CommonMark block count');
+  ok(JSON.stringify(blocks.map(block=>block.querySelector('h5').textContent.trim()))===JSON.stringify(fixture.blockTitles),'CommonMark block titles/order changed');
   if(fixture.mode==='student')ok(!root.textContent.includes('SECRET'),'student answer leaked');
   if(fixture.ref)ok(root.querySelector('a')?.getAttribute('href')===fixture.ref,'document-wide reference lost');
  });
@@ -201,8 +222,9 @@ async function browserCases(fixtures,math){
   mockObsidian.MarkdownRenderer.render=async(_app,src,target)=>{ok(src===fixture.projected,'whole-document source changed');target.innerHTML=fixture.html;};
   try {
     await modal.renderMode('teacher');
-    ok(modal.ready,modal.lastRenderError||'not ready');ok(modal.questionPlan.groups.length===2,'wrong production boundary count');
-    ok(modal.previewPaginationReport?.strictQuestionPages.length===2,modal.status.textContent);
+    ok(modal.ready,modal.lastRenderError||'not ready');ok(modal.questionPlan.groups.length===3,'wrong production boundary count');
+    ok(modal.previewPaginationReport?.strictQuestionPages.length===3,modal.status.textContent);
+    ok(modal.questionPlan.groups[1].title==='方法总结'&&modal.previewPaginationReport.strictQuestionPages[1].label==='方法总结','summary lost its independent protected range');
     ok(modal.rendered.querySelectorAll('[data-mwb-heading-token]').length===0,'markers were not removed');
     modal.showQuestionBounds=true;modal.updateQuestionBounds();
     ok(modal.previewPages.classList.contains('mwb-show-question-bounds'),'range overlay not enabled');

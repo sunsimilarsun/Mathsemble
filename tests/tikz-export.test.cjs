@@ -7,13 +7,20 @@ const os = require('node:os');
 const vm = require('node:vm');
 const {runChromeDocument} = require('./helpers/run-chromium.cjs');
 
-// Exercise the production resource module without booting an Obsidian host.
+// Exercise the production resource module and its cancellation/deadline
+// dependencies without booting an Obsidian host. These guards live outside
+// the resource IIFE; omitting them prevented the font assertions from running.
 const source = fs.readFileSync(path.resolve(__dirname, '../src/plugin.js'), 'utf8');
 const start = source.indexOf('const { exportHtml } = (() => { const module = {exports:{}};');
-const end = source.indexOf('const { typographyCss } =', start);
+const moduleEnd = 'return module.exports; })();';
+const end = source.indexOf(moduleEnd, start) + moduleEnd.length;
+const guardsStart = source.indexOf('function mwbExportAbortError(');
+const guardsEnd = source.indexOf('function mwbCreateRenderOwner(', guardsStart);
 assert.ok(start >= 0 && end > start, 'production export resource module exists');
-const load = source.slice(start, end).replace('const { exportHtml } =', 'globalThis.resources =');
-const context = {Buffer, URL};
+assert.ok(guardsStart >= 0 && guardsEnd > guardsStart, 'production export guards exist');
+const load = source.slice(guardsStart, guardsEnd) + '\n' +
+  source.slice(start, end).replace('const { exportHtml } =', 'globalThis.resources =');
+const context = {Buffer, URL, performance, AbortController, setTimeout, clearTimeout};
 vm.runInNewContext(load, context);
 
 test('SVG font resources retain data URIs and inline relative font URLs once', async () => {
@@ -95,7 +102,8 @@ function rectangleFont() {
 }
 
 test('real Chromium: TikZ SVG labels keep embedded fonts and glyphs in isolated export', async t => {
-  const chrome=[process.env.CHROME_PATH,'/usr/bin/chromium','/usr/bin/google-chrome','/usr/bin/google-chrome-stable'].find(p=>p&&fs.existsSync(p));
+  const chrome=[process.env.CHROME_PATH,'/usr/bin/chromium','/usr/bin/google-chrome','/usr/bin/google-chrome-stable',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(p=>p&&fs.existsSync(p));
   if(!chrome){if(process.env.CI)throw Error('Chrome required in CI');t.skip('Set CHROME_PATH');return;}
   const temp=fs.mkdtempSync(path.join(os.tmpdir(),'mathsemble-tikz-fonts-'));
   const font=rectangleFont();

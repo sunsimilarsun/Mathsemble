@@ -12,7 +12,7 @@ else {
   if(!licenseText.startsWith('MIT License\n') || !licenseText.includes('Copyright (c) 2026 sunsimilarsun') || !licenseText.includes('Permission is hereby granted')) failures.push('LICENSE does not match the approved MIT grant');
 }
 if(pkg.license !== 'MIT') failures.push('package.json must declare the approved MIT license');
-if(manifest.id!=='math-teaching-workbench'||manifest.version!==pkg.version) failures.push('Manifest/package identity mismatch');
+if(manifest.id!=='mathsemble'||manifest.version!==pkg.version) failures.push('Manifest/package identity mismatch');
 if(!readme.includes('Network access')||!readme.includes('outside the vault')) failures.push('README disclosure incomplete');
 if(failures.length){console.error('Publishing blockers:\n'+failures.map(x=>' - '+x).join('\n'));process.exit(1);}
 console.log('Local prerequisites for GitHub Release are present. Community directory approval still requires an external scan.');
