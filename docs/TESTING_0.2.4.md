@@ -57,10 +57,24 @@
 
 最终三套定向 Chromium 测试 **14/14 通过**，包含 11 组新增交互／几何子测试。完整 `prepublish-check` **486 项通过，0 失败、0 跳过**；构建、源码／生成产物一致性、打印 CSS 隔离与发布静态检查通过。独立只读复核无未解决阻断。`src/plugin.js` 与 `main.js` SHA-256 均为 `86aacca495b1e9d8ed30de6b083c871406626d88bf1e81d7530e940bfa2dddca`。
 
+## 候选 v4：卡片自动预览
+
+结果与候选卡片在进入可见区域时自动渲染正文，点击标题仍打开完整预览。卡片按可用宽度并排排列，限制摘要高度并压缩工具／元信息间距，增加同屏内容；完整 Markdown 及公式源码不截断，源文件不改写。
+
+自动预览复用现有 Markdown 渲染与原文件路径。普通结果和候选分别管理渲染任务，限制同时进行的任务数；筛选、重抽、重绘或关闭会取消过期任务并释放所属组件。局部失败保留完整预览和加入操作。
+
+新增 `tests/assembly-inline-preview.test.cjs` 的 8 组回归，覆盖点击前自动渲染、完整公式／围栏／图片输入及原文件路径、取消信号、跨重绘并发上限、候选与结果独立清理、失败恢复、关闭及无观察器回退。原三套 UI 测试无需改动，四套定向 Chromium 测试 **23/23 通过**。
+
+在提供主题变量和控件尺寸的测试夹具中，1400×860 工作区实测为 3 列、同屏 6 张完整卡片、每张高 207px；420×600 为单列，分页按钮可滚动到。此为功能与几何证据，实际主题和正文不同会影响显示数量，不代表真实 Obsidian 视觉验收。
+
+完整 `prepublish-check` **495 项通过，0 失败、0 跳过**；独立只读复核通过。`src/plugin.js` 与 `main.js` SHA-256 均为 `eced17c1d7f424a38322429fbbe6881e9412929594e29aede6932656d690c2d3`。打印 CSS 保持不变；组题入口仅增加自动预览取消信号接线，既有学生／教师分页和导出回归全部保留。
+
 ## 证据边界与产物
 
 日志保存在工作树上一层 `features-20261109/`：首次候选为 `0.2.4-prepublish.log`，候选 v2 首轮为 `0.2.4-audit-fixes-prepublish.log`，通过的完整检查为 `0.2.4-audit-fixes-verified.log`；候选 v3 为 `0.2.4-ui-prepublish.log`，定向检查为 `0.2.4-ui-functional.log`。远程 Ubuntu／Windows 检查结果以该分支 PR 的精确提交状态为准，本页的测试总数是对应候选的本地结果。
 
-候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v3 摘要见 `release/SHA256SUMS_0.2.4-candidate-v3.txt`，首次及 v2 候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
+候选 v4 日志为 `0.2.4-inline-preview-prepublish.log` 与 `0.2.4-inline-preview-functional.log`。
+
+候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v4 摘要见 `release/SHA256SUMS_0.2.4-candidate-v4.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
 
 0.2.4 新功能的真实 Obsidian 操作、视觉和原生 PDF 验收：**NOT_RUN，由用户负责**。本轮未修改正式 Markdown 库或本机已安装插件，未创建正式 0.2.4 标签或 Release。既有 0.2.3 用户验收仅作为基线，不代表新功能已验收。

@@ -5965,6 +5965,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.selectionSourceCheck = null;
       this.activePane = 'library';
       this.entryEditOpen = new Set();
+      this.inlinePreviewGroups = new Map();
+      this.inlinePreviewQueue = [];
+      this.inlinePreviewActive = 0;
     }
     getViewType() { return VIEW_TYPE; }
     getDisplayText() { return this.plan?.title || '知识与组题'; }
@@ -6050,6 +6053,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     setStatus(message, error = false) {
       if (this.closed || !this.statusEl) return;
       this.statusEl.textContent = message;
+      this.statusEl.title = message;
       this.statusEl.classList.toggle('is-error', error);
     }
     updateSummary() {
@@ -6110,6 +6114,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
       this.scanGeneration++; this.previewGeneration++;
       this.releasePreview();
+      this.releaseInlinePreviews();
       this.contentEl.replaceChildren();
     }
     releasePreview() {
@@ -6119,8 +6124,95 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       this.previewOwner = null;
     }
+    releaseInlineOwner(record) {
+      const owner=record.owner;record.owner=null;
+      if(owner&&owner!==this){
+        if(this.removeChild)this.removeChild(owner);
+        else owner.unload?.();
+      }
+    }
+    releaseInlinePreviews(name) {
+      for(const [key,group] of this.inlinePreviewGroups){
+        if(name&&key!==name)continue;
+        group.active=false;group.observer?.disconnect();
+        for(const record of group.records){record.controller?.abort();this.releaseInlineOwner(record);}
+        group.records.clear();this.inlinePreviewGroups.delete(key);
+      }
+      this.inlinePreviewQueue=this.inlinePreviewQueue.filter(record=>record.group.active);
+    }
+    beginInlinePreviews(name) {
+      this.releaseInlinePreviews(name);
+      const group={name,active:true,records:new Set(),observer:null};
+      this.inlinePreviewGroups.set(name,group);
+      const Observer=this.contentEl.ownerDocument.defaultView?.IntersectionObserver;
+      if(Observer)group.observer=new Observer(entries=>{
+        if(!group.active||this.closed)return;
+        for(const entry of entries){
+          const record=[...group.records].find(value=>value.node===entry.target);
+          if(!record||record.state!=='pending')continue;
+          if(entry.isIntersecting){
+            if(!record.queued){record.queued=true;this.inlinePreviewQueue.push(record);}
+          }else if(record.queued){
+            record.queued=false;this.inlinePreviewQueue=this.inlinePreviewQueue.filter(value=>value!==record);
+          }
+        }
+        this.pumpInlinePreviews();
+      },{root:this.center,rootMargin:'120px 0px'});
+      return group;
+    }
+    addInlinePreview(group,row,item) {
+      const node=this.el('div',row,'mwb-assembly-snippet');
+      node.dataset.previewState='pending';node.setAttribute('inert','');
+      node.setAttribute('aria-label','内容摘要，点击标题查看完整内容');
+      const body=this.el('div',node,'mwb-typography mwb-assembly-snippet-body','正在准备预览…');
+      const record={group,node,body,item,state:'pending',queued:false,owner:null,controller:null};
+      group.records.add(record);
+      if(group.observer)group.observer.observe(node);
+      else {record.queued=true;this.inlinePreviewQueue.push(record);queueMicrotask(()=>this.pumpInlinePreviews());}
+    }
+    pumpInlinePreviews() {
+      while(!this.closed&&this.inlinePreviewActive<2&&this.inlinePreviewQueue.length){
+        const record=this.inlinePreviewQueue.shift();record.queued=false;
+        if(!record.group.active||record.state!=='pending'||!record.node.isConnected)continue;
+        // A queued card may have been hidden by a pane or full-preview switch.
+        // Keep observing it so it can start when the list becomes visible again.
+        if(record.group.observer&&!record.node.getClientRects().length)continue;
+        record.group.observer?.unobserve(record.node);
+        record.state='rendering';record.node.dataset.previewState='rendering';
+        this.inlinePreviewActive++;
+        void this.renderInlinePreview(record);
+      }
+    }
+    async renderInlinePreview(record) {
+      const current=()=>!this.closed&&record.group.active&&record.node.isConnected;
+      try {
+        const Controller=this.contentEl.ownerDocument.defaultView?.AbortController;
+        record.controller=Controller?new Controller():null;
+        if(Component){record.owner=new Component();if(this.addChild)this.addChild(record.owner);else record.owner.load?.();}
+        else record.owner=this;
+        record.body.replaceChildren();
+        // Pass the complete Markdown to the normal renderer. CSS bounds only
+        // this summary; cutting source text could split a formula or embed.
+        const markdown=plainBody(record.item.markdown);
+        if(renderMarkdown)await renderMarkdown(markdown,record.body,record.item.path,record.owner,record.controller?.signal);
+        else record.body.textContent=markdown;
+        if(current()){record.state='ready';record.node.dataset.previewState='ready';}
+      }catch(error){
+        if(current()&&!record.controller?.signal.aborted){
+          record.state='error';record.node.dataset.previewState='error';
+          record.body.textContent='暂不能显示摘要，点击标题查看完整内容。';
+        }
+      }finally{
+        if(!current())this.releaseInlineOwner(record);
+        // Old jobs still occupy their slot until settled, even after a filter
+        // rebuild. Never reset this count when a preview group is discarded.
+        this.inlinePreviewActive--;
+        this.pumpInlinePreviews();
+      }
+    }
     render() {
       this.releasePreview();
+      this.releaseInlinePreviews();
       this.previewGeneration++;
       this.selectedItem=null;
       this.previewReturn=null;
@@ -6129,7 +6221,6 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const header = this.el('header', this.root, 'mwb-assembly-header');
       const identity=this.el('div',header,'mwb-assembly-identity');
       this.el('h2', identity, '', '知识与组题');
-      this.el('p',identity,'mwb-assembly-muted','筛选内容，编排成一份讲义');
       const overview=this.el('div',header,'mwb-assembly-overview');
       this.summaryEl = this.el('div', overview, 'mwb-assembly-summary');
       this.saveStateEl=this.el('span',overview,'mwb-assembly-save-state');
@@ -6273,7 +6364,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderCenter() {
       this.center.replaceChildren();
-      this.panelHeader(this.center,'02','选题与预览','先查看内容，再加入编排');
+      this.panelHeader(this.center,'02','选题与预览','列表直接预览，点击标题查看全文');
       const tools=this.el('div',this.center,'mwb-assembly-search');
       this.tabs=this.el('div',tools,'mwb-assembly-tabs');
       for(const [kind,label] of [['question','题目'],['knowledge','知识']]) {
@@ -6325,6 +6416,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(this.selection && !this.selectionIsCurrent()) this.clearSelection('筛选或内容已变化，请重新生成候选。');
       this.renderActiveFilters();
       this.renderSelection();
+      const previews=this.beginInlinePreviews('results');
       this.results.replaceChildren();
       const items=core.filterItems(this.index,this.filters);
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
@@ -6338,13 +6430,17 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       for(const item of items.slice(0,this.limit)) {
         const row=this.el('article',this.results,'mwb-assembly-result');
         row.dataset.sourcePath=item.path;row.dataset.sourceKind=item.kind;
-        const detail=this.button(row,item.title,()=>this.showItem(item,'results'),'mwb-assembly-result-title');detail.title=item.path;
+        const open=()=>this.showItem(item,'results');
+        const detail=this.button(row,item.title,open,'mwb-assembly-result-title');detail.title=item.title+'\n'+item.path+'\n点击查看完整内容';
         const info=[item.subject,item.kind==='question'?(typeNames[item.questionType]||item.questionType):'整篇知识',item.difficulty?`难度 ${item.difficulty}`:'',item.tier,item.role].filter(Boolean);
         const badges=this.el('div',row,'mwb-assembly-badges');
         for(const text of info)this.el('span',badges,'mwb-assembly-badge',text);
         const related=this.relatedKnowledge(item);
-        if(related.length)this.el('div',row,'mwb-assembly-muted','关联知识：'+related.map(node=>node.title).join('、'));
-        this.el('div',row,'mwb-assembly-result-path',item.path);
+        if(related.length){const links=this.el('div',row,'mwb-assembly-muted mwb-assembly-card-related','关联知识：'+related.map(node=>node.title).join('、'));links.title=links.textContent;}
+        this.addInlinePreview(previews,row,item);
+        const footer=this.el('div',row,'mwb-assembly-card-footer');
+        this.el('div',footer,'mwb-assembly-result-path',item.path).title=item.path;
+        this.button(footer,'查看全文',open,'mwb-assembly-card-open');
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
@@ -6380,6 +6476,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderSelection() {
       if(!this.selectionPanel) return;
+      this.releaseInlinePreviews('candidates');
       this.selectionPanel.replaceChildren();
       this.selectionPanel.hidden=this.filters.kind!=='question';
       this.syncCandidateLayout();
@@ -6397,6 +6494,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         // applied even if an old button is held by a delayed click handler.
         if(this.selection) {
           this.selection=null;this.selectionNotice='抽题数量已变化，请重新生成候选。';
+          this.releaseInlinePreviews('candidates');
           this.selectionRows?.replaceChildren();
           if(this.selectionSummary)this.selectionSummary.textContent=this.selectionNotice;
           if(this.applySelectionButton){this.applySelectionButton.disabled=true;this.applySelectionButton.hidden=true;}
@@ -6418,16 +6516,21 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.selectionSummary.textContent=`目标 ${selection.requested} 道，当前候选 ${selection.items.length} 道${short}。核对后点击“加入编排”。`;
       } else this.selectionSummary.textContent=this.selectionNotice||'自动排除已加入的题目；核对候选后再加入编排。';
       this.selectionRows=this.el('div',this.selectionPanel,'mwb-assembly-selection-results');
+      const previews=this.beginInlinePreviews('candidates');
       for(const [position,item] of (selection?.items||[]).entries()) {
         const row=this.el('article',this.selectionRows,'mwb-assembly-selection-row');
         row.dataset.sourcePath=item.path;row.dataset.sourceKind=item.kind;
-        const preview=this.button(row,`${position+1}. ${item.title}`,()=>{
+        const open=()=>{
           if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
           return this.showItem(item,'candidates');
-        },'mwb-assembly-result-title');
-        preview.title=item.path;
+        };
+        const preview=this.button(row,`${position+1}. ${item.title}`,open,'mwb-assembly-result-title');
+        preview.title=item.title+'\n'+item.path+'\n点击查看完整内容';
         this.el('div',row,'mwb-assembly-muted',[typeNames[item.questionType]||item.questionType,item.tier,item.difficulty?`难度 ${item.difficulty}`:''].filter(Boolean).join(' · '));
-        this.el('div',row,'mwb-assembly-result-path',item.path);
+        this.addInlinePreview(previews,row,item);
+        const footer=this.el('div',row,'mwb-assembly-card-footer');
+        this.el('div',footer,'mwb-assembly-result-path',item.path).title=item.path;
+        this.button(footer,'查看全文',open,'mwb-assembly-card-open');
         const remove=this.button(row,'移出候选',()=>{
           if(this.actionBusy||this.scanBusy) return;
           if(!this.selectionIsCurrent()) {this.clearSelection('候选题已过期，请重新生成。');return;}
@@ -8610,8 +8713,8 @@ module.exports = class MathsemblePlugin extends Plugin {
           {documentMode:true,sourceScope:scope,sourceSnapshot:snapshot}).open();
       }});
     const AssemblyView = mwbAssemblyView({ItemView,Component,Notice,core:mwbAssemblyCore,
-      service:assemblyService,renderMarkdown:(markdown,container,path,owner) =>
-        mwbRenderMarkdown(this.app,markdown,container,path,owner)});
+      service:assemblyService,renderMarkdown:(markdown,container,path,owner,signal) =>
+        mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
     this.registerView('mathsemble-assembly', leaf => new AssemblyView(leaf,this));
     const openAssembly = async () => {
       let leaf=this.app.workspace.getLeavesOfType('mathsemble-assembly')[0];
