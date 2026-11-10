@@ -160,6 +160,64 @@ async function browserUiCases() {
       ok(modal.previewPages.querySelector('.mwb-trial-header').textContent.includes('孙老师'), 'trial details were lost when switching appearances');
     } finally { modal.onClose(); modal.modalEl.remove(); }
   });
+  await check('saved plan settings restore real A4 controls and explicit apply survives a save and reopen', async () => {
+    const previousRenderer=mockObsidian.MarkdownRenderer.render;
+    // This case uses the document entry point, so the host fixture must retain
+    // heading elements and their source-mapping markers, not flatten to one p.
+    mockObsidian.MarkdownRenderer.render=async(_app,text,target)=>{
+      for(const line of text.replace(/^---\n[\s\S]*?\n---\n/,'').split('\n').filter(line=>line.trim())){
+        const heading=line.match(/^(#{1,6})\s+(.*)$/);
+        if(!heading){target.createEl('p',{text:line});continue;}
+        const token=heading[2].match(/<span data-mwb-heading-token="([^"]+)"[^>]*><\/span>\s*/);
+        const node=target.createEl('h'+heading[1].length,{text:heading[2].replace(token?.[0]||'','')});
+        if(token)node.createEl('span',{attr:{'data-mwb-heading-token':token[1],style:'display:none','aria-hidden':'true'}});
+      }
+    };
+    const item = {id:'Q1',path:'题库/题.md',kind:'question',title:'示例题',role:'训练',fingerprint:'source',markdown:'说明函数图象的性质。'};
+    let plan = mwbAssemblyCore.addItem(mwbAssemblyCore.createPlan('函数复习'),item);
+    Object.assign(plan.course,{student:'小甲',subject:'高中数学',grade:'高一',objectives:'观察图象\n解释变化'});
+    Object.assign(plan.output,{layout:'trial',mode:'teacher'});
+    Object.assign(plan.output.spaceSettings,{ratio:125,minimumCm:2});
+    Object.assign(plan.output.solutionOptions,{solutionSpaces:true,showSolution:false});
+    let applies = 0;
+    const openPlan = async saved => {
+      const markdown = await mwbAssemblyMarkdown.compileMarkdown(saved,[{entry:saved.entries[0],item,status:'ok'}]);
+      const modal = new PreviewModal({}, {manifest:{version:'test'}},
+        {basename:'生成讲义',path:'Mathsemble/讲义/生成讲义.md',extension:'md'},markdown,null,
+        {documentMode:true,generatedHandout:true,planSettings:{course:saved.course,output:saved.output},
+          onApplyPlanSettings:settings=>{applies++;plan=mwbAssemblyCore.validatePlan({...plan,...settings});}});
+      modal.modalEl=document.body.createDiv();modal.contentEl=modal.modalEl.createDiv({cls:'modal-content'});
+      modal.collectRenderWarnings=async()=>{};modal.silentRender=true;
+      modal.onOpen();await modal.renderQueue;return modal;
+    };
+    let modal;
+    try {
+      modal = await openPlan(plan);
+      const control = label => modal.contentEl.querySelector(`[aria-label="${label}"]`);
+      ok(modal.ready && modal.layout==='trial' && modal.mode==='teacher',modal.lastRenderError || 'saved appearance or edition was lost');
+      ok(control('排版外观').value==='trial' && modal.modeButtons.teacher.getAttribute('aria-pressed')==='true','visible selectors disagree with restored mode');
+      ok(control('教师专用块高度比例').value==='125' && control('最小留白高度').value==='2','leave-space controls reset to defaults');
+      ok(control('学生版为 solution 预留答题空白').checked && !control('教师版显示 solution 解题思路').checked,'solution controls reset to defaults');
+      const header=modal.previewPages.querySelector('.mwb-trial-header').textContent;
+      ok(header.includes('函数复习')&&header.includes('孙老师')&&header.includes('小甲')&&header.includes('观察图象'),'generated course properties did not reach the actual trial header');
+      modal.applyPlanSettingsButton.click();await new Promise(resolve=>setTimeout(resolve,0));
+      ok(applies===1&&plan.course.title===null,'applying untouched header fixed the inherited title');
+      const before=JSON.stringify(plan),original=modal.markdown;
+      control('试听课题名称').value='';control('试听课题名称').dispatchEvent(new Event('input'));await modal.renderQueue;
+      control('排版外观').value='two-column';control('排版外观').dispatchEvent(new Event('change'));await modal.renderQueue;
+      modal.modeButtons.student.click();await modal.renderQueue;
+      ok(JSON.stringify(plan)===before,'editing the A4 window silently changed the plan');
+      modal.applyPlanSettingsButton.click();await new Promise(resolve=>setTimeout(resolve,0));
+      ok(applies===2&&plan.course.title===''&&plan.output.layout==='two-column'&&plan.output.mode==='student','explicit apply failed to capture current course/output');
+      ok(modal.markdown===original,'applying settings rewrote the generated handout');
+      modal.onClose();modal.modalEl.remove();
+      const restored=mwbAssemblyCore.validatePlan(JSON.parse(JSON.stringify(plan)));
+      modal=await openPlan(restored);
+      ok(modal.layout==='two-column'&&modal.mode==='student'&&modal.trialDetails.title==='','save/reopen lost the explicit blank title or layout');
+      ok(modal.spaceSettings.ratio===125&&modal.spaceSettings.minimumCm===2,'save/reopen lost leave-space settings');
+      ok(!modal.partialExportApproved&&!modal.overflowOmissionEnabled,'output consent leaked into a reopened plan');
+    } finally { modal?.onClose();modal?.modalEl.remove();mockObsidian.MarkdownRenderer.render=previousRenderer; }
+  });
   await check('dual-edition workers retain an independent appearance snapshot for both student and teacher', async () => {
     const modal = makeModal();
     try {

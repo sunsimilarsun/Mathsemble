@@ -9,7 +9,7 @@ const obsidian = {Plugin:class {}, Modal:class {constructor(app){this.app=app;}}
   MarkdownRenderer:{}, MarkdownView:class {}, finishRenderMath:async()=>{}};
 const context = {module:{exports:{}}, require:name=>name==='obsidian'?obsidian:require(name),
   Buffer, console, setTimeout, clearTimeout, performance, AbortController};
-vm.runInNewContext(source + '\nglobalThis.api={PreviewModal,mwbTrialDetailsFromMetadata,mwbSourceMetadata};', context);
+vm.runInNewContext(source + '\nglobalThis.api={PreviewModal,mwbTrialDetailsFromMetadata,mwbSourceMetadata,mwbAssemblyCore};', context);
 const {PreviewModal, mwbTrialDetailsFromMetadata:defaults, mwbSourceMetadata:metadata} = context.api;
 const plain = value => JSON.parse(JSON.stringify(value));
 const file = {path:'讲义.md',basename:'不能当课题的文件名',extension:'md'};
@@ -90,4 +90,97 @@ test('a folder exam has no document properties and does not borrow the first que
   const modal = new PreviewModal({}, {}, file, markdown, {title:'组卷',items:[{file,markdown}]});
   assert.equal(modal.trialDetails.teacher, '孙老师');
   for (const key of ['student','time','subject','grade','title','objectives']) assert.equal(modal.trialDetails[key], '');
+});
+
+test('generated handout refresh keeps its own source scope and restores contextual controls after reads', async () => {
+  const generated = {path:'Mathsemble/讲义/课次.md',basename:'课次',extension:'md'};
+  const upstream = {path:'题库/原题.md',basename:'原题',extension:'md'};
+  const files = new Map([[generated.path,generated],[upstream.path,upstream]]);
+  const contents = new Map([[generated.path,'旧讲义'],[upstream.path,'源题已更新']]);
+  const reads = [];
+  const app = {vault:{getAbstractFileByPath:p=>files.get(p),read:async file=>{reads.push(file.path);return contents.get(file.path);}}};
+  const modal = new PreviewModal(app, {}, generated, contents.get(generated.path), null,
+    {documentMode:true,generatedHandout:true});
+  const textNode = () => ({style:{},setAttribute(){},setText(text){this.text=text;}});
+  modal.readSourceButton = textNode(); modal.sourcePromptButton = textNode(); modal.sourceStatus = textNode();
+  modal.renderMode = async () => {};
+  assert.match(modal.sourceReadHint(), /生成的讲义副本/);
+  assert.match(modal.sourceReadHint(), /返回预览编排/);
+  assert.equal(await modal.reloadSource(), true);
+  assert.equal(modal.markdown, '旧讲义', 'refreshing the snapshot must not silently recompile upstream cards');
+  assert.equal(modal.readSourceButton.text, '重新读取讲义');
+  assert.equal(modal.sourcePromptButton.text, '重新读取讲义');
+  contents.set(generated.path, '修改后的讲义');
+  assert.equal(await modal.reloadSource(), true);
+  assert.equal(modal.markdown, '修改后的讲义');
+  assert.ok(reads.length > 0 && reads.every(path=>path===generated.path));
+  assert.equal(modal.sourceScope.path, generated.path);
+  const direct = new PreviewModal(app, {}, generated, contents.get(generated.path), null, {documentMode:true});
+  assert.equal(direct.sourceReadLabel(), '重新读取源文', 'a folder name alone must not invent generated provenance');
+});
+
+test('output summary distinguishes completed body, pagination, consent and source freshness', () => {
+  const modal = new PreviewModal({}, {}, file, '正文', null, {documentMode:true});
+  modal.compactStatus = {setText(text){this.text=text;}};
+  const status = () => {modal.updateCompactStatus();return modal.compactStatus.text;};
+  assert.match(status(), /正文尚未完成/);
+  modal.ready = true; modal.previewPaginationIssue = 'unbreakable content';
+  assert.match(status(), /正文已完成.*A4 分页失败/);
+  assert.doesNotMatch(status(), /可保存/);
+  modal.previewPaginationIssue = ''; modal.previewPaginationReport = {pages:2};
+  assert.match(status(), /可保存，输出前复检.*A4 2 页/);
+  modal.renderWarnings = ['公式存在局部渲染问题'];
+  assert.match(status(), /当前版输出需确认警告/);
+  modal.partialExportApproved = true;
+  assert.match(status(), /已允许当前版不完整输出/);
+  modal.sourceDirty = true;
+  assert.match(status(), /源文已变化，暂停输出/);
+  assert.doesNotMatch(status(), /可保存|已允许/);
+});
+
+test('applying preview settings retains inherited titles, accepts refreshed course fields and excludes output consent', async () => {
+  const core = context.api.mwbAssemblyCore;
+  const planSettings = {course:core.defaultCourse(),output:core.defaultOutputSettings()};
+  planSettings.course.student = '小甲';
+  planSettings.output.layout = 'trial'; planSettings.output.mode = 'teacher';
+  planSettings.output.spaceSettings.ratio = 125;
+  let latest = note('titile: 方案标题\nauthor: 孙老师\nstudent: 小甲');
+  const app = {vault:{read:async()=>latest,getAbstractFileByPath:p=>p===file.path?file:null}};
+  const applied = [];
+  const modal = new PreviewModal(app, {}, file, latest, null,
+    {documentMode:true,generatedHandout:true,planSettings,onApplyPlanSettings:value=>applied.push(plain(value))});
+  modal.renderMode = async () => {};
+  assert.equal(modal.layout, 'trial'); assert.equal(modal.mode, 'teacher');
+  planSettings.output.spaceSettings.ratio = 50;
+  assert.equal(modal.spaceSettings.ratio, 125, 'preview must own a detached settings snapshot');
+  modal.partialExportApproved = true; modal.overflowOmissionEnabled = true;
+  await modal.applySettingsToPlan();
+  assert.equal(applied[0].course.title, null, 'untouched inherited title must not become a fixed override');
+  assert.equal(applied[0].course.teacher, '', 'untouched teacher default must remain a default');
+  assert.deepEqual(Object.keys(applied[0].output).sort(), ['layout','mode','solutionOptions','spaceSettings']);
+  latest = note('titile: 手动修改的讲义课题\nauthor: 李老师\nstudent: 小乙');
+  assert.equal(await modal.reloadSource(), true);
+  await modal.applySettingsToPlan();
+  assert.equal(applied[1].course.title, '手动修改的讲义课题');
+  assert.equal(applied[1].course.student, '小乙'); assert.equal(applied[1].course.teacher, '李老师');
+  modal.trialDetails.title = ''; modal.trialEditedFields.add('title');
+  await modal.applySettingsToPlan();
+  assert.equal(applied[2].course.title, '', 'explicit clearing must not resurrect the plan title');
+  assert.equal(latest, note('titile: 手动修改的讲义课题\nauthor: 李老师\nstudent: 小乙'), 'apply must not rewrite the handout');
+});
+
+test('preview apply reports rejected bindings and does not advance its settings baseline', async () => {
+  const core = context.api.mwbAssemblyCore, planSettings = {course:core.defaultCourse(),output:core.defaultOutputSettings()};
+  let calls = 0;
+  const modal = new PreviewModal({}, {}, file, note('titile: 原标题'), null,
+    {documentMode:true,generatedHandout:true,planSettings,onApplyPlanSettings:()=>{calls++;throw Error('编排已变化');}});
+  modal.trialDetails.title = '新标题'; modal.trialEditedFields.add('title');
+  await assert.rejects(modal.applySettingsToPlan(), /编排已变化/);
+  assert.equal(modal.planCourse.title, null); assert.equal(modal.applyingPlanSettings, false);
+  assert.equal(modal.planInitialTrialDetails.title, '原标题'); assert.equal(calls, 1);
+  modal.sourceDirty = true;
+  await assert.rejects(modal.applySettingsToPlan(), /重新读取讲义/);
+  modal.sourceDirty = false; modal.closed = true;
+  await assert.rejects(modal.applySettingsToPlan(), /重新打开/);
+  assert.equal(calls, 1, 'closed or stale source must not invoke a plan callback');
 });

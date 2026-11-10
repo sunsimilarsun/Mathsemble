@@ -105,7 +105,7 @@ test('ID-less sources use exact paths and require review if a new identity appea
 test('validation rejects hostile properties, unknown versions and malformed references',()=>{
   const valid=core.createPlan();
   assert.throws(()=>core.validatePlan(JSON.parse('{"schemaVersion":1,"title":"x","entries":[],"__proto__":{}}')),/属性/);
-  assert.throws(()=>core.validatePlan({...valid,schemaVersion:2}),/版本/);
+  assert.throws(()=>core.validatePlan({...valid,schemaVersion:3}),/版本/);
   assert.throws(()=>core.validatePlan({...valid,extra:'bad'}),/未知字段/);
   const getter={schemaVersion:1,title:'x',get entries(){throw Error('getter must not execute');}};
   assert.throws(()=>core.validatePlan(getter),/不允许的属性/);
@@ -124,6 +124,63 @@ test('validation caps size and rejects array prototype manipulation',()=>{
   assert.throws(()=>core.validatePlan({schemaVersion:1,title:'x',entries:Array(1001)}),/最多/);
   const entries=[]; Object.defineProperty(entries,'constructor',{value:{}});
   assert.throws(()=>core.validatePlan({schemaVersion:1,title:'x',entries}),/不允许的属性/);
+});
+
+test('legacy plans migrate in memory with independent course and output defaults',()=>{
+  const current=core.addItem(core.createPlan('旧方案'),core.buildIndex([question()]).items[0]);
+  const legacy=frozen({schemaVersion:1,title:current.title,entries:current.entries});
+  const migrated=core.validatePlan(legacy);
+  assert.equal(migrated.schemaVersion,2);
+  assert.deepEqual(migrated.entries,legacy.entries);
+  assert.equal(migrated.entries[0].entryId,legacy.entries[0].entryId);
+  assert.deepEqual(migrated.course,core.defaultCourse());
+  assert.deepEqual(migrated.output,core.defaultOutputSettings());
+  const next=core.validatePlan(legacy);
+  migrated.course.teacher='李老师';migrated.output.spaceSettings.ratio=150;
+  assert.equal(next.course.teacher,'');assert.equal(next.output.spaceSettings.ratio,100);
+  assert.deepEqual(Object.keys(legacy),['schemaVersion','title','entries']);
+  assert.throws(()=>core.validatePlan({...legacy,course:core.defaultCourse()}),/未知字段/);
+  assert.throws(()=>core.validatePlan({schemaVersion:2,title:'不完整',entries:[]}),/缺少字段/);
+});
+
+test('all entry edits preserve explicit course settings and blank title through JSON round trips',()=>{
+  const index=core.buildIndex([question()]);
+  let plan=core.createPlan('集合讲义');
+  plan.course={teacher:'  李老师 ',student:'小甲',time:'周六',subject:'数学',grade:'高一',title:'',objectives:'第一条\n第二条'};
+  plan.output={layout:'trial',mode:'teacher',spaceSettings:{ratio:125,minimumCm:4},solutionOptions:{solutionSpaces:true,showSolution:false}};
+  const settings=JSON.stringify({course:plan.course,output:plan.output});
+  plan=core.addItem(frozen(plan),index.items[0]);
+  const id=plan.entries[0].entryId;
+  plan=core.addSection(frozen(plan),'分区');
+  plan=core.updateEntry(frozen(plan),id,{title:'本次标题',role:'变式'});
+  plan=core.moveEntry(frozen(plan),id,1);
+  plan=core.removeEntry(frozen(plan),plan.entries[0].entryId);
+  plan=core.validatePlan(JSON.parse(JSON.stringify(plan)));
+  assert.equal(JSON.stringify({course:plan.course,output:plan.output}),settings);
+  assert.equal(plan.entries[0].entryId,id);
+});
+
+test('course and output validators reject malformed data and never restore runtime export permission',()=>{
+  const invalidCourse=[{title:false},{teacher:null},{objectives:[]},{teacher:'x'.repeat(201)},
+    {title:'x'.repeat(501)},{objectives:'x'.repeat(1601)},{student:'bad\u0000text'},{unknown:'x'}];
+  for(const patch of invalidCourse)assert.throws(()=>core.validateCourse({...core.defaultCourse(),...patch}));
+  for(const patch of [{layout:'wide'},{mode:'both'},{spaceSettings:{ratio:'100',minimumCm:0}},
+    {spaceSettings:{ratio:0,minimumCm:0}},{spaceSettings:{ratio:100,minimumCm:-1}},
+    {solutionOptions:{solutionSpaces:true,showSolution:'false'}},
+    {partialExportApproved:true},{overflowOmissionEnabled:true},{renderWarnings:[]}])
+    assert.throws(()=>core.validateOutputSettings({...core.defaultOutputSettings(),...patch}));
+  let getterCalls=0;
+  const course=core.defaultCourse();Object.defineProperty(course,'title',{get(){getterCalls++;return '不应读取';}});
+  assert.throws(()=>core.validateCourse(course),/不允许的属性/);
+  const output=core.defaultOutputSettings();Object.defineProperty(output.spaceSettings,'ratio',{get(){getterCalls++;return 100;}});
+  assert.throws(()=>core.validateOutputSettings(output),/不允许的属性/);
+  assert.equal(getterCalls,0);
+  assert.throws(()=>core.validateCourse(Object.assign(Object.create({hidden:true}),core.defaultCourse())),/普通对象/);
+  assert.throws(()=>core.validateOutputSettings({...core.defaultOutputSettings(),solutionOptions:JSON.parse('{"solutionSpaces":false,"showSolution":true,"__proto__":{}}')}),/属性/);
+  const symbolCourse={...core.defaultCourse(),[Symbol('hidden')]:true};
+  assert.throws(()=>core.validateCourse(symbolCourse),/未知字段/);
+  const hiddenOutput=core.defaultOutputSettings();Object.defineProperty(hiddenOutput,'partialExportApproved',{value:true});
+  assert.throws(()=>core.validateOutputSettings(hiddenOutput),/未知字段/);
 });
 
 test('role normalization accepts current and legacy practice labels without prototype lookup',()=>{

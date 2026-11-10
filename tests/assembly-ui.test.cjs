@@ -51,13 +51,14 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
  const click=async label=>{[...view.root.querySelectorAll('button')].find(b=>b.textContent===label).click();await new Promise(resolve=>setTimeout(resolve,10));};
  await click('保存方案');check(saved&&view.dirty===false&&sessionWrites===1,'explicit session save clears dirty');
  await click('另存方案');check(lastSavePath===undefined&&view.dirty===false&&view.planPath==='方案/test.json','save as creates a new plan without overwrite path');
- view.editEntry(questionId,{title:'本次标题'});check(view.dirty,'entry edit marks dirty');
+ await click('预览编排');
+ const questionTitle=view.arrangementList.querySelector('[data-entry-id="'+questionId+'"] [data-arrangement-field="title"]');questionTitle.value='本次标题';questionTitle.dispatchEvent(new Event('change'));check(view.dirty&&view.plan.entries.find(entry=>entry.entryId===questionId).title==='本次标题','inline entry edit marks dirty');
  await click('新建');check(view.plan.entries.length===3,'first new click preserves unsaved draft');
  await click('新建');check(view.plan.entries.length===0,'second new click confirms discard');
  view.savedSelect.value='方案/test.json';await view.loadSelectedPlan();check(view.plan.entries[0].sourceId==='Q1'&&sessionReads===1,'saved order restored through view session');
  records[1].markdown+='\\n修改后的正文';index=core.buildIndex(records);await view.updateReferences();check(core.resolvePlan(view.plan,index).issues.length===0,'explicit refresh accepts changed source');
  view.titleInput.value='';view.titleInput.dispatchEvent(new Event('input'));view.renderOutline();check(view.plan.title==='新讲义','empty plan title has valid fallback');
- const section=view.plan.entries.find(entry=>entry.kind==='section');view.editEntry(section.entryId,{title:''});check(view.plan.entries.find(entry=>entry.entryId===section.entryId).title==='训练区','invalid section title preserves old value');
+ const section=view.plan.entries.find(entry=>entry.kind==='section');const sectionTitle=view.arrangementList.querySelector('[data-entry-id="'+section.entryId+'"] [data-arrangement-field="title"]');sectionTitle.value='';sectionTitle.dispatchEvent(new Event('change'));check(view.plan.entries.find(entry=>entry.entryId===section.entryId).title==='训练区'&&view.arrangementList.querySelector('[data-entry-id="'+section.entryId+'"] [data-arrangement-field="title"]').value==='训练区','invalid section title preserves and restores old value');
  let resolveA,resolveB,request=0;service.scan=()=>new Promise(resolve=>{if(++request===1)resolveA=resolve;else resolveB=resolve;});
  const a=view.scan(),b=view.scan();resolveB(index);await b;resolveA({items:[],issues:[]});await a;check(view.index.items.length===3,'outdated scan cannot replace latest');
  await view.onClose();check(document.querySelector('#view').childElementCount===0,'close releases view');
