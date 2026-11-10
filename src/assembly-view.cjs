@@ -9,16 +9,19 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
   const labelOf = value => String(value ?? '').replace(/^\[\[|\]\]$/g, '').split('|').at(-1);
   const errorText = error => String(error?.message || error);
   const plainBody = markdown => String(markdown || '').replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/, '');
+  const planSaveHint = '保存讲义标题、内容顺序、来源引用、本次标题／角色，以及课程信息和默认排版；正文仍来自原笔记。';
 
   return class AssemblyView extends ItemView {
     constructor(leaf, plugin) {
       super(leaf);
+      this.assemblyLeaf = leaf;
       this.plugin = plugin;
       this.planSession = service.createPlanSession ? service.createPlanSession() : service;
       this.plan = core.createPlan();
       this.planPath = null;
       this.dirty = false;
       this.index = {items:[],issues:[]};
+      this.indexState = 'unread';
       this.settings = {questionRoots:[],knowledgeRoots:[],recursive:true};
       this.filters = {kind:'question',query:''};
       this.limit = 100;
@@ -41,12 +44,13 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.workspaceAnchors = {library:null,arrangement:null};
       this.arrangementMenuOpen = new Set();
       this.arrangementExpanded = new Set();
+      this.arrangementDrag = null;
       this.inlinePreviewGroups = new Map();
       this.inlinePreviewQueue = [];
       this.inlinePreviewActive = 0;
     }
     getViewType() { return VIEW_TYPE; }
-    getDisplayText() { return this.plan?.title || '知识与组题'; }
+    getDisplayText() { return this.plan?.title || '选材与编排'; }
     getIcon() { return 'layers'; }
     getState() {
       return {plan:this.plan,planPath:this.planPath,dirty:this.dirty,filters:this.filters,workspaceMode:this.workspaceMode};
@@ -146,6 +150,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     switchWorkspaceMode(mode) {
       if(this.closed||!['library','arrangement'].includes(mode)||mode===this.workspaceMode)return;
+      this.clearArrangementDrag();
       if(this.workspaceMode==='library'){
         const returnTop=this.previewReturn?.centerTop;
         this.clearItemPreview();
@@ -168,6 +173,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.app.workspace.requestSaveLayout?.();
     }
     stateChanged() {
+      this.clearArrangementDrag();
       this.clearSelection('编排已变化，请重新生成候选。');
       this.dirty = true;
       this.pendingDiscard = null;
@@ -177,8 +183,120 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     setPlan(plan) {
       this.plan = plan;
       this.stateChanged();
+      this.refreshPlanSettings();
       this.renderOutline();
       this.renderResults();
+    }
+    applyPlanSettings(settings) {
+      if(this.closed)throw new Error('编排工作区已关闭，请重新打开方案后再应用设置');
+      if(this.actionBusy||this.scanBusy)throw new Error('编排正在处理其他操作，请完成后再应用设置');
+      const course=core.validateCourse(settings.course),output=core.validateOutputSettings(settings.output);
+      if(JSON.stringify(course)===JSON.stringify(this.plan.course)&&JSON.stringify(output)===JSON.stringify(this.plan.output))return false;
+      this.plan=core.validatePlan({...this.plan,course,output});
+      this.stateChanged();this.refreshPlanSettings();
+      return true;
+    }
+    bindPreviewSettings() {
+      // Bind to the exact draft that opened the preview, not whichever plan is
+      // displayed later. Only this explicit callback may advance its baseline.
+      const binding={plan:this.plan,path:this.planPath};
+      return settings=>{
+        if(this.plan!==binding.plan||this.planPath!==binding.path)
+          throw new Error('编排方案已变化，请从当前方案重新打开 A4 预览后应用设置');
+        const changed=this.applyPlanSettings(settings);
+        binding.plan=this.plan;binding.path=this.planPath;
+        this.setStatus(changed?'已应用 A4 课程与排版，请保存方案。':this.dirty?'设置已在当前编排中，请保存方案。':this.planPath?'设置与已保存方案一致。':'设置与当前编排一致，请保存方案。');
+        return changed;
+      };
+    }
+    bindPreviewContext() {
+      const plan=this.plan,path=this.planPath,leaf=this.assemblyLeaf;
+      const live=()=>!this.closed&&leaf?.view===this;
+      const isCurrent=()=>live()&&this.plan===plan&&this.planPath===path;
+      return {
+        isCurrent,
+        onApplyPlanSettings:this.bindPreviewSettings(),
+        onReturnToAssembly:async()=>{
+          if(!live())throw new Error('原编排工作区已关闭，请重新打开方案后更新来源');
+          if(typeof this.app.workspace.revealLeaf!=='function')throw new Error('无法返回编排工作区，请从“选材与编排”重新打开方案');
+          await this.app.workspace.revealLeaf(leaf);
+          if(!live())throw new Error('原编排工作区已关闭，请重新打开方案后更新来源');
+          // Returning only reveals the live workspace. Never restore an old
+          // draft or accept source changes on behalf of the user.
+          if(!this.actionBusy&&!this.scanBusy)this.setStatus(isCurrent()
+            ? '已返回编排；请刷新素材并核对来源，接受来源更新后重新打开 A4 预览。'
+            : '已返回当前编排；方案已变化，请核对所需方案和来源后重新打开 A4 预览。');
+        }
+      };
+    }
+    refreshPlanSettings() {
+      if(!this.planSettingsInputs)return;
+      const busy=this.actionBusy||this.scanBusy;
+      for(const [key,input] of this.planSettingsInputs.course){
+        const value=key==='title'&&this.plan.course.title===null?this.plan.title:this.plan.course[key];
+        if(input.value!==value)input.value=value;
+        input.disabled=busy||key==='title'&&this.plan.course.title===null;
+      }
+      const follow=this.planSettingsInputs.follow;
+      follow.checked=this.plan.course.title===null;follow.disabled=busy;
+      for(const [key,input] of this.planSettingsInputs.output){
+        const value=Object.prototype.hasOwnProperty.call(this.plan.output,key)?this.plan.output[key]:
+          Object.prototype.hasOwnProperty.call(this.plan.output.spaceSettings,key)?this.plan.output.spaceSettings[key]:this.plan.output.solutionOptions[key];
+        if(input.type==='checkbox')input.checked=value;
+        else if(input.value!==String(value))input.value=String(value);
+        input.disabled=busy;
+      }
+    }
+    renderPlanSettings(parent) {
+      const panel=this.el('details',parent,'mwb-assembly-plan-settings');
+      this.el('summary',panel,'','课程与排版');
+      const body=this.el('div',panel,'mwb-assembly-plan-settings-body');
+      this.el('p',body,'mwb-assembly-muted','随“保存方案”保存；下次从此方案生成 A4 时恢复。');
+      const inputs={course:new Map(),output:new Map(),follow:null};this.planSettingsInputs=inputs;
+      const edit=change=>{
+        if(this.planSettingsInputs!==inputs||!panel.isConnected)return;
+        try{if(this.applyPlanSettings(change()))this.setStatus('课程与排版已修改，请保存方案。');}
+        catch(error){this.refreshPlanSettings();this.setStatus(errorText(error),true);}
+      };
+      const followLabel=this.el('label',body,'mwb-assembly-check');
+      const follow=this.el('input',followLabel);follow.type='checkbox';follow.dataset.courseFollow='title';
+      followLabel.appendChild(this.contentEl.ownerDocument.createTextNode('课题跟随讲义标题'));
+      this.planSettingsInputs.follow=follow;
+      follow.addEventListener('change',()=>edit(()=>({course:{...this.plan.course,title:follow.checked?null:this.plan.title},output:this.plan.output})));
+      for(const [key,label] of [['title','课题名称'],['teacher','教师'],['student','学生'],['time','上课时间'],['subject','学科'],['grade','年级'],['objectives','学习目标']]){
+        const input=this.field(body,label,key==='objectives'?'textarea':'input');
+        input.dataset.courseField=key;input.maxLength=key==='objectives'?1600:key==='title'?500:200;
+        if(key==='objectives')input.rows=3;
+        if(key==='teacher')input.placeholder='留空使用孙老师';
+        this.planSettingsInputs.course.set(key,input);
+        input.addEventListener('input',()=>edit(()=>({course:{...this.plan.course,[key]:input.value},output:this.plan.output})));
+      }
+      const select=(key,label,choices,group)=>{
+        const input=this.field(body,label,'select');input.dataset.outputField=key;
+        for(const [value,text] of choices)this.el('option',input,'',text).value=String(value);
+        this.planSettingsInputs.output.set(key,input);
+        input.addEventListener('change',()=>edit(()=>({course:this.plan.course,output:group?
+          {...this.plan.output,[group]:{...this.plan.output[group],[key]:Number(input.value)}}:
+          {...this.plan.output,[key]:input.value}})));
+      };
+      select('layout','默认外观',[['default','默认排版'],['two-column','双列排版'],['trial','试听排版']]);
+      select('mode','默认版本',[['document','原文预览'],['student','学生版'],['teacher','教师版']]);
+      select('ratio','等高留白比例',[50,75,90,100,110,125,150].map(value=>[value,value+'%']),'spaceSettings');
+      select('minimumCm','最小留白高度',[0,2,4].map(value=>[value,value+' cm']),'spaceSettings');
+      for(const [key,label] of [['solutionSpaces','学生版解析留白'],['showSolution','教师版显示解析']]){
+        const wrapper=this.el('label',body,'mwb-assembly-check');
+        const input=this.el('input',wrapper);input.type='checkbox';input.dataset.outputField=key;
+        wrapper.appendChild(this.contentEl.ownerDocument.createTextNode(label));
+        this.planSettingsInputs.output.set(key,input);
+        input.addEventListener('change',()=>edit(()=>({course:this.plan.course,
+          output:{...this.plan.output,solutionOptions:{...this.plan.output.solutionOptions,[key]:input.checked}}})));
+      }
+      this.refreshPlanSettings();
+    }
+    resizePlanMenu() {
+      if(this.closed||!this.planMenu?.open)return;
+      const available=this.root.getBoundingClientRect().bottom-this.planMenuBody.getBoundingClientRect().top-8;
+      this.planMenuBody.style.maxHeight=Math.max(0,Math.min(560,available))+'px';
     }
     setStatus(message, error = false) {
       if (this.closed || !this.statusEl) return;
@@ -187,6 +305,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.statusEl.classList.toggle('is-error', error);
     }
     updateSummary() {
+      if(this.actionBusy||this.scanBusy)this.clearArrangementDrag();
       if (!this.summaryEl) return;
       const questions = this.plan.entries.filter(entry => entry.kind === 'question').length;
       const knowledge = this.plan.entries.filter(entry => entry.kind === 'knowledge').length;
@@ -194,12 +313,30 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.summaryEl.textContent = [`已选 ${questions} 题`,knowledge?`${knowledge} 篇知识`:'',sections?`${sections} 个分区`:''].filter(Boolean).join(' · ');
       this.summaryEl.setAttribute('aria-label',`查看预览编排：${this.plan.entries.length} 项，${questions} 道题，${knowledge} 篇知识，${sections} 个分区`);
       if(this.saveStateEl){
-        this.saveStateEl.textContent=this.dirty?'未保存':this.planPath?'已保存':'新方案';
+        this.saveStateEl.textContent=this.dirty?'方案未保存':this.planPath?'方案已保存':'新方案';
         this.saveStateEl.classList.toggle('is-dirty',this.dirty);
+      }
+      if(this.sourceStateEl){
+        this.sourceStateEl.hidden=questions+knowledge===0;
+        let label=this.scanBusy?'正在刷新素材':'来源待核对';
+        let detail=this.scanBusy?'正在重新读取素材；完成后核对当前编排的来源。':this.indexState==='error'?'素材刷新未完成，请重试；当前保留上次读取的内容。':'请先刷新素材，再核对编排来源。';
+        let attention=!this.scanBusy&&this.indexState==='error';
+        if(!this.scanBusy&&this.indexState==='ready'){
+          // Resolve only when the immutable entries or scan snapshot change.
+          if(this.sourceSummary?.entries!==this.plan.entries||this.sourceSummary?.index!==this.index)
+            this.sourceSummary={entries:this.plan.entries,index:this.index,issues:core.resolvePlan(this.plan,this.index).issues};
+          const issues=this.sourceSummary.issues;
+          label=issues.length?`${issues.length} 项来源待处理`:'上次刷新已核对';
+          detail=issues.length?'请在预览编排中核对来源变化、缺失或冲突；保存方案不会自动接受来源更新。':'按最近一次素材刷新核对；生成讲义前还会重新读取源文。';
+          attention=issues.length>0;
+        }
+        this.sourceStateEl.textContent=label;this.sourceStateEl.title=detail;
+        this.sourceStateEl.classList.toggle('is-dirty',attention);
       }
       for(const button of this.primaryButtons||[])button.disabled=this.actionBusy||this.scanBusy;
       for(const control of this.arrangementPane?.querySelectorAll('[data-arrangement-mutate]')||[])
         control.disabled=this.actionBusy||this.scanBusy||control.dataset.boundary==='true';
+      this.refreshPlanSettings();
     }
     confirmDiscard(key, label) {
       if (!this.dirty) return true;
@@ -215,7 +352,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async runAction(label, action) {
       if (this.actionBusy) { this.notice('请等待当前操作完成'); return; }
-      if (this.scanBusy) { this.notice('正在读取题库，请稍候'); return; }
+      if (this.scanBusy) { this.notice('正在刷新素材，请稍候'); return; }
       this.actionBusy = true;
       this.setStatus(label + '…');
       this.root?.classList.add('is-busy');
@@ -244,6 +381,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async onClose() {
       this.closed = true;
+      this.clearArrangementDrag();
+      this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
       this.scanGeneration++; this.previewGeneration++;
       this.releasePreview();
@@ -351,6 +490,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
     }
     render() {
+      this.planMenuObserver?.disconnect();this.planMenuObserver=null;
+      this.planSettingsInputs=null;
       this.releasePreview();
       this.releaseInlinePreviews();
       // New/open/restored plans rebuild the entire surface. Reading anchors
@@ -362,7 +503,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.previewReturn=null;
       this.contentEl.replaceChildren();
       this.root = this.el('div', this.contentEl, 'mwb-assembly');
-      this.root.setAttribute('aria-label','知识与组题');
+      this.root.setAttribute('aria-label','选材与编排');
       const toolbar = this.el('header', this.root, 'mwb-assembly-toolbar');
       this.titleInput = this.field(toolbar, '讲义标题');
       this.titleInput.value = this.plan.title;
@@ -372,19 +513,25 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.plan = {...this.plan,title:this.titleInput.value.trim() || '新讲义'}; this.stateChanged();
       });
       this.titleInput.addEventListener('blur', () => { if (!this.titleInput.value.trim()) this.titleInput.value=this.plan.title; });
-      this.modeNav=this.el('nav',toolbar,'mwb-assembly-mode-nav');this.modeNav.setAttribute('aria-label','组题工作模式');
-      for(const [mode,label] of [['library','选题'],['arrangement','预览编排']]){
+      this.modeNav=this.el('nav',toolbar,'mwb-assembly-mode-nav');this.modeNav.setAttribute('aria-label','选材与编排模式');
+      for(const [mode,label] of [['library','选材'],['arrangement','预览编排']]){
         const button=this.button(this.modeNav,label,()=>this.switchWorkspaceMode(mode));button.dataset.mode=mode;
       }
       const primary=this.el('div',toolbar,'mwb-assembly-primary-actions');
       const save=this.button(primary, '保存方案', () => this.saveCurrentPlan(false));
-      const pdf=this.button(primary, 'A4 预览 / PDF', () => this.runAction('准备预览', async () => {
-        await service.preview(core.validatePlan(this.plan), this.index);
-        this.setStatus('已打开 A4 预览，可选择学生版或教师版并导出 PDF。');
+      save.title=planSaveHint;
+      const pdf=this.button(primary, '预览 A4', () => this.runAction('准备临时 A4 预览', async () => {
+        await service.preview(core.validatePlan(this.plan), this.index,this.bindPreviewContext());
+        this.setStatus('临时 A4 预览已打开，可选择学生版或教师版并导出 PDF；如需 Markdown，请保存讲义副本。');
       }),'mod-cta');
+      pdf.title='查看当前内容的临时预览，不新增 Markdown，也不保存编排方案；需要文件时使用“保存讲义副本”。';
       const menu=this.el('details',primary,'mwb-assembly-plan-menu');
+      this.planMenu=menu;
       this.el('summary',menu,'','方案操作');
       const menuBody=this.el('div',menu,'mwb-assembly-menu-body');
+      this.planMenuBody=menuBody;
+      this.el('p',menuBody,'mwb-assembly-muted',planSaveHint);
+      this.renderPlanSettings(menuBody);
       const menuActions=this.el('div',menuBody,'mwb-assembly-menu-actions');
       this.button(menuActions, '新建', () => {
         if (this.actionBusy || !this.confirmDiscard('new','新建')) return;
@@ -395,26 +542,32 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.savedSelect = this.field(menuBody, '已保存方案', 'select');
       this.populatePlans();
       this.button(menuBody, '打开方案', () => this.loadSelectedPlan());
-      this.button(menuBody, '生成 Markdown', () => this.runAction('生成 Markdown', async () => {
+      const exportMarkdown=this.button(menuBody, '保存讲义副本', () => this.runAction('保存讲义副本', async () => {
         const path = await service.exportMarkdown(core.validatePlan(this.plan), this.index);
-        if (!this.closed) { this.setStatus('Markdown 已生成：' + path); this.notice('Markdown 已生成：' + path); }
+        if (!this.closed) { this.setStatus('讲义副本已保存：' + path); this.notice('讲义副本已保存：' + path); }
       }));
+      exportMarkdown.title='按当前编排新建一份 Markdown；已有讲义副本不自动更新。';
       menu.addEventListener('keydown',event=>{if(event.key==='Escape'){menu.open=false;menu.querySelector('summary').focus();}});
+      menu.addEventListener('toggle',()=>this.resizePlanMenu());
+      const MenuObserver=this.contentEl.ownerDocument.defaultView?.ResizeObserver;
+      if(MenuObserver){this.planMenuObserver=new MenuObserver(()=>this.resizePlanMenu());this.planMenuObserver.observe(this.root);}
       this.primaryButtons=[save,pdf];
       const overview=this.el('div',this.root,'mwb-assembly-overview');
       this.summaryEl=this.button(overview,'',()=>this.switchWorkspaceMode('arrangement'),'mwb-assembly-selected-count');
       this.saveStateEl=this.el('span',overview,'mwb-assembly-save-state');
-      this.statusEl = this.el('div', overview, 'mwb-assembly-status', '请配置目录后读取内容。');
+      this.saveStateEl.title=planSaveHint;
+      this.sourceStateEl=this.el('span',overview,'mwb-assembly-save-state mwb-assembly-source-state');
+      this.statusEl = this.el('div', overview, 'mwb-assembly-status', '请配置目录后刷新素材。');
       this.statusEl.setAttribute('role','status'); this.statusEl.setAttribute('aria-live','polite');
-      this.paneNav=this.el('nav',this.root,'mwb-assembly-pane-nav');this.paneNav.setAttribute('aria-label','组卷工作区');
-      for(const [pane,label] of [['filters','筛选'],['library','选题']]){
+      this.paneNav=this.el('nav',this.root,'mwb-assembly-pane-nav');this.paneNav.setAttribute('aria-label','选材面板');
+      for(const [pane,label] of [['filters','筛选'],['library','选材']]){
         const button=this.button(this.paneNav,label,()=>this.switchPane(pane));button.dataset.pane=pane;
       }
       const columns = this.el('div', this.root, 'mwb-assembly-columns');this.columns=columns;
       this.releaseWorkspaceAnchorOnInput(columns,'library');
       this.left = this.el('aside', columns, 'mwb-assembly-left');
       this.center = this.el('section', columns, 'mwb-assembly-center');
-      this.left.setAttribute('aria-label','内容筛选');this.center.setAttribute('aria-label','选题与预览');
+      this.left.setAttribute('aria-label','内容筛选');this.center.setAttribute('aria-label','选材与预览');
       this.renderArrangementShell();this.updateWorkspaceMode();
       this.switchPane(this.activePane);
       this.renderLeft(); this.renderCenter(); this.renderOutline();
@@ -435,13 +588,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const recursiveLabel = this.el('label', config, 'mwb-assembly-check');
       const recursive = this.el('input', recursiveLabel); recursive.type='checkbox'; recursive.checked=this.settings.recursive !== false;
       recursiveLabel.appendChild(this.contentEl.ownerDocument.createTextNode('包含子目录'));
-      this.button(config,'应用目录并读取',async () => {
+      this.button(config,'应用目录并刷新',async () => {
         if (this.actionBusy) return;
         const roots = input => input.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
         const settings = {questionRoots:roots(this.questionRootsInput),knowledgeRoots:roots(this.knowledgeRootsInput),recursive:recursive.checked};
         await service.saveSettings(settings); this.settings=settings; await this.scan();
       });
-      this.button(this.left,'重新读取内容',()=>this.scan(),'mwb-assembly-rescan');
+      const rescan=this.button(this.left,'刷新素材',()=>this.scan(),'mwb-assembly-rescan');
+      rescan.title='重新读取题库与知识笔记；不会自动接受编排中的来源变化。';
       const filters = this.el('div', this.left, 'mwb-assembly-filters');
       const filterHeader=this.el('div',filters,'mwb-assembly-section-heading');
       this.el('h4', filterHeader, '', '筛选条件');
@@ -511,7 +665,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderCenter() {
       this.center.replaceChildren();
-      this.panelHeader(this.center,'02','选题与预览','列表直接预览，点击标题查看全文');
+      this.panelHeader(this.center,'02','选材与预览','列表直接预览，点击标题查看全文');
       const tools=this.el('div',this.center,'mwb-assembly-search');
       this.tabs=this.el('div',tools,'mwb-assembly-tabs');
       for(const [kind,label] of [['question','题目'],['knowledge','知识']]) {
@@ -568,7 +722,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const items=core.filterItems(this.index,this.filters);
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
       if(!items.length){
-        const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再读取内容。');
+        const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再刷新素材。');
         if(Object.entries(this.filters).some(([key,value])=>key!=='kind'&&value))this.button(empty,'清除筛选',()=>{
           this.filters={kind:this.filters.kind,query:''};this.limit=100;this.searchInput.value='';this.populateFilters();this.renderResults();
         });
@@ -606,7 +760,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(add&&this.selectedItem){
         const item=this.selectedItem,added=this.plan.entries.some(entry=>entry.kind!=='section'&&((item.id&&entry.sourceId===item.id)||entry.sourcePath===item.path));
         add.disabled=added||this.actionBusy;
-        add.textContent=added?'已加入':item.kind==='knowledge'?'整篇加入':'加入题篮';
+        add.textContent=added?'已加入':item.kind==='knowledge'?'整篇加入':'加入编排';
       }
     }
     selectionContext() {
@@ -728,14 +882,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           sourceCheck.assertCurrent();
           const count=selection.items.length;
           const next=core.addSelectedQuestions(this.plan,latest,this.filters,selection.items);
-          this.index=latest;this.selection=null;
-          this.selectionNotice=`已将 ${count} 道题加入编排，可在右侧调整顺序和角色。`;
+          this.index=latest;this.indexState='ready';this.selection=null;
+          this.selectionNotice=`已将 ${count} 道题加入编排，可在“预览编排”调整顺序和角色。`;
           this.populateFilters();this.renderTree();this.setPlan(next);
           this.setStatus(this.selectionNotice);
         } catch(error) {
           if(this.closed)return;
           this.selection=null;this.selectionNotice=errorText(error);
-          if(latest&&sourceCheck?.isCurrent()&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
+          if(latest&&sourceCheck?.isCurrent()&&JSON.stringify(this.settings)===settingsKey){this.index=latest;this.indexState='ready';this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();}
           this.renderSelection();throw error;
         } finally {
           sourceCheck?.dispose();
@@ -770,8 +924,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const heading=this.el('h3',header,'',item.title);heading.tabIndex=-1;
       const controls=this.el('div',header,'mwb-assembly-preview-actions');
       this.button(controls,'收起预览',()=>this.clearItemPreview(undefined,true),'mwb-assembly-preview-back');
-      this.button(controls,item.kind==='knowledge'?'整篇加入':'加入题篮',()=>this.add(item),'mwb-assembly-preview-add');
-      this.button(controls,'打开原文件',()=>service.openSource(item.path));
+      this.button(controls,item.kind==='knowledge'?'整篇加入':'加入编排',()=>this.add(item),'mwb-assembly-preview-add');
+      this.button(controls,'打开原文',()=>service.openSource(item.path));
       this.el('p',this.preview,'mwb-assembly-result-path',item.path);
       this.updateSelectedRows();
       const related=this.relatedKnowledge(item);
@@ -827,26 +981,63 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       });add.dataset.arrangementMutate='true';
       this.arrangementSectionInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();add.click();}});
       sectionMenu.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();sectionMenu.open=false;sectionToggle.focus();}});
-      const refresh=this.button(toolbar,'更新引用',()=>this.updateReferences());refresh.dataset.arrangementMutate='true';
+      const refresh=this.button(toolbar,'接受来源更新',()=>this.updateReferences());refresh.dataset.arrangementMutate='true';
+      refresh.title='刷新素材并接受可确认的来源变化；保留本次标题和角色，缺失或冲突需单独处理。';
       this.arrangementList=this.el('div',this.arrangementPane,'mwb-assembly-arrangement-list');
       this.releaseWorkspaceAnchorOnInput(this.arrangementPane,'arrangement');
       this.arrangementList.setAttribute('aria-label','已选内容顺序');
       this.arrangementList.addEventListener('dragover',event=>{
-        if(this.workspaceMode==='arrangement'&&!this.actionBusy&&!this.scanBusy)event.preventDefault();
+        if(this.currentArrangementDrag())event.preventDefault();
       });
       this.arrangementList.addEventListener('drop',event=>{
         if(event.target!==this.arrangementList)return;
         event.preventDefault();
-        const id=event.dataTransfer?.getData('application/x-mathsemble-entry');
-        this.changeArrangement(id,(plan)=>core.moveEntry(plan,id,plan.entries.length-1));
+        this.dropArrangement(event,null);
       });
+    }
+    clearArrangementDrag() {
+      this.arrangementDrag=null;
+      for(const row of this.arrangementList?.querySelectorAll('.is-dragging')||[])row.classList.remove('is-dragging');
+    }
+    currentArrangementDrag() {
+      const drag=this.arrangementDrag;
+      return drag&&!this.closed&&this.workspaceMode==='arrangement'&&!this.actionBusy&&!this.scanBusy&&
+        drag.plan===this.plan&&drag.path===this.planPath&&drag.row.isConnected ? drag : null;
+    }
+    dropArrangement(event,targetId,row) {
+      const drag=this.currentArrangementDrag();
+      const id=event.dataTransfer?.getData('application/x-mathsemble-entry');
+      this.clearArrangementDrag();
+      if(!drag||id!==drag.id||row&&!row.isConnected)return;
+      this.changeArrangement(id,plan=>{
+        const source=plan.entries.find(entry=>entry.entryId===id);
+        const target=targetId===null?plan.entries.length-1:plan.entries.findIndex(entry=>entry.entryId===targetId);
+        if(target<0)throw new Error('目标编排项已变化，请重新拖动');
+        if(source.kind!=='section')return core.moveEntry(plan,id,target);
+        const sections=core.getSections(plan);
+        // A section lands at a section boundary even when dropped on its
+        // contents. Introductory items before the first section stay in place.
+        const destination=targetId===null?sections.length-1:Math.max(0,sections.findIndex(section=>section.start<=target&&target<section.end));
+        return core.moveSection(plan,id,destination);
+      },row);
+    }
+    stepArrangement(entryId,direction,row) {
+      this.changeArrangement(entryId,(plan,index)=>{
+        if(plan.entries[index].kind!=='section')return core.moveEntry(plan,entryId,index+direction);
+        const sectionIndex=core.getSections(plan).findIndex(section=>section.entryId===entryId);
+        return core.moveSection(plan,entryId,sectionIndex+direction);
+      },row);
     }
     changeArrangement(entryId,change,row) {
       if(this.closed||this.workspaceMode!=='arrangement'||this.actionBusy||this.scanBusy)return;
       if(row&&!row.isConnected)return;
       const index=this.plan.entries.findIndex(entry=>entry.entryId===entryId);
       if(index<0)return;
-      try {this.setPlan(change(this.plan,index));}
+      try {
+        const next=change(this.plan,index);
+        if(JSON.stringify(next)===JSON.stringify(this.plan))return;
+        this.setPlan(next);
+      }
       catch(error){this.setStatus(errorText(error),true);this.notice(errorText(error));this.renderArrangement();}
     }
     editArrangementEntry(entryId,patch,row) {
@@ -902,6 +1093,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       record.updateOverflow();
     }
     renderArrangement() {
+      this.clearArrangementDrag();
       if(!this.arrangementList)return;
       if(this.workspaceMode!=='arrangement'){this.releaseInlinePreviews('arrangement');return;}
       const list=this.arrangementList,scrollTop=list.scrollTop;
@@ -920,42 +1112,45 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const previews=this.beginInlinePreviews('arrangement',list);
       list.replaceChildren();
       const resolved=core.resolvePlan(this.plan,this.index);
+      const sections=core.getSections(this.plan);
       if(!resolved.entries.length){
         const empty=this.emptyState(list,'还没有可编排的内容','先加入题目或知识，再在这里边看边调整顺序。');
-        this.button(empty,'去选题',()=>{this.switchWorkspaceMode('library');this.switchPane('library');this.searchInput?.focus();});
+        this.button(empty,'去选材',()=>{this.switchWorkspaceMode('library');this.switchPane('library');this.searchInput?.focus();});
       }
       let questionNumber=0;
       resolved.entries.forEach(({entry,item,status},index)=>{
+        const sectionIndex=sections.findIndex(section=>section.entryId===entry.entryId),section=sections[sectionIndex];
         const row=this.el('article',list,'mwb-assembly-arrangement-entry'+(entry.kind==='section'?' is-section':''));
         row.dataset.entryId=entry.entryId;row.dataset.sourceStatus=entry.kind==='section'?'section':status;
         row.classList.toggle('is-expanded',this.arrangementExpanded.has(entry.entryId));
-        const kind=entry.kind==='section'?'分区':entry.kind==='knowledge'?'知识':`第 ${++questionNumber} 题`;
+        const kind=section?`分区 ${sectionIndex+1}`:entry.kind==='knowledge'?'知识':`第 ${++questionNumber} 题`;
         const header=this.el('div',row,'mwb-assembly-arrangement-entry-header');
-        const handle=this.button(header,'⠿',()=>this.setStatus('拖动手柄排序，也可使用上移、下移或更多中的指定位置。'),'mwb-assembly-arrangement-drag');
+        const handle=this.button(header,'⠿',()=>this.setStatus(section?'整体移动分区标题及下方内容，直到下一个分区；也可使用上移、下移或更多中的分区序号。':'拖动手柄排序，也可使用上移、下移或更多中的指定位置。'),'mwb-assembly-arrangement-drag');
         handle.draggable=true;handle.dataset.arrangementAction='drag';handle.dataset.arrangementMutate='true';
         const updateLabels=()=>{
           const current=this.plan.entries.find(value=>value.entryId===entry.entryId);
-          handle.setAttribute('aria-label',`拖动排序：${current?.title||item?.title||kind}`);handle.title='拖动排序';
+          const label=section?'拖动整个分区':'拖动排序';
+          handle.setAttribute('aria-label',`${label}：${current?.title||item?.title||kind}`);
+          handle.title=section?`${label}（含 ${section.end-section.start-1} 项内容）`:label;
         };
         updateLabels();
         handle.addEventListener('dragstart',event=>{
-          if(!row.isConnected||this.actionBusy||this.scanBusy||this.workspaceMode!=='arrangement'){event.preventDefault();return;}
+          this.clearArrangementDrag();
+          if(this.closed||!row.isConnected||this.actionBusy||this.scanBusy||this.workspaceMode!=='arrangement'){event.preventDefault();return;}
           handle.focus({preventScroll:true});
+          this.arrangementDrag={id:entry.entryId,plan:this.plan,path:this.planPath,row};
           event.dataTransfer?.setData('application/x-mathsemble-entry',entry.entryId);
-          if(event.dataTransfer)event.dataTransfer.effectAllowed='move';row.classList.add('is-dragging');
+          if(event.dataTransfer)event.dataTransfer.effectAllowed='move';
+          const moving=new Set(this.plan.entries.slice(section?.start??index,section?.end??index+1).map(entry=>entry.entryId));
+          for(const member of list.children)if(moving.has(member.dataset.entryId))member.classList.add('is-dragging');
         });
-        handle.addEventListener('dragend',()=>row.classList.remove('is-dragging'));
+        handle.addEventListener('dragend',()=>{if(this.arrangementDrag?.row===row)this.clearArrangementDrag();});
         row.addEventListener('dragover',event=>{
-          if(!this.actionBusy&&!this.scanBusy){event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='move';}
+          if(this.currentArrangementDrag()){event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='move';}
         });
         row.addEventListener('drop',event=>{
           event.preventDefault();event.stopPropagation();
-          const id=event.dataTransfer?.getData('application/x-mathsemble-entry');
-          if(id===entry.entryId)return;
-          this.changeArrangement(id,plan=>{
-            const target=plan.entries.findIndex(value=>value.entryId===entry.entryId);
-            return core.moveEntry(plan,id,target);
-          },row);
+          this.dropArrangement(event,entry.entryId,row);
         });
         this.el('span',header,'mwb-assembly-arrangement-position',kind);
         const title=this.el('input',header,'mwb-assembly-arrangement-title');title.value=entry.title||'';
@@ -982,10 +1177,13 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const action=(parent,label,key,callback)=>{
           const button=this.button(parent,label,callback);button.dataset.arrangementAction=key;return button;
         };
-        const up=action(header,'↑','up',()=>this.changeArrangement(entry.entryId,(plan,current)=>core.moveEntry(plan,entry.entryId,current-1),row));
-        const down=action(header,'↓','down',()=>this.changeArrangement(entry.entryId,(plan,current)=>core.moveEntry(plan,entry.entryId,current+1),row));
-        up.dataset.boundary=String(index===0);down.dataset.boundary=String(index===this.plan.entries.length-1);
-        for(const [control,label] of [[up,'上移'],[down,'下移']]){control.dataset.arrangementMutate='true';control.setAttribute('aria-label',label);control.title=label;}
+        const up=action(header,'↑','up',()=>this.stepArrangement(entry.entryId,-1,row));
+        const down=action(header,'↓','down',()=>this.stepArrangement(entry.entryId,1,row));
+        up.dataset.boundary=String(section?sectionIndex===0:index===0);
+        down.dataset.boundary=String(section?sectionIndex===sections.length-1:index===this.plan.entries.length-1);
+        for(const [control,label] of [[up,'上移'],[down,'下移']]){
+          control.dataset.arrangementMutate='true';control.setAttribute('aria-label',section?label+'整个分区':label);control.title=section?label+'整个分区':label;
+        }
         const more=this.el('details',row,'mwb-assembly-arrangement-more');more.open=this.arrangementMenuOpen.has(entry.entryId);
         const toggle=this.el('summary',more,'','⋯');toggle.dataset.arrangementAction='more';toggle.setAttribute('aria-label','更多操作');toggle.title='更多操作';
         more.addEventListener('toggle',()=>{
@@ -997,24 +1195,26 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         });
         more.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();more.open=false;toggle.focus({preventScroll:true});}});
         const actions=this.el('div',more,'mwb-assembly-arrangement-actions');
-        const position=this.field(actions,'移到第几项');position.type='number';position.min='1';position.max=String(this.plan.entries.length);position.step='1';position.value=String(index+1);
+        const position=this.field(actions,section?'移到第几分区':'移到第几项');position.type='number';position.min='1';position.max=String(section?sections.length:this.plan.entries.length);position.step='1';position.value=String((section?sectionIndex:index)+1);
         position.dataset.arrangementField='position';position.dataset.arrangementMutate='true';
         const move=action(actions,'移动','move',()=>this.changeArrangement(entry.entryId,plan=>{
           const target=Number(position.value);
-          if(!Number.isInteger(target)||target<1||target>plan.entries.length)throw new Error(`请输入 1 至 ${plan.entries.length} 之间的编排位置`);
-          return core.moveEntry(plan,entry.entryId,target-1);
+          const total=section?core.getSections(plan).length:plan.entries.length;
+          if(!Number.isInteger(target)||target<1||target>total)throw new Error(`请输入 1 至 ${total} 之间的${section?'分区序号':'编排位置'}`);
+          return section?core.moveSection(plan,entry.entryId,target-1):core.moveEntry(plan,entry.entryId,target-1);
         },row));move.dataset.arrangementMutate='true';
         position.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();move.click();}});
         if(entry.kind!=='section'){
           const source=action(actions,'打开原文','source',()=>{if(row.isConnected)return service.openSource(item?.path||entry.sourcePath);});
           source.setAttribute('aria-label',`打开原文：${item?.path||entry.sourcePath}`);
         }
-        const remove=action(actions,entry.kind==='section'?'移除分区':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
+        const remove=action(actions,entry.kind==='section'?'移除分区标题':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
         remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');
-        this.el('p',more,'mwb-assembly-muted',`第 ${index+1} 项，共 ${this.plan.entries.length} 项；位置包含题目、知识和分区。`);
+        if(section)remove.title='只移除分区标题，下方内容保留。';
+        this.el('p',more,'mwb-assembly-muted',section?`第 ${sectionIndex+1} 个分区，共 ${sections.length} 个；整体移动标题及下方 ${section.end-section.start-1} 项内容，直到下一个分区。移除标题会保留内容。`:`第 ${index+1} 项，共 ${this.plan.entries.length} 项；位置包含题目、知识和分区。`);
         if(entry.kind!=='section'){
           this.el('div',more,'mwb-assembly-result-path',item?.path||entry.sourcePath);
-          const message={changed:'源文已变化。请先点击“更新引用”核对最新正文，再继续预览。',missing:'找不到源文件，请恢复来源或移除此项。',conflict:'来源身份冲突，请修正后重新读取。'}[status];
+          const message={changed:'源文已变化。可打开原文核对，再点击“接受来源更新”。',missing:'找不到源文件，请恢复来源并刷新素材，或移除此项。',conflict:'来源身份冲突，请修正后刷新素材。'}[status];
           if(message)this.el('p',row,'mwb-assembly-error',message);
           if(status==='ok'&&item){
             const record=this.addInlinePreview(previews,row,item);
@@ -1051,21 +1251,21 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(this.actionBusy){this.notice('请等待当前操作完成');return;}
       const generation=++this.scanGeneration;this.scanBusy=true;
       this.updateSummary();
-      this.clearSelection('正在重新读取内容，请读取完成后生成候选。');this.renderSelection();
-      this.setStatus('正在读取题库与知识笔记…');
+      this.clearSelection('正在刷新素材，请完成后重新生成候选。');this.renderSelection();
+      this.setStatus('正在刷新题库与知识笔记…');
       try {
         const index=await service.scan(this.settings);
         if(this.closed||generation!==this.scanGeneration)return;
-        this.index=index;this.limit=100;
+        this.index=index;this.indexState='ready';this.limit=100;
         this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
         const issues=index.issues?.length||0;
-        this.setStatus(`已读取 ${index.items.length} 份内容${issues?`；${issues} 项待核对` : ''}。源文变化不会自动更新已保存的方案。`,!!issues);
+        this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);
         if(issues){
           const details=this.el('details',this.tree,'mwb-assembly-index-issues');this.el('summary',details,'',`查看 ${issues} 项提示`);
           for(const issue of index.issues.slice(0,100))this.el('p',details,'',typeof issue==='string'?issue:issue.message||JSON.stringify(issue));
         }
         return true;
-      } catch(error){if(!this.closed&&generation===this.scanGeneration)this.setStatus(errorText(error),true);}
+      } catch(error){if(!this.closed&&generation===this.scanGeneration){this.indexState='error';this.setStatus(errorText(error),true);}}
       finally{if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}}
     }
     async updateReferences() {
@@ -1079,7 +1279,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       });
       if(count)this.setPlan({...this.plan,entries});
       const unresolved=resolved.entries.filter(row=>row.status==='missing'||row.status==='conflict').length;
-      this.setStatus(`已更新 ${count} 处引用${unresolved?`；仍有 ${unresolved} 处缺失或冲突` : ''}。请核对内容后预览。`,!!unresolved);
+      this.setStatus(`已接受 ${count} 项来源更新${unresolved?`；仍有 ${unresolved} 项缺失或冲突` : ''}。本次标题和角色保留${count?'；方案有更改，请保存':''}。`,!!unresolved);
     }
     async saveCurrentPlan(asNew = false) {
       return this.runAction(asNew ? '另存方案' : '保存方案', async () => {

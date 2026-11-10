@@ -69,7 +69,7 @@ async function browserCases(sources,css) {
       disconnect(){this.disconnected=true;this.targets.clear();this.native.disconnect();}
     };
     const load=source=>{const module={exports:{}};new win.Function('module',source)(module);return module.exports;};
-    const core=load(sources.core),owners=[],calls=[],pending=[],opened=[],saved=[],previews=[],notices=[];
+    const core=load(sources.core),owners=[],calls=[],pending=[],opened=[],saved=[],previews=[],previewOptions=[],notices=[],revealed=[];
     let active=0,maxActive=0,index=core.buildIndex(records),savedPlan=null;
     const clone=value=>win.JSON.parse(JSON.stringify(value));
     class Component {
@@ -78,7 +78,7 @@ async function browserCases(sources,css) {
       unload(){this.loaded=false;this.unloadCount++;}
     }
     class ItemView extends Component {
-      constructor(){super();this.contentEl=host;this.children=new Set();this.app={workspace:{requestSaveLayout(){}}};}
+      constructor(leaf){super();this.leaf=leaf;this.contentEl=host;this.children=new Set();this.app={workspace:{requestSaveLayout(){},revealLeaf:async target=>{revealed.push(target);}}};}
       addChild(c){this.children.add(c);c.load();}
       removeChild(c){this.children.delete(c);c.unload();}
     }
@@ -87,7 +87,7 @@ async function browserCases(sources,css) {
       openSource:async source=>{opened.push(source);},
       savePlan:async plan=>{savedPlan=clone(plan);saved.push(savedPlan);return '方案/编排.json';},
       loadPlan:async()=>clone(savedPlan),exportMarkdown:async()=> '输出/编排.md',
-      preview:async(plan,latest)=>{if(core.resolvePlan(plan,latest).issues.length)throw Error('来源需核对');previews.push(clone(plan));},
+      preview:async(plan,latest,options)=>{if(core.resolvePlan(plan,latest).issues.length)throw Error('来源需核对');previews.push(clone(plan));previewOptions.push(options);},
       beginSourceCheck:()=>({isCurrent:()=>true,assertCurrent(){},dispose(){}})};
     const renderMarkdown=async(md,node,sourcePath,owner,signal)=>{
       const inline=node.classList.contains('mwb-assembly-snippet-body');
@@ -122,8 +122,8 @@ async function browserCases(sources,css) {
       } finally {if(inline)active--;}
     };
     const View=load(sources.view)({ItemView,Notice:class{constructor(text){notices.push(text);}},Component,core,service,renderMarkdown});
-    const view=new View({},{});
-    const f={frame,doc,win,host,view,core,service,owners,calls,observers,resizeObservers,opened,saved,previews,notices,
+    const leaf={},view=new View(leaf,{});leaf.view=view;
+    const f={frame,doc,win,host,leaf,view,core,service,owners,calls,observers,resizeObservers,opened,saved,previews,previewOptions,notices,revealed,
       active:()=>active,maxActive:()=>maxActive,finishAll:()=>pending.splice(0).forEach(c=>c.finish()),
       setDeferred:value=>{deferred=value;},setIndex:value=>{index=value;},index:()=>index,clone};
     fixtures.push(f);if(state)await view.setState(clone(state),{});await view.onOpen();
@@ -174,6 +174,166 @@ async function browserCases(sources,css) {
     ok(visible(f,field),'editable field is hidden: '+key);
     field.focus();field.value=value;field.dispatchEvent(new f.win.Event('change',{bubbles:true}));await pause();return field;
   };
+  const openPlanSettings=async f=>{
+    const menu=f.view.root.querySelector('.mwb-assembly-plan-menu');
+    if(!menu.open){menu.querySelector(':scope > summary').click();await pause();}
+    const settings=menu.querySelector('.mwb-assembly-plan-settings');
+    if(!settings.open){settings.querySelector('summary').click();await pause();}
+    return settings;
+  };
+  const setting=async(f,kind,key,value)=>{
+    const panel=await openPlanSettings(f),input=panel.querySelector('[data-'+kind+'-field="'+key+'"]');
+    ok(visible(f,input)&&!input.disabled,'settings control is not editable: '+key);
+    input.scrollIntoView({block:'nearest'});input.focus();
+    if(input.type==='checkbox')input.checked=value;else input.value=value;
+    input.dispatchEvent(new f.win.Event(kind==='course'?'input':'change',{bubbles:true}));await pause();return input;
+  };
+
+  await check('course and output controls save and restore independently of original note content',async()=>{
+    const f=await fixture(),beforeEntries=JSON.stringify(f.view.plan.entries);
+    await openPlanSettings(f);
+    const course=key=>f.view.planSettingsInputs.course.get(key),follow=()=>f.view.planSettingsInputs.follow;
+    ok(follow().checked&&course('title').disabled&&course('title').value===f.view.plan.title,'new plan title inheritance is not visible');
+    f.view.titleInput.value='本次讲义标题';f.view.titleInput.dispatchEvent(new f.win.Event('input'));await pause();
+    ok(course('title').value==='本次讲义标题'&&f.view.plan.course.title===null,'inherited course title was copied instead of following the plan');
+    follow().click();await pause();await setting(f,'course','title','');
+    ok(f.view.plan.course.title===''&&!course('title').disabled,'explicit blank topic was replaced by inherited title');
+    follow().click();await pause();ok(f.view.plan.course.title===null,'title inheritance could not be restored');
+    follow().click();await pause();await setting(f,'course','title','试听专题');
+    for(const [key,value] of [['teacher','李老师'],['student','小明'],['time','周六 09:00'],['subject','高中数学'],['grade','高一'],['objectives','目标一\n目标二']])await setting(f,'course',key,value);
+    for(const [key,value] of [['layout','trial'],['mode','student'],['ratio','125'],['minimumCm','2'],['solutionSpaces',true],['showSolution',false]])await setting(f,'output',key,value);
+    ok(f.view.dirty&&f.view.saveStateEl.textContent.includes('未保存'),'settings edits were not included in draft state');
+    const expected=JSON.stringify(f.view.plan);await click(f.view.root,'保存方案');
+    ok(f.saved.length===1&&JSON.stringify(f.saved[0])===expected&&!f.view.dirty,'save omitted or altered course/output fields');
+    ok(JSON.stringify(f.view.plan.entries)===beforeEntries&&JSON.stringify(records)===originalSources,'settings changed content references or source records');
+    await click(f.view.root,'预览 A4');
+    ok(JSON.stringify(f.previews[0])===expected,'A4 used a profile different from the saved plan');
+    const oldTeacher=course('teacher');await click(f.view.root,'新建');await openPlanSettings(f);
+    ok(f.view.plan.course.title===null&&course('teacher').value===''&&f.view.plan.output.layout==='default','new plan retained prior course/output values');
+    oldTeacher.value='过期控件';oldTeacher.dispatchEvent(new f.win.Event('input',{bubbles:true}));
+    ok(f.view.plan.course.teacher===''&&!f.view.dirty,'detached course control mutated a replacement plan');
+    f.view.savedSelect.value='方案/编排.json';await click(f.view.root,'打开方案');await openPlanSettings(f);
+    ok(JSON.stringify(f.view.plan)===expected&&course('title').value==='试听专题'&&!follow().checked,'opening saved plan lost course values or explicit-title mode');
+    ok(f.view.planSettingsInputs.output.get('ratio').value==='125'&&f.view.planSettingsInputs.output.get('solutionSpaces').checked&&!f.view.planSettingsInputs.output.get('showSolution').checked,'opening saved plan restored incomplete output controls');
+    const legacy=await fixture({state:{plan:{schemaVersion:1,title:'旧方案',entries:f.view.plan.entries},planPath:'方案/旧方案.json',dirty:false}});
+    ok(legacy.view.plan.schemaVersion===2&&legacy.view.plan.course.title===null&&legacy.view.plan.output.mode==='document','old workspace plan did not receive safe defaults');
+    ok(!legacy.view.dirty&&legacy.saved.length===0,'restoring legacy settings wrote or dirtied the old plan');
+  });
+
+  await check('A4 profile application is explicit, isolated and bound to its originating draft',async()=>{
+    const f=await fixture();await click(f.view.root,'保存方案');await click(f.view.root,'预览 A4');
+    const apply=f.previewOptions[0]?.onApplyPlanSettings;ok(typeof apply==='function','preview did not receive an explicit apply callback');
+    const profile=()=>f.clone({course:f.view.plan.course,output:f.view.plan.output});
+    const initial=f.view.plan;
+    ok(apply(profile())===false&&!f.view.dirty&&f.view.plan===initial,'same settings dirtied or replaced a saved draft');
+    const update=profile();update.course.student='课次学生';update.output.layout='two-column';
+    ok(apply(update)===true&&f.view.plan.course.student==='课次学生'&&f.view.plan.output.layout==='two-column','explicit A4 profile did not reach its plan');
+    ok(f.view.dirty&&f.saved.length===1&&f.view.statusEl.textContent.includes('请保存方案'),'applying settings silently saved the plan or failed to mark it unsaved');
+    update.course.student='外部后续修改';update.output.spaceSettings.ratio=150;
+    ok(f.view.plan.course.student==='课次学生'&&f.view.plan.output.spaceSettings.ratio===100,'draft retained caller-owned configuration objects');
+    const second=profile();second.output.mode='teacher';ok(apply(second)===true,'same preview could not apply a later explicit edit');
+    const expectRefusal=fn=>{let failed=false;try{fn();}catch(_){failed=true;}ok(failed,'stale or invalid A4 profile was accepted');};
+    const snapshot=JSON.stringify(f.view.plan),invalid=profile();invalid.output.partialExportApproved=true;
+    expectRefusal(()=>apply(invalid));ok(JSON.stringify(f.view.plan)===snapshot,'invalid output profile partially changed the plan');
+    f.view.scanBusy=true;expectRefusal(()=>apply(profile()));f.view.scanBusy=false;
+    f.view.actionBusy=true;expectRefusal(()=>apply(profile()));f.view.actionBusy=false;
+    ok(JSON.stringify(f.view.plan)===snapshot,'busy callback mutated the draft');
+    await setting(f,'course','student','工作区中的更新');expectRefusal(()=>apply(second));
+    ok(f.view.plan.course.student==='工作区中的更新','old preview overwrote a newer workspace edit');
+    await click(f.view.root,'保存方案');await click(f.view.root,'预览 A4');
+    const sameFileApply=f.previewOptions.at(-1).onApplyPlanSettings;
+    f.view.savedSelect.value='方案/编排.json';await click(f.view.root,'打开方案');
+    expectRefusal(()=>sameFileApply(profile()));
+    await click(f.view.root,'预览 A4');const beforeSaveAs=f.view.plan,saveAsApply=f.previewOptions.at(-1).onApplyPlanSettings;
+    const savePlan=f.service.savePlan;f.service.savePlan=async plan=>{await savePlan(plan);return '方案/另存.json';};
+    await click(f.view.root,'另存方案');
+    ok(f.view.plan===beforeSaveAs&&f.view.planPath==='方案/另存.json','save-as fixture did not preserve draft identity with a new file');
+    expectRefusal(()=>saveAsApply(profile()));
+    await click(f.view.root,'预览 A4');const oldPlanApply=f.previewOptions.at(-1).onApplyPlanSettings;
+    await click(f.view.root,'新建');expectRefusal(()=>oldPlanApply(profile()));
+    ok(f.view.plan.entries.length===0&&f.view.plan.course.student==='','old preview applied to a new plan');
+    const closedApply=f.view.bindPreviewSettings(),closedProfile=profile();await f.view.onClose();
+    expectRefusal(()=>closedApply(closedProfile));
+  });
+
+  await check('temporary A4 publication and return stay bound to the live workspace without restoring an old draft',async()=>{
+    const f=await fixture(),initial=f.view.plan,initialPath=f.view.planPath,initialDirty=f.view.dirty;
+    await click(f.view.root,'预览 A4');
+    const first=f.previewOptions[0];
+    ok(first?.isCurrent()&&typeof first.onReturnToAssembly==='function','temporary preview context was not passed to the service');
+    ok(f.previews.length===1&&f.saved.length===0&&f.view.plan===initial&&f.view.planPath===initialPath&&f.view.dirty===initialDirty,'preview saved or changed its originating plan');
+    f.view.actionBusy=true;const busyStatus=f.view.statusEl.textContent;
+    await first.onReturnToAssembly();
+    ok(f.revealed[0]===f.leaf&&f.view.plan===initial&&f.view.statusEl.textContent===busyStatus,'return during an operation changed the draft or replaced progress');
+    f.view.actionBusy=false;
+    await click(f.view.root,'保存方案');
+    ok(!first.isCurrent(),'first save to a new path kept an old preparation current');
+    const savedPlan=f.view.plan,savedPath=f.view.planPath;
+    await first.onReturnToAssembly();
+    ok(f.revealed.at(-1)===f.leaf&&f.view.plan===savedPlan&&f.view.planPath===savedPath&&!f.view.dirty,'return restored an unsaved historical draft');
+    await click(f.view.root,'预览 A4');const sameFile=f.previewOptions.at(-1);
+    f.view.savedSelect.value='方案/编排.json';await click(f.view.root,'打开方案');
+    ok(!sameFile.isCurrent(),'reopening identical saved content did not invalidate the old plan identity');
+    const reopened=f.view.plan;await sameFile.onReturnToAssembly();
+    ok(f.view.plan===reopened&&!f.view.dirty,'return replaced the reopened plan');
+    await click(f.view.root,'预览 A4');const beforeNew=f.previewOptions.at(-1);
+    await click(f.view.root,'新建');ok(!beforeNew.isCurrent(),'new plan reused an old temporary preparation');
+    const empty=f.view.plan;await beforeNew.onReturnToAssembly();
+    ok(f.view.plan===empty&&f.view.plan.entries.length===0&&f.view.statusEl.textContent.includes('方案已变化'),'return did not preserve and identify the current new plan');
+    const beforeEdit=f.view.bindPreviewContext(),saveCount=f.saved.length;
+    f.view.titleInput.value='工作区中的新修改';f.view.titleInput.dispatchEvent(new f.win.Event('input',{bubbles:true}));await pause();
+    ok(!beforeEdit.isCurrent(),'editing the current plan kept its old temporary preparation current');
+    const edited=f.view.plan,editedPath=f.view.planPath;await beforeEdit.onReturnToAssembly();
+    ok(f.view.plan===edited&&f.view.planPath===editedPath&&f.view.dirty&&f.saved.length===saveCount,'return discarded or saved newer workspace edits');
+    const live=f.view.bindPreviewContext();f.leaf.view={};
+    ok(!live.isCurrent(),'a leaf hosting a replacement view remained current');
+    let rejected=false;try{await live.onReturnToAssembly();}catch(_){rejected=true;}
+    ok(rejected,'return revealed a leaf owned by a different view');f.leaf.view=null;
+    rejected=false;try{await live.onReturnToAssembly();}catch(_){rejected=true;}
+    ok(!live.isCurrent()&&rejected,'return revealed a disposed leaf');f.leaf.view=f.view;
+    const revealCount=f.revealed.length;await f.view.onClose();
+    rejected=false;try{await live.onReturnToAssembly();}catch(_){rejected=true;}
+    ok(!live.isCurrent()&&rejected&&f.revealed.length===revealCount,'closed workspace could still publish or receive temporary preview navigation');
+  });
+
+  await check('pending temporary preview is discarded when its workspace closes or restores another plan',async()=>{
+    for(const action of ['restore','close']){
+      const f=await fixture();let release,options,published=0;
+      const waiting=new Promise(resolve=>{release=resolve;});
+      f.service.preview=async(_plan,_index,context)=>{
+        options=context;await waiting;
+        if(!context.isCurrent())throw Error('编排已变化，旧预览已取消');
+        published++;
+      };
+      await click(f.view.root,'预览 A4');
+      ok(f.view.actionBusy&&options.isCurrent(),'pending preparation lacks a current origin');
+      if(action==='restore')await f.view.setState(f.clone({plan:f.core.createPlan('恢复后的方案'),planPath:'方案/恢复.json',dirty:false}),{});
+      else await f.view.onClose();
+      ok(!options.isCurrent(),'old preparation remained current after '+action);
+      release();await until(()=>!f.view.actionBusy,'pending preview did not finish after cancellation');
+      ok(published===0&&f.saved.length===0,'stale preparation opened or saved a preview after '+action);
+      if(action==='restore')ok(f.view.plan.title==='恢复后的方案'&&!f.view.dirty&&f.view.statusEl.classList.contains('is-error'),'discarded preview replaced or saved a restored plan');
+      else ok(!f.host.childElementCount,'cancelled preview revived a closed view');
+    }
+  });
+
+  await check('course settings stay reachable in narrow short panes and block edits during ongoing work',async()=>{
+    const f=await fixture();f.host.style.width='420px';f.host.style.height='360px';await pause(30);
+    await openPlanSettings(f);await pause(30);
+    const menu=f.view.planMenuBody,rootRect=f.view.root.getBoundingClientRect();
+    ok(menu.getBoundingClientRect().bottom<=rootRect.bottom+1&&menu.scrollHeight>menu.clientHeight,'expanded settings escape the short workspace or cannot scroll');
+    const last=f.view.planSettingsInputs.output.get('showSolution');last.scrollIntoView({block:'nearest'});await pause();
+    const control=last.getBoundingClientRect(),bounds=menu.getBoundingClientRect();
+    ok(control.top>=bounds.top&&control.bottom<=bounds.bottom,'last output setting cannot be reached');
+    ok(f.view.root.scrollWidth<=f.view.root.clientWidth+1,'settings menu introduces horizontal workspace overflow');
+    const before=JSON.stringify(f.view.plan);f.view.actionBusy=true;f.view.updateSummary();
+    ok([...f.view.planSettingsInputs.course.values(),...f.view.planSettingsInputs.output.values(),f.view.planSettingsInputs.follow].every(input=>input.disabled),'busy state leaves writable profile controls');
+    last.checked=false;last.dispatchEvent(new f.win.Event('change',{bubbles:true}));await pause();
+    ok(JSON.stringify(f.view.plan)===before,'detached or queued setting event bypassed busy guard');
+    f.view.actionBusy=false;f.view.updateSummary();ok(!last.disabled&&last.checked,'busy recovery did not restore persisted control values');
+    menu.dispatchEvent(new f.win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await pause();
+    ok(!f.view.planMenu.open&&f.doc.activeElement===f.view.planMenu.querySelector(':scope > summary'),'settings Escape did not return focus to the menu');
+  });
 
   await check('dedicated arrangement shows mixed plan entries in order and renders original content without opening a question',async()=>{
     const f=await fixture();
@@ -187,7 +347,7 @@ async function browserCases(sources,css) {
     ok(source&&call.md===body(source.markdown),'arrangement altered Markdown or used the wrong source path');
     ok(call.signal&&!call.signal.aborted,'arrangement renderer has no cancellation signal');
     ok(cards(f).length===6&&cards(f).filter(node=>node.dataset.sourceStatus==='section').length===2,'section and knowledge entries were omitted');
-    ok(!button(f.view.arrangementPane,'返回选题')&&!f.view.arrangementPane.querySelector('h3'),'dedicated mode repeats the top-level title or navigation');
+    ok(!button(f.view.arrangementPane,'返回选材')&&!f.view.arrangementPane.querySelector('h3'),'dedicated mode repeats the top-level title or navigation');
     ok(f.view.arrangementPane.getBoundingClientRect().width>=f.view.root.clientWidth-40,'dedicated preview does not use workspace width');fit(f);
   });
 
@@ -275,7 +435,7 @@ async function browserCases(sources,css) {
     ok(sectionInput&&visible(f,sectionInput),'arrangement has no accessible section title field');sectionInput.value='课堂小结';await click(sectionMenu,'加入分区');
     ok(f.view.plan.entries.at(-1).kind==='section'&&f.view.plan.entries.at(-1).title==='课堂小结','section was not appended to the same plan');
     await click(f.view.root,'保存方案');ok(f.saved.length===1&&JSON.stringify(f.saved[0])===JSON.stringify(f.view.plan)&&!f.view.dirty,'saving used a different or stale plan');
-    await click(f.view.root,'A4 预览 / PDF');ok(f.previews.length===1&&JSON.stringify(f.previews[0])===JSON.stringify(f.view.plan),'A4 preview used stale arrangement order or fields');
+    await click(f.view.root,'预览 A4');ok(f.previews.length===1&&JSON.stringify(f.previews[0])===JSON.stringify(f.view.plan),'A4 preview used stale arrangement order or fields');
     ok(JSON.stringify(records)===originalSources,'plan edit changed original source data');
     const rememberDeepPosition=async()=>{
       await mode(f,'library');
@@ -399,20 +559,30 @@ async function browserCases(sources,css) {
   });
 
   await check('source changes, missing files and conflicting identities remain explicit until references are checked',async()=>{
-    const f=await fixture({manual:true});await mode(f,'arrangement');const fingerprints=new Map(f.view.plan.entries.map(row=>[row.entryId,row.sourceFingerprint]));
+    const f=await fixture({manual:true});await mode(f,'arrangement');
+    const changedId=entry(f,'Q0').entryId;
+    await setField(f,changedId,'title','本次讲解题');await setField(f,changedId,'role','例题');
+    await f.view.saveCurrentPlan();const savedPlan=JSON.stringify(f.view.plan);
+    const fingerprints=new Map(f.view.plan.entries.map(row=>[row.entryId,row.sourceFingerprint]));
     const changed=records.filter(record=>record.metadata.id!=='Q1').map(record=>record.metadata.id==='Q0'?{...record,markdown:record.markdown+'\n新增条件'}:record);
     changed.push({...records.find(record=>record.metadata.id==='Q2'),path:'题库/冲突.md'});
     f.setIndex(f.core.buildIndex(changed));await f.view.scan();
+    ok(!f.view.dirty&&f.view.saveStateEl.textContent.includes('已保存')&&JSON.stringify(f.view.plan)===savedPlan,'refreshing changed sources incorrectly dirtied or replaced the saved plan');
+    ok(f.view.sourceStateEl.textContent.includes('3 项来源待处理'),'source issues disappeared behind the saved-plan state');
     for(const [source,status] of [['Q0','changed'],['Q1','missing'],['Q2','conflict']]){
       const row=entry(f,source),node=card(f,row.entryId);
       ok(node.dataset.sourceStatus===status&&node.querySelector('.mwb-assembly-error'),'source status not exposed for '+source);
       ok(row.sourceFingerprint===fingerprints.get(row.entryId),'source issue was silently accepted');
       ok(!node.querySelector('.mwb-assembly-snippet'),'unconfirmed source rendered as current content for '+source);
     }
-    await click(f.view.root,'A4 预览 / PDF');ok(f.previews.length===0&&f.view.statusEl.classList.contains('is-error'),'unresolved sources bypassed the preview guard');
-    await click(f.view.arrangementPane,'更新引用');
+    await f.view.saveCurrentPlan();
+    ok(!f.view.dirty&&JSON.stringify(f.view.plan)===savedPlan&&f.view.sourceStateEl.textContent.includes('3 项来源待处理'),'saving implicitly accepted source changes or cleared their status');
+    await click(f.view.root,'预览 A4');ok(f.previews.length===0&&f.view.statusEl.classList.contains('is-error'),'unresolved sources bypassed the preview guard');
+    await click(f.view.arrangementPane,'接受来源更新');
     ok(card(f,entry(f,'Q0').entryId).dataset.sourceStatus==='ok','explicit reference update did not accept the changed source');
     ok(card(f,entry(f,'Q1').entryId).dataset.sourceStatus==='missing'&&card(f,entry(f,'Q2').entryId).dataset.sourceStatus==='conflict','reference update hid unresolved identity problems');
+    ok(f.view.dirty&&f.view.sourceStateEl.textContent.includes('2 项来源待处理'),'accepting source updates did not independently update save and source states');
+    ok(entry(f,'Q0').title==='本次讲解题'&&entry(f,'Q0').role==='例题','accepting source updates overwrote local teaching choices');
   });
 
   await check('switching workspaces and closing release arrangement tasks without resetting the shared concurrency limit',async()=>{
@@ -435,7 +605,7 @@ async function browserCases(sources,css) {
 
   await check('empty, narrow and short arrangement panes keep all editing and recovery actions reachable',async()=>{
     const empty=await fixture({empty:true});await mode(empty,'arrangement');
-    ok(!cards(empty).length&&empty.view.arrangementPane.textContent.includes('选题'),'empty arrangement has no selection guidance');
+    ok(!cards(empty).length&&empty.view.arrangementPane.textContent.includes('选材'),'empty arrangement has no selection guidance');
     const f=await fixture();await mode(f,'arrangement');f.host.style.width='420px';f.host.style.height='600px';await pause(30);fit(f);
     const id=entry(f,'Q2').entryId,node=card(f,id);node.scrollIntoView({block:'start'});await pause();
     await openMenu(f,id);

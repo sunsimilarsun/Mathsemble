@@ -1,6 +1,6 @@
 # Mathsemble 发布指引
 
-当前开发版为 0.2.4，包含错误定位和条件抽题；正式稳定版为 [0.2.3](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.3)。开发、验收、正式标签发布和社区目录提交分别记录，0.2.4 尚未正式发布。
+本次发布为 [0.2.4](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.4)，包含选材与预览编排、分区整体移动、课程与排版保存、临时 A4 预览、错误定位及条件抽题。发布结果与验收范围见[测试记录](TESTING_0.2.4.md)；正式标签发布和社区目录提交分别记录。
 
 ## 本地与 CI 门槛
 

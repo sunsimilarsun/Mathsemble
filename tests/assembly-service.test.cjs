@@ -136,6 +136,23 @@ test('a service must load an existing plan before saving over its path',async()=
   assert.equal((await restarted.loadPlan(path)).title,'已读取的修改');
 });
 
+test('legacy plan loading does not write and explicit saving persists course and output across sessions',async()=>{
+  const f=await prepared(),path='Mathsemble/组题方案/旧方案.json';
+  const legacy={schemaVersion:1,title:f.plan.title,entries:f.plan.entries};
+  const original=JSON.stringify(legacy,null,2)+'\n';f.file(path,original);
+  const loaded=await f.service.loadPlan(path);
+  assert.equal(loaded.schemaVersion,2);assert.equal(f.nodes.get(path).content,original);assert.equal(f.writes.length,0);
+  loaded.course={teacher:'李老师',student:'小甲',time:'周六',subject:'数学',grade:'高一',title:null,objectives:'目标一\n目标二'};
+  loaded.output={layout:'two-column',mode:'student',spaceSettings:{ratio:125,minimumCm:2},solutionOptions:{solutionSpaces:true,showSolution:false}};
+  await f.service.savePlan(loaded,path);
+  const restarted=createService(f.plugin,f.deps),reloaded=await restarted.loadPlan(path);
+  assert.deepEqual(reloaded,loaded);
+  assert.equal(reloaded.entries[0].entryId,legacy.entries[0].entryId);
+  assert.equal(JSON.parse(f.nodes.get(path).content).schemaVersion,2);
+  assert(f.writes.every(([,target])=>target.startsWith('Mathsemble/组题方案')));
+  assert.equal(f.nodes.get('题库/题.md').content,q());
+});
+
 test('one view cannot overwrite another view using its stale loaded plan',async()=>{
   const f=await prepared(),path=await f.service.savePlan(f.plan);
   const viewA=f.service.createPlanSession(),viewB=f.service.createPlanSession();
@@ -207,11 +224,166 @@ test('explicit Markdown export creates unique snapshots and preserves all source
   assert.equal((await f.service.scan()).items.length,2,'Generated files must not become source records');
 });
 
-test('preview opens the generated snapshot, and openSource uses the original file',async()=>{
-  const f=await prepared();await f.service.preview(f.plan,f.index);
-  assert.equal(f.previews.length,1);assert.match(f.previews[0],/^Mathsemble\/讲义\//);
+test('repeated previews stay in memory, and openSource uses the original file',async()=>{
+  const f=await prepared();await f.service.preview(f.plan,f.index);await f.service.preview(f.plan,f.index);
+  assert.deepEqual(f.previews,['Mathsemble/讲义/__preview__.md','Mathsemble/讲义/__preview__.md']);
+  assert.equal(f.writes.length,0);assert(!f.nodes.has('Mathsemble'));
+  assert.equal(f.listenerCount(),0,'an unopened preview must retain no source subscriptions');
   await f.service.openSource('知识/集合.md');assert.deepEqual(f.opened,['知识/集合.md']);
   await assert.rejects(f.service.openSource('不存在.md'),/不存在/);
+});
+
+test('preview passes a detached settings snapshot and explicit apply callback without altering plan or source',async()=>{
+  const f=await prepared(),callback=()=>{};let received;
+  f.plan.course.teacher='李老师';f.plan.output.layout='trial';f.plan.output.mode='teacher';
+  const service=createService(f.plugin,{...f.deps,previewFile:async(file,options)=>{received={file,options};}});
+  const promise=service.preview(f.plan,f.index,{onApplyPlanSettings:callback});
+  f.plan.course.teacher='用户之后修改';f.plan.output.layout='two-column';
+  await promise;
+  assert.equal(received.options.onApplyPlanSettings,callback);
+  assert.equal(received.options.planSettings.course.teacher,'李老师');
+  assert.equal(received.options.planSettings.output.layout,'trial');
+  assert.equal(received.options.planSettings.output.mode,'teacher');
+  assert.match(received.options.assemblyPreview.markdown,/author: "李老师"/);
+  assert.match(received.options.assemblyPreview.markdown,/titile: "集合复习"/);
+  assert.equal(received.file.basename,'集合复习');assert.equal(received.file.content,undefined);
+  received.options.planSettings.output.spaceSettings.ratio=150;
+  assert.equal(f.plan.output.spaceSettings.ratio,100);
+  assert.equal(f.nodes.get('题库/题.md').content,q());
+  assert.equal(f.writes.length,0);
+  assert(![...f.nodes.keys()].some(path=>path.endsWith('.json')),'Preview must not implicitly save a plan');
+});
+
+async function temporaryPreview(options = {},extra = {}) {
+  const f=await prepared(extra);let received;
+  const service=createService(f.plugin,{...f.deps,previewFile:async(file,settings)=>{received={file,...settings};}});
+  await service.preview(f.plan,f.index,options);
+  return {...f,service,received,preview:received.assemblyPreview};
+}
+
+test('virtual preview path never reads or overwrites an existing note and preserves frozen source evidence',async()=>{
+  const path='Mathsemble/讲义/__preview__.md';
+  const f=await temporaryPreview({}, {[path]:'用户自己的文件'});
+  assert.equal(f.nodes.get(path).content,'用户自己的文件');
+  assert(!f.reads.includes(path));assert.equal(f.writes.length,0);
+  assert(Object.isFrozen(f.preview)&&Object.isFrozen(f.preview.sources)&&Object.isFrozen(f.preview.sourceMap));
+  assert(f.preview.sources.every(source=>Object.isFrozen(source)&&!Object.isFrozen(source.live)));
+  assert.deepEqual(f.preview.sources.map(source=>source.path),['知识/集合.md','题库/题.md']);
+  assert.equal(f.preview.sourceMap.length,2);
+  assert.deepEqual(f.preview.sourceMap.map(row=>row.path),f.preview.sources.map(row=>row.path));
+  await f.preview.assertCurrent();assert.equal(f.listenerCount(),0);
+  const saved=await f.service.exportMarkdown(f.plan,f.index);
+  assert.notEqual(saved,path);assert.match(f.nodes.get(saved).content,/完整知识正文/);
+  assert.equal(f.nodes.get(path).content,'用户自己的文件');
+});
+
+test('temporary source verification rejects changed, deleted, renamed, replaced and conflicted origins without writes',async t=>{
+  for (const [name,mutate] of [
+    ['changed',f=>{f.nodes.get('题库/题.md').content=q('Q1','后来修改');}],
+    ['deleted',f=>f.remove('题库/题.md')],
+    ['renamed',f=>f.rename('题库/题.md','题库/新名.md')],
+    ['replaced',f=>{f.nodes.delete('题库/题.md');f.file('题库/题.md',q());}],
+    ['duplicate identity',f=>f.file('题库/重复.md',q())],
+  ]) await t.test(name,async()=>{
+    const f=await temporaryPreview();await f.preview.assertCurrent();
+    const snapshot=f.preview.sources.map(source=>({path:source.path,markdown:source.markdown}));
+    mutate(f);await assert.rejects(f.preview.assertCurrent(),/来源|身份冲突/);
+    assert.deepEqual(f.preview.sources.map(source=>({path:source.path,markdown:source.markdown})),snapshot);
+    assert.equal(f.writes.length,0);assert.equal(f.listenerCount(),0);
+  });
+});
+
+test('temporary preview watches its captured library scope and releases every listener',async()=>{
+  const changes=[],f=await temporaryPreview(),stop=f.preview.watch((event,file,oldPath)=>changes.push([event,file.path,oldPath]));
+  assert.equal(f.listenerCount(),4);
+  f.trigger('modify',{path:'其他/笔记.md',extension:'md'});
+  f.trigger('create',{path:'Mathsemble/讲义/输出.md',extension:'md'});
+  assert.equal(changes.length,0);
+  f.trigger('modify',f.nodes.get('题库/题.md'));
+  f.trigger('create',f.file('题库/重复.md',q()));
+  f.trigger('rename',{path:'另一个题库',children:[]},'题库');
+  assert.equal(changes.length,3,'library changes may introduce duplicate identities or move the source root');
+  stop();stop();assert.equal(f.listenerCount(),0);
+  f.trigger('modify',f.nodes.get('知识/集合.md'));assert.equal(changes.length,3);
+});
+
+test('temporary verification retains its own plan and library settings after caller changes',async()=>{
+  const f=await temporaryPreview({}, {'其他/题.md':q('Q2')});
+  f.plan.entries.length=0;f.plan.course.teacher='后来编辑';
+  f.received.planSettings.course.teacher='另一次编辑';
+  await f.service.saveSettings({questionRoots:['其他'],knowledgeRoots:[],recursive:false});
+  await f.preview.assertCurrent();
+  const changes=[],stop=f.preview.watch((event,file)=>changes.push(file.path));
+  f.trigger('modify',f.nodes.get('其他/题.md'));assert.equal(changes.length,0);
+  f.trigger('modify',f.nodes.get('题库/题.md'));assert.deepEqual(changes,['题库/题.md']);
+  stop();assert.equal(f.listenerCount(),0);assert.equal(f.writes.length,0);
+  assert.equal(f.preview.sources.length,2);
+});
+
+test('a source change during the final verification pass prevents publication and releases subscriptions',async()=>{
+  const f=await prepared(),read=f.vault.read;let questionReads=0;
+  f.vault.read=async file=>{
+    const result=await read(file);
+    if(file.path==='题库/题.md'&&++questionReads===2){
+      const knowledge=f.nodes.get('知识/集合.md');knowledge.content+='\n并发修改';f.trigger('modify',knowledge);
+    }
+    return result;
+  };
+  await assert.rejects(f.service.preview(f.plan,f.index),/生成期间源文发生变化/);
+  assert.equal(f.previews.length,0);assert.equal(f.writes.length,0);assert.equal(f.listenerCount(),0);
+});
+
+test('a silent file replacement during the last read cannot pass source verification',async()=>{
+  const f=await temporaryPreview(),read=f.vault.read;let questionReads=0;
+  f.vault.read=async file=>{
+    const markdown=await read(file);
+    if(file.path==='题库/题.md'&&++questionReads===2){
+      f.nodes.delete(file.path);f.file(file.path,markdown);
+    }
+    return markdown;
+  };
+  await assert.rejects(f.preview.assertCurrent(),/生成期间源文发生变化/);
+  assert.equal(f.listenerCount(),0);assert.equal(f.writes.length,0);
+});
+
+test('origin guards cancel stale preview publication and pass the explicit return action unchanged',async()=>{
+  const f=await prepared();let current=true,started,release;
+  const entered=new Promise(resolve=>{started=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  const service=createService(f.plugin,{...f.deps,compileMarkdown:async(...args)=>{started();await gate;return compileMarkdown(...args);}});
+  await assert.rejects(service.preview(f.plan,f.index,{isCurrent:()=>false}),/旧预览已取消/);
+  const task=service.preview(f.plan,f.index,{isCurrent:()=>current});await entered;current=false;release();
+  await assert.rejects(task,/旧预览已取消/);
+  assert.equal(f.previews.length,0);assert.equal(f.writes.length,0);assert.equal(f.listenerCount(),0);
+  const onReturnToAssembly=()=>{};
+  const live=await temporaryPreview({onReturnToAssembly});
+  assert.equal(live.received.onReturnToAssembly,onReturnToAssembly);
+});
+
+test('aborted and timed-out source checks release listeners and cannot publish late results',async t=>{
+  await t.test('abort a hanging verification read',async()=>{
+    const f=await temporaryPreview(),read=f.vault.read;let started,release;
+    const entered=new Promise(resolve=>{started=resolve;});
+    f.vault.read=file=>file.path==='题库/题.md'?new Promise(resolve=>{release=()=>resolve(file.content);started();}):read(file);
+    const controller=new AbortController(),task=f.preview.assertCurrent(controller.signal);
+    await entered;assert.equal(f.listenerCount(),4);controller.abort();
+    await assert.rejects(task,error=>error.name==='AbortError');assert.equal(f.listenerCount(),0);
+    release();f.vault.read=read;await f.preview.assertCurrent();assert.equal(f.listenerCount(),0);
+    assert.equal(f.writes.length,0);
+  });
+  await t.test('bound a hanging read and recover on a later check',async()=>{
+    const f=await temporaryPreview({timeoutMs:1000,resourceTimeoutMs:100}),read=f.vault.read;
+    f.vault.read=file=>file.path==='题库/题.md'?new Promise(()=>{}):read(file);
+    await assert.rejects(f.preview.assertCurrent(),/超时/);assert.equal(f.listenerCount(),0);
+    f.vault.read=read;await f.preview.assertCurrent();assert.equal(f.listenerCount(),0);
+  });
+  await t.test('abort preview creation before any modal is opened',async()=>{
+    const f=await prepared(),read=f.vault.read;let started;
+    const entered=new Promise(resolve=>{started=resolve;});
+    f.vault.read=file=>file.path==='题库/题.md'?new Promise(()=>{started();}):read(file);
+    const controller=new AbortController(),task=f.service.preview(f.plan,f.index,{signal:controller.signal});
+    await entered;controller.abort();await assert.rejects(task,error=>error.name==='AbortError');
+    assert.equal(f.listenerCount(),0);assert.equal(f.previews.length,0);assert.equal(f.writes.length,0);
+  });
 });
 
 test('read errors remain visible and block output when a selected source cannot be read',async()=>{

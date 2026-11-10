@@ -232,12 +232,48 @@ function boundedString(value, name, limit, allowEmpty = true) {
   }
   return value;
 }
+function exactFields(raw, fields, name) {
+  safeObject(raw,name);
+  if (Reflect.ownKeys(raw).some(key => !fields.includes(key))) throw new TypeError(`${name} 含未知字段`);
+  if (fields.some(key => !Object.prototype.hasOwnProperty.call(raw,key))) throw new TypeError(`${name} 缺少字段`);
+}
+function defaultCourse() {
+  return {teacher:'',student:'',time:'',subject:'',grade:'',title:null,objectives:''};
+}
+function defaultOutputSettings() {
+  return {layout:'default',mode:'document',spaceSettings:{ratio:100,minimumCm:0},
+    solutionOptions:{solutionSpaces:false,showSolution:true}};
+}
+function validateCourse(raw) {
+  exactFields(raw,['teacher','student','time','subject','grade','title','objectives'],'课程信息');
+  const result = {};
+  for (const key of ['teacher','student','time','subject','grade']) result[key] = boundedString(raw[key],'课程 '+key,200);
+  result.title = raw.title === null ? null : boundedString(raw.title,'课程标题',500);
+  result.objectives = boundedString(raw.objectives,'学习目标',1600);
+  return result;
+}
+function validateOutputSettings(raw) {
+  exactFields(raw,['layout','mode','spaceSettings','solutionOptions'],'排版设置');
+  if (!['default','two-column','trial'].includes(raw.layout)) throw new TypeError('排版外观无效');
+  if (!['document','student','teacher'].includes(raw.mode)) throw new TypeError('内容版本无效');
+  exactFields(raw.spaceSettings,['ratio','minimumCm'],'留白设置');
+  if (![50,75,90,100,110,125,150].includes(raw.spaceSettings.ratio) ||
+      ![0,2,4].includes(raw.spaceSettings.minimumCm)) throw new TypeError('留白设置无效');
+  exactFields(raw.solutionOptions,['solutionSpaces','showSolution'],'解析设置');
+  if (typeof raw.solutionOptions.solutionSpaces !== 'boolean' || typeof raw.solutionOptions.showSolution !== 'boolean')
+    throw new TypeError('解析设置无效');
+  return {layout:raw.layout,mode:raw.mode,
+    spaceSettings:{ratio:raw.spaceSettings.ratio,minimumCm:raw.spaceSettings.minimumCm},
+    solutionOptions:{solutionSpaces:raw.solutionOptions.solutionSpaces,showSolution:raw.solutionOptions.showSolution}};
+}
 function validatePlan(raw) {
   safeObject(raw,'组题方案');
-  const keys = new Set(['schemaVersion','title','entries']);
-  if (Object.keys(raw).some(key => !keys.has(key))) throw new TypeError('组题方案含未知字段');
-  if (raw.schemaVersion !== 1) throw new Error('不支持的组题方案版本');
+  if (![1,2].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
+  exactFields(raw,raw.schemaVersion === 1 ? ['schemaVersion','title','entries'] :
+    ['schemaVersion','title','entries','course','output'],'组题方案');
   const title = boundedString(raw.title,'方案标题',500,false);
+  const course = raw.schemaVersion === 1 ? defaultCourse() : validateCourse(raw.course);
+  const output = raw.schemaVersion === 1 ? defaultOutputSettings() : validateOutputSettings(raw.output);
   if (!Array.isArray(raw.entries) || raw.entries.length > MAX_ENTRIES) throw new Error(`组题方案最多 ${MAX_ENTRIES} 项`);
   if (Object.getPrototypeOf(raw.entries) !== Array.prototype ||
     Object.entries(Object.getOwnPropertyDescriptors(raw.entries)).some(([key, descriptor]) =>
@@ -269,9 +305,11 @@ function validatePlan(raw) {
     }
     return result;
   });
-  return {schemaVersion:1,title,entries};
+  return {schemaVersion:2,title,entries,course,output};
 }
-function createPlan(title = '新讲义') { return validatePlan({schemaVersion:1,title,entries:[]}); }
+function createPlan(title = '新讲义') {
+  return validatePlan({schemaVersion:2,title,entries:[],course:defaultCourse(),output:defaultOutputSettings()});
+}
 function addItem(plan, item) {
   const next = validatePlan(plan);
   if (!item || !['question','knowledge'].includes(item.kind) || item.identityConflict) throw new Error('来源无效或 ID 存在冲突，不能加入');
@@ -295,6 +333,32 @@ function moveEntry(plan,entryId,targetIndex) {
   const next=validatePlan(plan), sourceIndex=next.entries.findIndex(entry => entry.entryId === entryId);
   if (sourceIndex < 0 || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= next.entries.length) throw new Error('编排移动位置无效');
   const [entry]=next.entries.splice(sourceIndex,1); next.entries.splice(targetIndex,0,entry); return next;
+}
+function sectionRanges(entries) {
+  const sections=[];
+  entries.forEach((entry,index) => {
+    if (entry.kind !== 'section') return;
+    if (sections.length) sections[sections.length-1].end=index;
+    sections.push({entryId:entry.entryId,start:index,end:entries.length});
+  });
+  return sections;
+}
+function getSections(plan) {
+  return sectionRanges(validatePlan(plan).entries);
+}
+function moveSection(plan,entryId,targetIndex) {
+  const next=validatePlan(plan), sections=sectionRanges(next.entries);
+  const sourceIndex=sections.findIndex(section => section.entryId === entryId);
+  if (sourceIndex < 0 || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= sections.length)
+    throw new Error('分区移动位置无效');
+  if (sourceIndex === targetIndex) return next;
+  // Reorder complete spans only. Content preceding the first section stays
+  // outside every section, and adjacent/empty headings remain distinct spans.
+  const prefix=next.entries.slice(0,sections[0].start);
+  const blocks=sections.map(section => next.entries.slice(section.start,section.end));
+  const [block]=blocks.splice(sourceIndex,1); blocks.splice(targetIndex,0,block);
+  next.entries=prefix.concat(...blocks);
+  return next;
 }
 function updateEntry(plan,entryId,patch) {
   const next=validatePlan(plan); safeObject(patch,'编排修改');
@@ -320,5 +384,6 @@ function resolvePlan(plan,index) {
   return {entries,issues};
 }
 
-module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,updateEntry,
-  resolvePlan,validatePlan,normalizeRole,parseKnowledgeRef,fingerprint};
+module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,getSections,moveSection,updateEntry,
+  resolvePlan,validatePlan,defaultCourse,defaultOutputSettings,validateCourse,validateOutputSettings,
+  normalizeRole,parseKnowledgeRef,fingerprint};

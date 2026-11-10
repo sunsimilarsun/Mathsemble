@@ -935,7 +935,11 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
 .mwb-assembly-plan-menu { position:relative; }
 .mwb-assembly-plan-menu > summary { padding:6px 9px; border-radius:var(--radius-s,5px); cursor:pointer; color:var(--text-muted); font-size:var(--font-small,13px); }
 .mwb-assembly-plan-menu[open] > summary { background:var(--background-secondary); color:var(--text-normal); }
-.mwb-assembly-menu-body { position:absolute; z-index:5; top:calc(100% + 8px); right:0; width:260px; max-width:calc(100cqw - 32px); display:grid; gap:10px; padding:14px; border:1px solid var(--background-modifier-border); border-radius:var(--mwb-panel-radius); background:var(--background-primary); box-shadow:var(--shadow-s,0 4px 16px rgba(0,0,0,.15)); }
+.mwb-assembly-menu-body { position:absolute; z-index:5; top:calc(100% + 8px); right:0; width:260px; max-width:calc(100cqw - 32px); max-height:min(560px,70vh); overflow:auto; overscroll-behavior:contain; display:grid; gap:10px; padding:14px; border:1px solid var(--background-modifier-border); border-radius:var(--mwb-panel-radius); background:var(--background-primary); box-shadow:var(--shadow-s,0 4px 16px rgba(0,0,0,.15)); }
+.mwb-assembly-plan-settings > summary { color:var(--text-normal); font-size:var(--font-small,13px); cursor:pointer; }
+.mwb-assembly-plan-settings-body { display:grid; gap:10px; padding-top:8px; }
+.mwb-assembly-plan-settings-body .mwb-assembly-check { margin:0; }
+.mwb-assembly-plan-settings-body p { margin:0; }
 .mwb-assembly-menu-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .mwb-assembly-menu-actions button { flex:1; }
 .mwb-assembly-status { flex:1 1 220px; min-width:0; padding:5px 8px; border-left:3px solid var(--background-modifier-border); background:var(--background-secondary); border-radius:var(--radius-s,5px); font-size:var(--font-smallest,12px); line-height:1.45; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

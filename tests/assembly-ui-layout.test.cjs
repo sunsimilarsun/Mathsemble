@@ -83,7 +83,7 @@ async function browserCases(sources,css) {
     ok(menu&&!menu.open,'secondary plan menu should start collapsed');
     ok(button(menu,'新建')&&button(menu,'另存方案')&&button(menu,'打开方案'),'secondary plan actions are absent');
     ok(!button(view.root,'保存方案').closest('.mwb-assembly-plan-menu'),'save should remain directly available');
-    ok(!button(view.root,'A4 预览 / PDF').closest('.mwb-assembly-plan-menu'),'preview should remain directly available');
+    ok(!button(view.root,'预览 A4').closest('.mwb-assembly-plan-menu'),'preview should remain directly available');
     ok(!button(view.root,'保存方案').disabled,'initial source scan left saving disabled');
     for(const field of view.root.querySelectorAll('input:not([type="checkbox"]),select,textarea'))
       ok(field.labels?.length||field.getAttribute('aria-label'),'field has no accessible name');
@@ -119,7 +119,7 @@ async function browserCases(sources,css) {
     const selected=view.results.querySelector('.mwb-assembly-result.is-selected');
     ok(selected?.querySelector('.mwb-assembly-result-title')?.getAttribute('aria-pressed')==='true','selected result has no accessible selected state');
     ok(view.selectedItem.path===item.path&&view.preview.textContent.includes(item.markdown),'selected result and preview disagree');
-    await click(view.preview,'加入题篮');
+    await click(view.preview,'加入编排');
     const selectedAgain=view.results.querySelector('.mwb-assembly-result.is-selected');
     ok(selectedAgain&&button(selectedAgain,'已加入')?.disabled,'adding lost the selected or disabled added state');
     ok(view.root.querySelector('.mwb-assembly-save-state')?.textContent.includes('未保存'),'edited plan has no unsaved indication');
@@ -285,15 +285,17 @@ async function browserCases(sources,css) {
   });
 
   await check('native primary buttons recover after scans, failures and an asynchronous save',async()=>{
-    const primary=()=>['保存方案','A4 预览 / PDF'].map(label=>button(view.root,label));
+    const primary=()=>['保存方案','预览 A4'].map(label=>button(view.root,label));
     ok(primary().every(node=>node&&!node.disabled),'populated idle plan has disabled primary actions');
     let release;service.scan=()=>new Promise(resolve=>{release=resolve;});
     const reading=view.scan();await pause();
     ok(view.scanBusy&&primary().every(node=>node.disabled),'reading did not disable primary actions');
+    ok(view.sourceStateEl.textContent.includes('正在刷新素材'),'source state still claims a completed check while reading');
     release(index);await reading;
     ok(!view.scanBusy&&primary().every(node=>!node.disabled),'successful scan left primary actions disabled');
     service.scan=async()=>{throw Error('测试读取失败');};await view.scan();
     ok(!view.scanBusy&&primary().every(node=>!node.disabled),'failed scan left primary actions disabled');
+    ok(view.sourceStateEl.textContent.includes('待核对')&&view.sourceStateEl.title.includes('刷新未完成'),'failed scan misleadingly reports sources as checked');
     service.scan=scan;
     const save=service.savePlan;
     service.savePlan=()=>new Promise(resolve=>{release=resolve;});

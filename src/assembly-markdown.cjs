@@ -268,13 +268,20 @@ async function compileMarkdown(plan, resolved, options = {}) {
   const config = {outputPath:'Mathsemble/讲义/讲义.md',...options};
   if (typeof config.resolveLink !== 'function') config.resolveLink = async () => null;
   const title = String(plan.title || '新讲义').replace(/[\r\n]+/g,' ').trim();
-  const blocks = ['---\nnote_type: handout\ntitle: ' + JSON.stringify(title) + '\n---\n\n# ' + plainTitle(title)];
+  const course = plan.course || {};
+  const text = value => typeof value === 'string' ? value.trim() : '';
+  const metadata = {note_type:'handout',title,
+    titile:course.title == null ? title : text(course.title),author:text(course.teacher) || '孙老师',
+    student:text(course.student),class_time:text(course.time),subject:text(course.subject),
+    grade:text(course.grade),learning_objectives:text(course.objectives)};
+  const blocks = ['---\n' + Object.entries(metadata).map(([key,value]) => key + ': ' + JSON.stringify(value)).join('\n') + '\n---\n\n# ' + plainTitle(title)];
+  const origins = [null];
   let questionNumber = 0;
   for (let i=0;i<resolved.length;i++) {
     const {entry,item,status} = resolved[i];
     if (!entry || entry.entryId !== plan.entries[i].entryId) throw new Error('组题引用顺序不一致');
-    if (entry.kind === 'section') { blocks.push('## ' + plainTitle(entry.title || '分区')); continue; }
-    if (status !== 'ok' || !item) throw new Error(`来源${status === 'changed' ? '已更新，请先更新引用' : '缺失或冲突'}：${entry.title || entry.sourcePath || entry.sourceId}`);
+    if (entry.kind === 'section') { blocks.push('## ' + plainTitle(entry.title || '分区')); origins.push(null); continue; }
+    if (status !== 'ok' || !item) throw new Error(`来源${status === 'changed' ? '已变化，请先接受来源更新' : '缺失或冲突'}：${entry.title || entry.sourcePath || entry.sourceId}`);
     if (!['question','knowledge'].includes(entry.kind)) throw new Error('不支持的编排类型');
     const source = stripFrontmatter(item.markdown);
     const protector = makeProtector(source);
@@ -289,7 +296,23 @@ async function compileMarkdown(plan, resolved, options = {}) {
       const role = roles[entry.role || item.role || item.metadata?.role] || '题';
       blocks.push(`##### ${role}${++questionNumber} ${display}\n\n${body}`);
     }
+    origins.push(typeof item.path === 'string' && item.path ?
+      {entryId:entry.entryId,kind:entry.kind,path:item.path} : null);
   }
-  return blocks.join('\n\n') + '\n';
+  const markdown = blocks.join('\n\n') + '\n';
+  if (typeof config.onSourceMap === 'function') {
+    // These are generated-document ranges, not source-note line numbers.
+    // Count the final restored blocks, including literal multiline content;
+    // the joining blank lines belong to neither adjacent source entry.
+    const sourceMap = [];
+    let startLine = 1;
+    for (let i=0;i<blocks.length;i++) {
+      const lineCount = blocks[i].split('\n').length;
+      if (origins[i]) sourceMap.push(Object.freeze({...origins[i],startLine,endLine:startLine+lineCount-1}));
+      startLine += lineCount + 1;
+    }
+    config.onSourceMap(Object.freeze(sourceMap));
+  }
+  return markdown;
 }
 module.exports = {compileMarkdown};

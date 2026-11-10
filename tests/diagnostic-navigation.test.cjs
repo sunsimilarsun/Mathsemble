@@ -329,6 +329,25 @@ async function browserCases() {
     ok(mode==='source'&&calls.some(call=>call[0]==='cursor'&&call[1]===1)&&calls.some(call=>call[0]==='scroll'&&call[1]===1),'source button did not scroll visible editor');
     view.contentEl.remove();
   });
+  await check('generated handout diagnostics identify and open the generated file rather than an upstream card',async()=>{
+    const view=modal('前言\n$x+1$');view.generatedHandout=true;
+    view.file={path:'Mathsemble/讲义/已生成讲义.md',extension:'md'};
+    view.rendered.innerHTML='<p>公式</p>';math(view.rendered.firstElementChild);
+    view.recordDiagnosticIssues(view.rendered,['公式 #1超出打印版心']);view.updateDiagnostics();
+    ok(view.diagnosticResourceDetails.textContent.includes('讲义第 2 行'),'generated line was labelled as original card');
+    const buttons=[...view.diagnosticResourceDetails.querySelectorAll('button')];
+    ok(!buttons.some(button=>button.textContent==='定位原文'),'generated context exposed upstream source wording');
+    const opened=[],positions=[];
+    const leaf={view:{file:view.file,getMode:()=> 'source',editor:{getValue:()=>view.markdown,
+      setCursor:position=>positions.push(position.line),scrollIntoView(){},focus(){}}},
+      openFile:async file=>opened.push(file.path)};
+    view.app={vault:{getAbstractFileByPath:path=>path===view.file.path?view.file:null,read:async()=>view.markdown},
+      workspace:{getLeavesOfType:()=>[],getLeaf:()=>leaf,revealLeaf:async()=>{}}};
+    view.close=()=>{view.closed=true;};
+    buttons.find(button=>button.textContent==='定位讲义').click();await new Promise(resolve=>setTimeout(resolve,0));
+    ok(opened.length===1&&opened[0]===view.file.path&&positions[0]===1,'generated navigation changed source scope');
+    view.contentEl.remove();
+  });
   const output=document.createElement('pre');output.id='mwb-test-results';output.textContent=JSON.stringify(results);document.body.append(output);
 }
 

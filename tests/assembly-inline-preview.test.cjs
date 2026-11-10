@@ -212,7 +212,7 @@ async function browserCases(sources,css) {
     const row=failed.closest('.mwb-assembly-result'),source=row.dataset.sourcePath;
     row.querySelector('.mwb-assembly-result-title').click();await pause();
     ok(f.view.selectedItem?.path===source&&f.view.preview.textContent.includes('末尾条件'),'failed snippet blocks full reading');
-    button(f.view.preview,'加入题篮').click();await pause();
+    button(f.view.preview,'加入编排').click();await pause();
     ok(f.view.plan.entries.length===1&&f.view.plan.entries[0].sourcePath===source,'failed snippet blocks adding the source');
   });
 
