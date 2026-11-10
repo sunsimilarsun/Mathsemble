@@ -5967,8 +5967,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.workspaceMode = 'library';
       this.workspaceScroll = {library:0,arrangement:0};
       this.workspaceAnchors = {library:null,arrangement:null};
-      this.entryEditOpen = new Set();
-      this.arrangementEditOpen = new Set();
+      this.arrangementMenuOpen = new Set();
       this.arrangementExpanded = new Set();
       this.inlinePreviewGroups = new Map();
       this.inlinePreviewQueue = [];
@@ -6033,6 +6032,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       return state;
     }
     switchPane(pane) {
+      if(!['filters','library'].includes(pane))pane='library';
       this.activePane=pane;
       if(this.root)this.root.dataset.activePane=pane;
       for(const button of this.paneNav?.querySelectorAll('button')||[])
@@ -6108,11 +6108,6 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.renderOutline();
       this.renderResults();
     }
-    editEntry(entryId, patch) {
-      if (this.actionBusy) return;
-      try { this.setPlan(core.updateEntry(this.plan, entryId, patch)); }
-      catch (error) { this.setStatus(errorText(error), true); this.notice(errorText(error)); this.renderOutline(); }
-    }
     setStatus(message, error = false) {
       if (this.closed || !this.statusEl) return;
       this.statusEl.textContent = message;
@@ -6123,13 +6118,13 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if (!this.summaryEl) return;
       const questions = this.plan.entries.filter(entry => entry.kind === 'question').length;
       const knowledge = this.plan.entries.filter(entry => entry.kind === 'knowledge').length;
-      this.summaryEl.textContent = `${knowledge} 篇知识 · ${questions} 道题`;
+      const sections=this.plan.entries.filter(entry=>entry.kind==='section').length;
+      this.summaryEl.textContent = [`已选 ${questions} 题`,knowledge?`${knowledge} 篇知识`:'',sections?`${sections} 个分区`:''].filter(Boolean).join(' · ');
+      this.summaryEl.setAttribute('aria-label',`查看预览编排：${this.plan.entries.length} 项，${questions} 道题，${knowledge} 篇知识，${sections} 个分区`);
       if(this.saveStateEl){
         this.saveStateEl.textContent=this.dirty?'未保存':this.planPath?'已保存':'新方案';
         this.saveStateEl.classList.toggle('is-dirty',this.dirty);
       }
-      if(this.outlineCount)this.outlineCount.textContent=`${this.plan.entries.length} 项`;
-      if(this.arrangementCount)this.arrangementCount.textContent=`${this.plan.entries.length} 项 · ${questions} 道题`;
       for(const button of this.primaryButtons||[])button.disabled=this.actionBusy||this.scanBusy;
       for(const control of this.arrangementPane?.querySelectorAll('[data-arrangement-mutate]')||[])
         control.disabled=this.actionBusy||this.scanBusy||control.dataset.boundary==='true';
@@ -6200,7 +6195,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     releaseInlinePreviews(name) {
       for(const [key,group] of this.inlinePreviewGroups){
         if(name&&key!==name)continue;
-        group.active=false;group.observer?.disconnect();
+        group.active=false;group.observer?.disconnect();group.resizeObserver?.disconnect();group.resizeRecords?.clear();
         for(const record of group.records){record.controller?.abort();this.releaseInlineOwner(record);}
         group.records.clear();this.inlinePreviewGroups.delete(key);
       }
@@ -6272,11 +6267,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }catch(error){
         if(current()&&!record.controller?.signal.aborted){
           record.state='error';record.node.dataset.previewState='error';
-          record.body.textContent='暂不能显示摘要，点击标题查看完整内容。';
+          record.body.textContent=record.group.name==='arrangement'?'暂不能显示正文，请从更多操作打开原文。':'暂不能显示摘要，点击标题查看完整内容。';
         }
       }finally{
         if(!current())this.releaseInlineOwner(record);
-        else this.restoreWorkspaceAnchor(record.group.name==='arrangement'?'arrangement':'library');
+        else {record.updateOverflow?.();this.restoreWorkspaceAnchor(record.group.name==='arrangement'?'arrangement':'library');}
         // Old jobs still occupy their slot until settled, even after a filter
         // rebuild. Never reset this count when a preview group is discarded.
         this.inlinePreviewActive--;
@@ -6295,17 +6290,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.previewReturn=null;
       this.contentEl.replaceChildren();
       this.root = this.el('div', this.contentEl, 'mwb-assembly');
-      const header = this.el('header', this.root, 'mwb-assembly-header');
-      const identity=this.el('div',header,'mwb-assembly-identity');
-      this.el('h2', identity, '', '知识与组题');
-      const overview=this.el('div',header,'mwb-assembly-overview');
-      this.summaryEl = this.el('div', overview, 'mwb-assembly-summary');
-      this.saveStateEl=this.el('span',overview,'mwb-assembly-save-state');
-      this.modeNav=this.el('nav',header,'mwb-assembly-mode-nav');this.modeNav.setAttribute('aria-label','组题工作模式');
-      for(const [mode,label] of [['library','选题'],['arrangement','预览编排']]){
-        const button=this.button(this.modeNav,label,()=>this.switchWorkspaceMode(mode));button.dataset.mode=mode;
-      }
-      const toolbar = this.el('div', this.root, 'mwb-assembly-toolbar');
+      this.root.setAttribute('aria-label','知识与组题');
+      const toolbar = this.el('header', this.root, 'mwb-assembly-toolbar');
       this.titleInput = this.field(toolbar, '讲义标题');
       this.titleInput.value = this.plan.title;
       this.titleInput.maxLength = 200;
@@ -6314,6 +6300,10 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.plan = {...this.plan,title:this.titleInput.value.trim() || '新讲义'}; this.stateChanged();
       });
       this.titleInput.addEventListener('blur', () => { if (!this.titleInput.value.trim()) this.titleInput.value=this.plan.title; });
+      this.modeNav=this.el('nav',toolbar,'mwb-assembly-mode-nav');this.modeNav.setAttribute('aria-label','组题工作模式');
+      for(const [mode,label] of [['library','选题'],['arrangement','预览编排']]){
+        const button=this.button(this.modeNav,label,()=>this.switchWorkspaceMode(mode));button.dataset.mode=mode;
+      }
       const primary=this.el('div',toolbar,'mwb-assembly-primary-actions');
       const save=this.button(primary, '保存方案', () => this.saveCurrentPlan(false));
       const pdf=this.button(primary, 'A4 预览 / PDF', () => this.runAction('准备预览', async () => {
@@ -6339,21 +6329,23 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }));
       menu.addEventListener('keydown',event=>{if(event.key==='Escape'){menu.open=false;menu.querySelector('summary').focus();}});
       this.primaryButtons=[save,pdf];
-      this.statusEl = this.el('div', this.root, 'mwb-assembly-status', '请配置目录后读取内容。');
+      const overview=this.el('div',this.root,'mwb-assembly-overview');
+      this.summaryEl=this.button(overview,'',()=>this.switchWorkspaceMode('arrangement'),'mwb-assembly-selected-count');
+      this.saveStateEl=this.el('span',overview,'mwb-assembly-save-state');
+      this.statusEl = this.el('div', overview, 'mwb-assembly-status', '请配置目录后读取内容。');
       this.statusEl.setAttribute('role','status'); this.statusEl.setAttribute('aria-live','polite');
       this.paneNav=this.el('nav',this.root,'mwb-assembly-pane-nav');this.paneNav.setAttribute('aria-label','组卷工作区');
-      for(const [pane,label] of [['filters','筛选'],['library','选题'],['outline','编排']]){
+      for(const [pane,label] of [['filters','筛选'],['library','选题']]){
         const button=this.button(this.paneNav,label,()=>this.switchPane(pane));button.dataset.pane=pane;
       }
       const columns = this.el('div', this.root, 'mwb-assembly-columns');this.columns=columns;
       this.releaseWorkspaceAnchorOnInput(columns,'library');
       this.left = this.el('aside', columns, 'mwb-assembly-left');
       this.center = this.el('section', columns, 'mwb-assembly-center');
-      this.right = this.el('aside', columns, 'mwb-assembly-right');
-      this.left.setAttribute('aria-label','内容筛选');this.center.setAttribute('aria-label','选题与预览');this.right.setAttribute('aria-label','讲义编排');
+      this.left.setAttribute('aria-label','内容筛选');this.center.setAttribute('aria-label','选题与预览');
       this.renderArrangementShell();this.updateWorkspaceMode();
       this.switchPane(this.activePane);
-      this.renderLeft(); this.renderCenter(); this.renderRight(); this.updateSummary();
+      this.renderLeft(); this.renderCenter(); this.renderOutline();
     }
     renderLeft() {
       this.left.replaceChildren();
@@ -6749,19 +6741,21 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.arrangementPane=this.el('section',this.root,'mwb-assembly-arrangement');
       this.arrangementPane.setAttribute('aria-label','预览编排');
       const toolbar=this.el('div',this.arrangementPane,'mwb-assembly-arrangement-toolbar');
-      const heading=this.el('div',toolbar,'mwb-assembly-arrangement-heading');
-      this.el('h3',heading,'','预览编排');
-      this.arrangementCount=this.el('span',heading,'mwb-assembly-muted');
-      this.button(toolbar,'返回选题',()=>this.switchWorkspaceMode('library'));
-      this.arrangementSectionInput=this.field(toolbar,'新增分区标题');
+      const sectionMenu=this.el('details',toolbar,'mwb-assembly-section-menu');
+      const sectionToggle=this.el('summary',sectionMenu,'','添加分区');
+      const sectionForm=this.el('div',sectionMenu,'mwb-assembly-section-form');
+      this.arrangementSectionInput=this.field(sectionForm,'新增分区标题');
       this.arrangementSectionInput.placeholder='例如：巩固训练';this.arrangementSectionInput.maxLength=200;
-      const add=this.button(toolbar,'添加分区',()=>{
-        if(this.actionBusy||this.scanBusy)return;
+      this.arrangementSectionInput.dataset.arrangementMutate='true';
+      const add=this.button(sectionForm,'加入分区',()=>{
+        if(this.closed||!sectionMenu.isConnected||this.actionBusy||this.scanBusy)return;
         const title=this.arrangementSectionInput.value.trim();if(!title){this.notice('请输入分区标题');return;}
         this.setPlan(core.addSection(this.plan,title));this.arrangementSectionInput.value='';
+        sectionMenu.open=false;sectionToggle.focus({preventScroll:true});
       });add.dataset.arrangementMutate='true';
+      this.arrangementSectionInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();add.click();}});
+      sectionMenu.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();sectionMenu.open=false;sectionToggle.focus();}});
       const refresh=this.button(toolbar,'更新引用',()=>this.updateReferences());refresh.dataset.arrangementMutate='true';
-      this.el('p',this.arrangementPane,'mwb-assembly-arrangement-help','拖动手柄或使用移动按钮调整顺序。“第几项”包含分区和知识，题号单独计数。');
       this.arrangementList=this.el('div',this.arrangementPane,'mwb-assembly-arrangement-list');
       this.releaseWorkspaceAnchorOnInput(this.arrangementPane,'arrangement');
       this.arrangementList.setAttribute('aria-label','已选内容顺序');
@@ -6783,6 +6777,42 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       try {this.setPlan(change(this.plan,index));}
       catch(error){this.setStatus(errorText(error),true);this.notice(errorText(error));this.renderArrangement();}
     }
+    editArrangementEntry(entryId,patch,row) {
+      if(this.closed||!row.isConnected||this.workspaceMode!=='arrangement'||this.actionBusy||this.scanBusy)return false;
+      try {
+        // Metadata edits keep the current row alive: a blur must not remove the
+        // button about to receive the same pointer click or restart typesetting.
+        const next=core.updateEntry(this.plan,entryId,patch);
+        const before=this.plan.entries.find(entry=>entry.entryId===entryId),after=next.entries.find(entry=>entry.entryId===entryId);
+        if(before.title===after.title&&before.role===after.role)return true;
+        this.plan=next;this.stateChanged();this.renderResults();
+        return true;
+      }catch(error){this.setStatus(errorText(error),true);this.notice(errorText(error));return false;}
+    }
+    observeArrangementOverflow(record,expand,row) {
+      const group=record.group,win=this.contentEl.ownerDocument.defaultView;
+      record.updateOverflow=()=>{
+        if(this.closed||!group.active||!record.node.isConnected||!record.node.getClientRects().length)return;
+        const expanded=row.classList.contains('is-expanded');
+        const hiddenAnswer=[...record.body.querySelectorAll('.callout[data-callout="answer"],.callout[data-callout="solution"]')]
+          .some(node=>win.getComputedStyle(node).display==='none');
+        const more=record.node.scrollHeight>record.node.clientHeight+1||record.node.scrollWidth>record.node.clientWidth+1||hiddenAnswer;
+        const hidden=!expanded&&!more;
+        if(hidden&&this.contentEl.ownerDocument.activeElement===expand)row.querySelector('[data-arrangement-action="drag"]')?.focus({preventScroll:true});
+        expand.hidden=hidden;expand.textContent=expanded?'收起全文':'展开全文';expand.setAttribute('aria-expanded',String(expanded));
+      };
+      if(!group.resizeRecords){
+        group.resizeRecords=new Map();
+        const Observer=win?.ResizeObserver;
+        if(Observer)group.resizeObserver=new Observer(entries=>{
+          if(!group.active||this.closed)return;
+          const records=new Set(entries.map(entry=>group.resizeRecords.get(entry.target)).filter(Boolean));
+          for(const current of records)current.updateOverflow?.();
+        });
+      }
+      for(const node of [record.node,record.body]){group.resizeRecords.set(node,record);group.resizeObserver?.observe(node);}
+      record.updateOverflow();
+    }
     renderArrangement() {
       if(!this.arrangementList)return;
       if(this.workspaceMode!=='arrangement'){this.releaseInlinePreviews('arrangement');return;}
@@ -6793,11 +6823,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.workspaceAnchors.arrangement=focus?this.captureWorkspaceAnchor('arrangement',activeRow):
         this.workspaceAnchors.arrangement||this.captureWorkspaceAnchor('arrangement');
       for(const row of list.querySelectorAll('[data-entry-id]')){
-        if(row.querySelector('.mwb-assembly-arrangement-edit')?.open)this.arrangementEditOpen.add(row.dataset.entryId);
-        else this.arrangementEditOpen.delete(row.dataset.entryId);
+        if(row.querySelector('.mwb-assembly-arrangement-more')?.open)this.arrangementMenuOpen.add(row.dataset.entryId);
+        else this.arrangementMenuOpen.delete(row.dataset.entryId);
       }
       const ids=new Set(this.plan.entries.map(entry=>entry.entryId));
-      this.arrangementEditOpen=new Set([...this.arrangementEditOpen].filter(id=>ids.has(id)));
+      this.arrangementMenuOpen=new Set([...this.arrangementMenuOpen].filter(id=>ids.has(id)));
       this.arrangementExpanded=new Set([...this.arrangementExpanded].filter(id=>ids.has(id)));
       const previews=this.beginInlinePreviews('arrangement',list);
       list.replaceChildren();
@@ -6811,14 +6841,15 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const row=this.el('article',list,'mwb-assembly-arrangement-entry'+(entry.kind==='section'?' is-section':''));
         row.dataset.entryId=entry.entryId;row.dataset.sourceStatus=entry.kind==='section'?'section':status;
         row.classList.toggle('is-expanded',this.arrangementExpanded.has(entry.entryId));
-        const kind=entry.kind==='section'?'分区':entry.kind==='knowledge'?'知识':`第 ${++questionNumber} 题 · ${entry.role||item?.role||'题目'}`;
+        const kind=entry.kind==='section'?'分区':entry.kind==='knowledge'?'知识':`第 ${++questionNumber} 题`;
         const header=this.el('div',row,'mwb-assembly-arrangement-entry-header');
-        const identity=this.el('div',header,'mwb-assembly-arrangement-identity');
-        this.el('div',identity,'mwb-assembly-arrangement-position',`第 ${index+1} 项 · ${kind}`);
-        this.el('h4',identity,'',entry.title||item?.title||'未命名内容');
-        const handle=this.button(header,'拖动排序',()=>this.setStatus('也可使用上移、下移或输入目标位置来排序。'),'mwb-assembly-arrangement-drag');
+        const handle=this.button(header,'⠿',()=>this.setStatus('拖动手柄排序，也可使用上移、下移或更多中的指定位置。'),'mwb-assembly-arrangement-drag');
         handle.draggable=true;handle.dataset.arrangementAction='drag';handle.dataset.arrangementMutate='true';
-        handle.setAttribute('aria-label',`拖动排序：${entry.title||kind}`);
+        const updateLabels=()=>{
+          const current=this.plan.entries.find(value=>value.entryId===entry.entryId);
+          handle.setAttribute('aria-label',`拖动排序：${current?.title||item?.title||kind}`);handle.title='拖动排序';
+        };
+        updateLabels();
         handle.addEventListener('dragstart',event=>{
           if(!row.isConnected||this.actionBusy||this.scanBusy||this.workspaceMode!=='arrangement'){event.preventDefault();return;}
           handle.focus({preventScroll:true});
@@ -6838,157 +6869,93 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
             return core.moveEntry(plan,id,target);
           },row);
         });
-        const actions=this.el('div',row,'mwb-assembly-arrangement-actions');
-        const action=(label,key,callback)=>{
-          const button=this.button(actions,label,callback);button.dataset.arrangementAction=key;return button;
+        this.el('span',header,'mwb-assembly-arrangement-position',kind);
+        const title=this.el('input',header,'mwb-assembly-arrangement-title');title.value=entry.title||'';
+        title.placeholder=item?.title||'未命名内容';title.maxLength=200;title.setAttribute('aria-label',entry.kind==='section'?'分区标题':'本次显示标题');
+        title.dataset.arrangementField='title';title.dataset.arrangementMutate='true';
+        title.addEventListener('change',()=>{
+          this.editArrangementEntry(entry.entryId,{title:title.value},row);
+          title.value=this.plan.entries.find(value=>value.entryId===entry.entryId)?.title||'';updateLabels();
+        });
+        title.addEventListener('keydown',event=>{
+          if(event.key==='Escape'){event.preventDefault();title.value=this.plan.entries.find(value=>value.entryId===entry.entryId)?.title||'';title.blur();}
+          if(event.key==='Enter'){event.preventDefault();title.blur();handle.focus({preventScroll:true});}
+        });
+        if(entry.kind==='question'){
+          const role=this.el('select',header,'mwb-assembly-arrangement-role');role.setAttribute('aria-label','本次角色');
+          this.el('option',role,'',`沿用${item?.role?'：'+item.role:'题卡'}`).value='';
+          for(const value of roles)this.el('option',role,'',value).value=value;
+          role.value=entry.role||'';role.dataset.arrangementField='role';role.dataset.arrangementMutate='true';
+          role.addEventListener('change',()=>{
+            this.editArrangementEntry(entry.entryId,{role:role.value},row);
+            role.value=this.plan.entries.find(value=>value.entryId===entry.entryId)?.role||'';
+          });
+        }
+        const action=(parent,label,key,callback)=>{
+          const button=this.button(parent,label,callback);button.dataset.arrangementAction=key;return button;
         };
-        const up=action('上移','up',()=>this.changeArrangement(entry.entryId,(plan,current)=>core.moveEntry(plan,entry.entryId,current-1),row));
-        const down=action('下移','down',()=>this.changeArrangement(entry.entryId,(plan,current)=>core.moveEntry(plan,entry.entryId,current+1),row));
+        const up=action(header,'↑','up',()=>this.changeArrangement(entry.entryId,(plan,current)=>core.moveEntry(plan,entry.entryId,current-1),row));
+        const down=action(header,'↓','down',()=>this.changeArrangement(entry.entryId,(plan,current)=>core.moveEntry(plan,entry.entryId,current+1),row));
         up.dataset.boundary=String(index===0);down.dataset.boundary=String(index===this.plan.entries.length-1);
-        for(const control of [up,down])control.dataset.arrangementMutate='true';
+        for(const [control,label] of [[up,'上移'],[down,'下移']]){control.dataset.arrangementMutate='true';control.setAttribute('aria-label',label);control.title=label;}
+        const more=this.el('details',row,'mwb-assembly-arrangement-more');more.open=this.arrangementMenuOpen.has(entry.entryId);
+        const toggle=this.el('summary',more,'','⋯');toggle.dataset.arrangementAction='more';toggle.setAttribute('aria-label','更多操作');toggle.title='更多操作';
+        more.addEventListener('toggle',()=>{
+          if(!more.isConnected)return;
+          if(more.open){
+            this.arrangementMenuOpen.add(entry.entryId);
+            for(const other of list.querySelectorAll('.mwb-assembly-arrangement-more[open]'))if(other!==more)other.open=false;
+          }else this.arrangementMenuOpen.delete(entry.entryId);
+        });
+        more.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();more.open=false;toggle.focus({preventScroll:true});}});
+        const actions=this.el('div',more,'mwb-assembly-arrangement-actions');
         const position=this.field(actions,'移到第几项');position.type='number';position.min='1';position.max=String(this.plan.entries.length);position.step='1';position.value=String(index+1);
         position.dataset.arrangementField='position';position.dataset.arrangementMutate='true';
-        const move=action('移动','move',()=>this.changeArrangement(entry.entryId,plan=>{
+        const move=action(actions,'移动','move',()=>this.changeArrangement(entry.entryId,plan=>{
           const target=Number(position.value);
           if(!Number.isInteger(target)||target<1||target>plan.entries.length)throw new Error(`请输入 1 至 ${plan.entries.length} 之间的编排位置`);
           return core.moveEntry(plan,entry.entryId,target-1);
         },row));move.dataset.arrangementMutate='true';
         position.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();move.click();}});
-        const remove=action(entry.kind==='section'?'移除分区':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
-        remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');
-        const editor=this.el('details',row,'mwb-assembly-arrangement-edit');editor.open=this.arrangementEditOpen.has(entry.entryId);
-        this.el('summary',editor,'',entry.kind==='question'?'修改标题与角色':'修改标题');
-        editor.addEventListener('toggle',()=>{if(!editor.isConnected)return;if(editor.open)this.arrangementEditOpen.add(entry.entryId);else this.arrangementEditOpen.delete(entry.entryId);});
-        const title=this.field(editor,entry.kind==='section'?'分区标题':'本次显示标题');title.value=entry.title||'';title.maxLength=200;
-        title.dataset.arrangementField='title';title.dataset.arrangementMutate='true';
-        title.addEventListener('change',()=>this.changeArrangement(entry.entryId,plan=>core.updateEntry(plan,entry.entryId,{title:title.value}),row));
-        if(entry.kind==='question'){
-          const role=this.field(editor,'本次角色','select');this.el('option',role,'','沿用题卡').value='';
-          for(const value of roles)this.el('option',role,'',value).value=value;
-          role.value=entry.role||'';role.dataset.arrangementField='role';role.dataset.arrangementMutate='true';
-          role.addEventListener('change',()=>this.changeArrangement(entry.entryId,plan=>core.updateEntry(plan,entry.entryId,{role:role.value}),row));
-        }
         if(entry.kind!=='section'){
+          const source=action(actions,'打开原文','source',()=>{if(row.isConnected)return service.openSource(item?.path||entry.sourcePath);});
+          source.setAttribute('aria-label',`打开原文：${item?.path||entry.sourcePath}`);
+        }
+        const remove=action(actions,entry.kind==='section'?'移除分区':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
+        remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');
+        this.el('p',more,'mwb-assembly-muted',`第 ${index+1} 项，共 ${this.plan.entries.length} 项；位置包含题目、知识和分区。`);
+        if(entry.kind!=='section'){
+          this.el('div',more,'mwb-assembly-result-path',item?.path||entry.sourcePath);
           const message={changed:'源文已变化。请先点击“更新引用”核对最新正文，再继续预览。',missing:'找不到源文件，请恢复来源或移除此项。',conflict:'来源身份冲突，请修正后重新读取。'}[status];
           if(message)this.el('p',row,'mwb-assembly-error',message);
           if(status==='ok'&&item){
             const record=this.addInlinePreview(previews,row,item);
-            const expanded=this.arrangementExpanded.has(entry.entryId);
-            record.node.toggleAttribute('inert',!expanded);
+            record.node.toggleAttribute('inert',!this.arrangementExpanded.has(entry.entryId));
             record.node.setAttribute('aria-label','已选内容正文');
-            const expand=action(expanded?'收起全文':'展开全文','expand',()=>{
+            const expand=action(row,'展开全文','expand',()=>{
               if(!row.isConnected)return;
               const open=!this.arrangementExpanded.has(entry.entryId);
               if(open)this.arrangementExpanded.add(entry.entryId);else this.arrangementExpanded.delete(entry.entryId);
-              row.classList.toggle('is-expanded',open);record.node.toggleAttribute('inert',!open);
-              expand.textContent=open?'收起全文':'展开全文';expand.setAttribute('aria-expanded',String(open));
-            });expand.setAttribute('aria-expanded',String(expanded));
+              row.classList.toggle('is-expanded',open);record.node.toggleAttribute('inert',!open);record.updateOverflow?.();
+            });expand.hidden=true;expand.classList.add('mwb-assembly-expand');
+            this.observeArrangementOverflow(record,expand,row);
           }
-          this.el('div',row,'mwb-assembly-result-path',item?.path||entry.sourcePath);
-          const source=action('打开原文','source',()=>{if(row.isConnected)return service.openSource(item?.path||entry.sourcePath);});
-          source.setAttribute('aria-label',`打开原文：${entry.title||entry.sourcePath}`);
         }
       });
       list.scrollTop=scrollTop;
       this.updateSummary();
       if(focus){
         const row=[...list.children].find(node=>node.dataset.entryId===focus.id);
-        const target=[...row?.querySelectorAll('button,input,select')||[]].find(node=>focus.field?node.dataset.arrangementField===focus.field:node.dataset.arrangementAction===focus.action);
+        const target=[...row?.querySelectorAll('button,input,select,summary')||[]].find(node=>focus.field?node.dataset.arrangementField===focus.field:node.dataset.arrangementAction===focus.action);
         const fallback=row?.querySelector('[data-arrangement-action="drag"]');
         if(row){
           list.scrollTop+=row.getBoundingClientRect().top-list.getBoundingClientRect().top-focus.top;
-          (target&&!target.disabled?target:fallback)?.focus({preventScroll:true});
+          (target&&!target.disabled&&target.getClientRects().length?target:fallback)?.focus({preventScroll:true});
         }else list.querySelector('button')?.focus({preventScroll:true});
       }
       this.restoreWorkspaceAnchor('arrangement');
     }
-    renderRight() {
-      this.right.replaceChildren();
-      const header=this.panelHeader(this.right,'03','讲义编排','拖动排序，或使用上移 / 下移');
-      this.outlineCount=this.el('span',header,'mwb-assembly-count');
-      const controls=this.el('div',this.right,'mwb-assembly-outline-controls');
-      this.sectionInput=this.field(controls,'新增分区标题');this.sectionInput.placeholder='例如：知识梳理';this.sectionInput.maxLength=200;
-      this.button(controls,'添加分区',()=>{
-        if(this.actionBusy)return;const title=this.sectionInput.value.trim();if(!title){this.notice('请输入分区标题');return;}
-        this.setPlan(core.addSection(this.plan,title));this.sectionInput.value='';
-      });
-      this.button(controls,'更新引用',()=>this.updateReferences());
-      this.outline=this.el('div',this.right,'mwb-assembly-outline');
-      this.outline.addEventListener('dragover',event=>event.preventDefault());
-      this.outline.addEventListener('drop',event=>{
-        if(event.target!==this.outline||this.actionBusy)return;event.preventDefault();
-        const id=event.dataTransfer?.getData('application/x-mathsemble-entry');
-        if(this.plan.entries.some(entry=>entry.entryId===id)) this.setPlan(core.moveEntry(this.plan,id,this.plan.entries.length-1));
-      });
-      this.renderOutline();
-    }
     renderOutline() {
-      if(!this.outline)return;
-      const active=this.contentEl.ownerDocument.activeElement,activeRow=active?.closest?.('[data-entry-id]');
-      const focus=activeRow&&this.outline.contains(activeRow)?{id:activeRow.dataset.entryId,action:active.dataset.entryAction,field:active.dataset.entryField}:null;
-      for(const row of this.outline.querySelectorAll('[data-entry-id]')){
-        if(row.querySelector('.mwb-assembly-entry-edit')?.open)this.entryEditOpen.add(row.dataset.entryId);
-        else this.entryEditOpen.delete(row.dataset.entryId);
-      }
-      const ids=new Set(this.plan.entries.map(entry=>entry.entryId));
-      this.entryEditOpen=new Set([...this.entryEditOpen].filter(id=>ids.has(id)));
-      this.outline.replaceChildren();
-      const resolved=core.resolvePlan(this.plan,this.index);
-      const states=new Map(resolved.entries.map(row=>[row.entry.entryId,row]));
-      if(!this.plan.entries.length){
-        const empty=this.emptyState(this.outline,'开始编排你的讲义','先选择知识或题目加入，再调整顺序与角色。');
-        this.button(empty,'去选题',()=>{this.switchPane('library');this.searchInput?.focus();});
-      }
-      let number=0;
-      this.plan.entries.forEach((entry,index)=>{
-        const row=this.el('article',this.outline,'mwb-assembly-entry'+(entry.kind==='section'?' is-section':''));
-        row.draggable=true;row.dataset.entryId=entry.entryId;
-        row.addEventListener('dragstart',event=>{
-          if(this.actionBusy){event.preventDefault();return;}
-          event.dataTransfer?.setData('application/x-mathsemble-entry',entry.entryId);
-          if(event.dataTransfer)event.dataTransfer.effectAllowed='move';row.classList.add('is-dragging');
-        });
-        row.addEventListener('dragend',()=>row.classList.remove('is-dragging'));
-        row.addEventListener('dragover',event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='move';});
-        row.addEventListener('drop',event=>{
-          event.preventDefault();event.stopPropagation();if(this.actionBusy)return;
-          const id=event.dataTransfer?.getData('application/x-mathsemble-entry');
-          if(id!==entry.entryId&&this.plan.entries.some(value=>value.entryId===id))this.setPlan(core.moveEntry(this.plan,id,index));
-        });
-        const heading=entry.kind==='section'?'分区':entry.kind==='knowledge'?'知识':`${++number}. ${entry.role||'题目'}`;
-        this.el('div',row,'mwb-assembly-entry-kind',heading);
-        this.el('h4',row,'mwb-assembly-entry-title',entry.title||states.get(entry.entryId)?.item?.title||'未命名内容');
-        const editor=this.el('details',row,'mwb-assembly-entry-edit');editor.open=this.entryEditOpen.has(entry.entryId);
-        this.el('summary',editor,'',entry.kind==='question'?'编辑标题与角色':'编辑标题');
-        editor.addEventListener('toggle',()=>{if(!editor.isConnected)return;if(editor.open)this.entryEditOpen.add(entry.entryId);else this.entryEditOpen.delete(entry.entryId);});
-        const title=this.field(editor,entry.kind==='section'?'分区标题':'本次显示标题');title.value=entry.title||'';title.maxLength=200;title.dataset.entryField='title';
-        title.addEventListener('change',()=>this.editEntry(entry.entryId,{title:title.value}));
-        if(entry.kind==='question') {
-          const role=this.field(editor,'本次角色','select');this.el('option',role,'','沿用题卡').value='';role.dataset.entryField='role';
-          for(const value of roles)this.el('option',role,'',value).value=value;
-          role.value=entry.role||'';role.addEventListener('change',()=>this.editEntry(entry.entryId,{role:role.value}));
-        }
-        const state=states.get(entry.entryId);
-        if(entry.kind!=='section') {
-          const text={changed:'源文已变化，点击“更新引用”后重新核对',missing:'找不到源文件',conflict:'来源 ID 冲突，请修正后重新读取'}[state?.status];
-          if(text)this.el('div',row,'mwb-assembly-error',text);
-          this.el('div',row,'mwb-assembly-result-path',state?.item?.path||entry.sourcePath);
-        }
-        const actions=this.el('div',row,'mwb-assembly-entry-actions');
-        const up=this.button(actions,'上移',()=>{if(!this.actionBusy)this.setPlan(core.moveEntry(this.plan,entry.entryId,index-1));});up.disabled=index===0;
-        up.dataset.entryAction='up';up.setAttribute('aria-label',`上移${entry.title||heading}`);
-        const down=this.button(actions,'下移',()=>{if(!this.actionBusy)this.setPlan(core.moveEntry(this.plan,entry.entryId,index+1));});down.disabled=index===this.plan.entries.length-1;
-        down.dataset.entryAction='down';down.setAttribute('aria-label',`下移${entry.title||heading}`);
-        if(state?.item)this.button(actions,'查看',()=>this.showItem(state.item)).dataset.entryAction='preview';
-        const remove=this.button(actions,entry.kind==='section'?'移除标题':'移除',()=>{if(!this.actionBusy){this.entryEditOpen.delete(entry.entryId);this.setPlan(core.removeEntry(this.plan,entry.entryId));}},'mwb-assembly-remove');
-        remove.dataset.entryAction='remove';remove.setAttribute('aria-label',`移除${entry.title||heading}`);
-      });
-      if(focus){
-        const row=[...this.outline.children].find(node=>node.dataset.entryId===focus.id);
-        const target=[...row?.querySelectorAll('button,input,select')||[]].find(node=>focus.field?node.dataset.entryField===focus.field:focus.action&&node.dataset.entryAction===focus.action);
-        if(target&&!target.disabled)target.focus({preventScroll:true});
-        else row?.querySelector('summary')?.focus({preventScroll:true});
-      }
       this.updateSummary();
       this.renderArrangement();
     }

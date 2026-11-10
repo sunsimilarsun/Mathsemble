@@ -50,10 +50,10 @@ async function browserCases(sources,css) {
       teaching_tier:i===21?'培优':'基础',role:'训练',difficulty:'1',knowledge_nodes:['集合'],methods:['分类讨论'],source:'练习册'},
     markdown:'题干 '+i+'：根据条件确定函数的取值。'}));
   records.push({path:'知识/集合.md',kind:'knowledge',metadata:{id:'K1',title:'集合',subject:'高中数学',knowledge_nodes:['集合']},markdown:'集合知识正文'});
-  let index=core.buildIndex(records),saved=null;
+  let index=core.buildIndex(records),saved=null;const opened=[];
   const scan=async()=>index;
   const service={loadSettings:async()=>({questionRoots:['题库'],knowledgeRoots:['知识'],recursive:true}),scan,
-    listPlans:async()=>saved?[{path:'方案/布局.json',title:saved.title}]:[],saveSettings:async()=>{},openSource:async()=>{},
+    listPlans:async()=>saved?[{path:'方案/布局.json',title:saved.title}]:[],saveSettings:async()=>{},openSource:async source=>{opened.push(source);},
     savePlan:async plan=>{saved=JSON.parse(JSON.stringify(plan));return '方案/布局.json';},loadPlan:async()=>saved,
     exportMarkdown:async()=> 'out/布局.md',preview:async()=>{},
     beginSourceCheck:()=>({isCurrent:()=>true,assertCurrent(){},dispose(){}})};
@@ -71,7 +71,7 @@ async function browserCases(sources,css) {
     ok(host.scrollWidth<=host.clientWidth+1,label+': host has horizontal overflow '+host.scrollWidth+'/'+host.clientWidth);
     ok(view.root.scrollWidth<=view.root.clientWidth+1,label+': plugin has horizontal overflow '+view.root.scrollWidth+'/'+view.root.clientWidth);
     const bounds=view.root.getBoundingClientRect();
-    for(const pane of [view.left,view.center,view.right].filter(isVisible)) {
+    for(const pane of [view.left,view.center,view.arrangementPane].filter(isVisible)) {
       const rect=pane.getBoundingClientRect();
       ok(rect.left>=bounds.left-1&&rect.right<=bounds.right+1,label+': '+pane.className+' escapes plugin width '+JSON.stringify({left:rect.left,right:rect.right,rootLeft:bounds.left,rootRight:bounds.right}));
       ok(pane.scrollWidth<=pane.clientWidth+1,label+': '+pane.className+' has horizontal overflow '+pane.scrollWidth+'/'+pane.clientWidth);
@@ -89,6 +89,9 @@ async function browserCases(sources,css) {
       ok(field.labels?.length||field.getAttribute('aria-label'),'field has no accessible name');
     for(const control of view.root.querySelectorAll('button'))ok(control.type==='button'&&control.textContent.trim(),'button lost native semantics or name');
     menu.querySelector('summary').focus();ok(doc.activeElement===menu.querySelector('summary'),'plan menu summary cannot receive keyboard focus');
+    ok(!view.root.querySelector('.mwb-assembly-right'),'selection still reserves a third outline column');
+    ok(view.center.getBoundingClientRect().width>=900,'removing the outline did not return its width to question content');
+    ok(view.root.querySelectorAll('.mwb-assembly-mode-nav').length===1,'workspace navigation is duplicated');
     fit('wide workspace');
   });
 
@@ -127,39 +130,46 @@ async function browserCases(sources,css) {
     ok(Math.abs(view.center.scrollTop-returnTop)<=1,'closing preview lost the result scroll position');
   });
 
-  await check('compact outline editors preserve title and role changes while move and remove stay available',async()=>{
+  await check('selected-count entry leads to editable arrangement while move, source and remove stay available',async()=>{
     const q1=index.items.find(item=>item.id==='Q1');view.add(q1);
     const id=view.plan.entries.find(entry=>entry.sourceId==='Q0').entryId;
-    const row=()=>view.outline.querySelector('[data-entry-id="'+id+'"]');
-    let editor=row().querySelector('details.mwb-assembly-entry-edit');
-    ok(editor&&!editor.open,'entry editor should start collapsed');
-    editor.querySelector('summary').focus();ok(doc.activeElement===editor.querySelector('summary'),'entry editor summary cannot receive focus');
-    editor.querySelector('summary').click();await pause();
-    const title=editor.querySelector('input');title.value='本次短标题';title.dispatchEvent(new Event('change'));
-    editor=row().querySelector('details.mwb-assembly-entry-edit');
-    ok(editor.open&&view.plan.entries.find(entry=>entry.entryId===id).title==='本次短标题','title update lost editor expansion or value');
-    const role=editor.querySelector('select');role.value='例题';role.dispatchEvent(new Event('change'));
-    ok(row().querySelector('details').open&&view.plan.entries.find(entry=>entry.entryId===id).role==='例题','role update did not persist');
-    await click(row(),'下移');ok(view.plan.entries.at(-1).entryId===id,'down control did not move source');
-    await click(row(),'上移');ok(view.plan.entries[0].entryId===id,'up control did not move source');
-    await click(row(),'查看');ok(view.selectedItem.id==='Q0','outline preview opened wrong source');
-    await click(row(),'移除');ok(!view.plan.entries.some(entry=>entry.entryId===id),'remove control did not remove source');
+    const selected=view.root.querySelector('.mwb-assembly-selected-count');
+    ok(selected&&isVisible(selected)&&selected.textContent.includes('2'),'selected question count is not visible');
+    selected.focus();selected.click();await pause();
+    ok(view.workspaceMode==='arrangement'&&isVisible(view.arrangementPane),'selected-count entry did not open the dedicated arrangement');
+    const row=()=>view.arrangementList.querySelector('[data-entry-id="'+id+'"]');
+    const title=row().querySelector('[data-arrangement-field="title"]');
+    title.focus();ok(doc.activeElement===title,'inline title is not keyboard editable');
+    title.value='本次短标题';title.dispatchEvent(new Event('change'));await pause();
+    ok(view.plan.entries.find(entry=>entry.entryId===id).title==='本次短标题','inline title did not persist');
+    const role=row().querySelector('[data-arrangement-field="role"]');role.focus();role.value='例题';role.dispatchEvent(new Event('change'));await pause();
+    ok(view.plan.entries.find(entry=>entry.entryId===id).role==='例题','inline role did not persist');
+    const action=async key=>{
+      const target=row().querySelector('[data-arrangement-action="'+key+'"]'),menu=target?.closest('details');
+      ok(target,'missing arrangement action '+key);
+      if(menu&&!menu.open){menu.querySelector('summary').click();await pause();}
+      target.focus();target.click();await pause();
+    };
+    await action('down');ok(view.plan.entries.at(-1).entryId===id,'down control did not move source');
+    await action('up');ok(view.plan.entries[0].entryId===id,'up control did not move source');
+    await action('source');ok(opened.at(-1)===records[0].path,'source menu opened the wrong note');
+    await action('remove');ok(!view.plan.entries.some(entry=>entry.entryId===id),'remove control did not remove source');
     ok(records[0].metadata.role==='训练','UI edit changed source metadata');
-    await click(view.preview,'收起预览');
+    view.root.querySelector('.mwb-assembly-mode-nav [data-mode="library"]').click();await pause();
     await click(view.root,'保存方案');ok(!view.dirty&&view.root.querySelector('.mwb-assembly-save-state')?.textContent.includes('已保存'),'save indication did not update');
   });
 
   await check('narrow panes respond to their container inside a wide viewport without hiding any workflow',async()=>{
     ok(frame.contentWindow.innerWidth>=1400,'fixture viewport is not wide');
-    for(const width of [800,420]) {
+    for(const width of [640,420]) {
       host.style.width=width+'px';await pause();
       const nav=view.root.querySelector('.mwb-assembly-pane-nav');ok(isVisible(nav),'pane navigation absent at '+width);
-      for(const [key,pane] of [['filters',view.left],['library',view.center],['outline',view.right]]) {
+      for(const [key,pane] of [['filters',view.left],['library',view.center]]) {
         const control=visiblePane(key);ok(isVisible(control),'missing pane button '+key);control.focus();
         ok(doc.activeElement===control,'pane button cannot receive keyboard focus');control.click();await pause();
         ok(view.root.dataset.activePane===key&&isVisible(pane),'pane did not activate '+key);
         ok(control.getAttribute('aria-pressed')==='true'||control.getAttribute('aria-selected')==='true','active pane has no accessible selected state');
-        ok([view.left,view.center,view.right].filter(isVisible).length===1,'narrow workspace shows competing panes');
+        ok([view.left,view.center].filter(isVisible).length===1,'narrow workspace shows competing panes');
         fit(width+'px '+key);
       }
     }
@@ -168,7 +178,7 @@ async function browserCases(sources,css) {
     const clear=button(view.results,'清除筛选');ok(clear&&isVisible(clear),'empty results have no locally reachable recovery');
     clear.click();await pause();ok(view.results.querySelector('.mwb-assembly-result'),'empty result recovery did not restore sources');
     host.style.width='1240px';await pause();
-    ok([view.left,view.center,view.right].every(isVisible),'wide workspace did not restore all panes');fit('restored desktop');
+    ok([view.left,view.center].every(isVisible),'wide workspace did not restore both selection panes');fit('restored desktop');
   });
 
   await check('related questions in a narrow knowledge tree leave focused preview and reveal their filtered results',async()=>{

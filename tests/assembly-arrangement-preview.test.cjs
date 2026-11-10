@@ -47,12 +47,12 @@ async function browserCases(sources,css) {
   const originalSources=JSON.stringify(records);
   const body=md=>md.replace(/^---\n[\s\S]*?\n---\n/,'');
 
-  async function fixture({manual=false,deferred=false,empty=false,wideFormula=false,state=null}={}) {
+  async function fixture({manual=false,deferred=false,empty=false,wideFormula=false,previewShape='long',state=null}={}) {
     const frame=document.createElement('iframe');frame.style.cssText='width:1440px;height:920px;border:0;';
     const loaded=new Promise(resolve=>{frame.onload=resolve;});
     frame.srcdoc='<!doctype html><meta charset="utf-8"><style>'+css.replace(/<\/style/gi,'<\\/style')+'</style><div id="view"></div>';
     document.body.append(frame);await loaded;
-    const doc=frame.contentDocument,win=frame.contentWindow,host=doc.querySelector('#view'),observers=[];
+    const doc=frame.contentDocument,win=frame.contentWindow,host=doc.querySelector('#view'),observers=[],resizeObservers=[];
     class Observer {
       constructor(callback,options){this.callback=callback;this.options=options;this.targets=new Set();this.observed=[];this.disconnected=false;observers.push(this);}
       observe(node){this.targets.add(node);this.observed.push(node);}
@@ -61,6 +61,13 @@ async function browserCases(sources,css) {
       emit(nodes=[...this.targets]){this.callback(nodes.map(target=>({target,isIntersecting:true,intersectionRatio:1})),this);}
     }
     if(manual)win.IntersectionObserver=Observer;
+    const NativeResizeObserver=win.ResizeObserver;
+    if(NativeResizeObserver)win.ResizeObserver=class {
+      constructor(callback){this.disconnected=false;this.targets=new Set();this.native=new NativeResizeObserver(entries=>callback(entries,this));resizeObservers.push(this);}
+      observe(node){this.targets.add(node);this.native.observe(node);}
+      unobserve(node){this.targets.delete(node);this.native.unobserve(node);}
+      disconnect(){this.disconnected=true;this.targets.clear();this.native.disconnect();}
+    };
     const load=source=>{const module={exports:{}};new win.Function('module',source)(module);return module.exports;};
     const core=load(sources.core),owners=[],calls=[],pending=[],opened=[],saved=[],previews=[],notices=[];
     let active=0,maxActive=0,index=core.buildIndex(records),savedPlan=null;
@@ -89,22 +96,24 @@ async function browserCases(sources,css) {
       if(inline){active++;maxActive=Math.max(maxActive,active);}
       try {
         if(inline&&deferred)await new Promise(resolve=>{call.finish=resolve;pending.push(call);});
-        const paragraph=doc.createElement('p');paragraph.textContent=md;node.append(paragraph);
+        const paragraph=doc.createElement('p');
+        paragraph.textContent=arrangement&&previewShape!=='long'?(previewShape==='responsive'?'根据条件判断函数的性质，并说明理由。'.repeat(40):'简短题干：计算 1+1。'):md;
+        node.append(paragraph);
         if(arrangement){
-          for(let i=0;i<14;i++){const p=doc.createElement('p');p.textContent='长题的完整条件和推导 '+i;node.append(p);}
+          if(previewShape==='long')for(let i=0;i<14;i++){const p=doc.createElement('p');p.textContent='长题的完整条件和推导 '+i;node.append(p);}
           if(wideFormula){
             const math=doc.createElement('mjx-container');math.style.display='block';
             const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('width','1600');svg.setAttribute('height','60');
             math.append(svg);node.append(math);
           }
-          for(const type of ['answer','solution']){const block=doc.createElement('div');block.className='callout';block.dataset.callout=type;block.textContent='完整的 '+type+' 内容';node.append(block);}
+          if(['long','answer-only'].includes(previewShape))for(const type of ['answer','solution']){const block=doc.createElement('div');block.className='callout';block.dataset.callout=type;block.textContent='完整的 '+type+' 内容';node.append(block);}
           const link=doc.createElement('a');link.href='#source';link.textContent='原文中的可访问链接';node.append(link);
         }
       } finally {if(inline)active--;}
     };
     const View=load(sources.view)({ItemView,Notice:class{constructor(text){notices.push(text);}},Component,core,service,renderMarkdown});
     const view=new View({},{});
-    const f={frame,doc,win,host,view,core,service,owners,calls,observers,opened,saved,previews,notices,
+    const f={frame,doc,win,host,view,core,service,owners,calls,observers,resizeObservers,opened,saved,previews,notices,
       active:()=>active,maxActive:()=>maxActive,finishAll:()=>pending.splice(0).forEach(c=>c.finish()),
       setDeferred:value=>{deferred=value;},setIndex:value=>{index=value;},index:()=>index,clone};
     fixtures.push(f);if(state)await view.setState(clone(state),{});await view.onOpen();
@@ -124,11 +133,25 @@ async function browserCases(sources,css) {
   const cards=f=>[...f.view.arrangementList.querySelectorAll('.mwb-assembly-arrangement-entry')];
   const card=(f,id)=>cards(f).find(node=>node.dataset.entryId===id);
   const action=(f,id,key)=>{const target=card(f,id)?.querySelector('[data-arrangement-action="'+key+'"]');ok(target,'missing '+key+' action for '+id);return target;};
-  const act=async(f,id,key)=>{const target=action(f,id,key);target.focus();target.click();await pause();};
+  const openMenu=async(f,id)=>{
+    const menu=card(f,id).querySelector('.mwb-assembly-arrangement-more');ok(menu,'missing item menu');
+    if(!menu.open){menu.querySelector('summary').click();await pause();}
+    return menu;
+  };
+  const act=async(f,id,key)=>{
+    let target=action(f,id,key);
+    if(target.closest('.mwb-assembly-arrangement-more')&&!target.matches('summary')){await openMenu(f,id);target=action(f,id,key);}
+    ok(visible(f,target),'action is not visible: '+key);target.focus();target.click();await pause();
+  };
   const entry=(f,id)=>f.view.plan.entries.find(row=>row.sourceId===id);
   const order=f=>f.view.plan.entries.map(row=>row.entryId).join(',');
   const domOrder=f=>cards(f).map(row=>row.dataset.entryId).join(',');
-  const visible=(f,node)=>!!node?.getClientRects().length&&f.win.getComputedStyle(node).display!=='none';
+  const visible=(f,node)=>{
+    if(!node?.getClientRects().length||f.win.getComputedStyle(node).display==='none')return false;
+    for(let parent=node.parentElement;parent;parent=parent.parentElement)
+      if(parent.matches('details:not([open])')&&!parent.querySelector(':scope > summary')?.contains(node))return false;
+    return true;
+  };
   const emit=(f,node)=>{const targets=[...node.querySelectorAll('.mwb-assembly-snippet')];for(const observer of f.observers)observer.emit(targets.filter(target=>observer.targets.has(target)));};
   const fit=f=>{
     ok(f.host.scrollWidth<=f.host.clientWidth+1,'workspace overflows horizontally');
@@ -136,13 +159,17 @@ async function browserCases(sources,css) {
     ok(f.view.arrangementList.scrollWidth<=f.view.arrangementList.clientWidth+1,'arrangement list overflows horizontally');
   };
   const setField=async(f,id,key,value)=>{
-    const editor=card(f,id).querySelector('.mwb-assembly-arrangement-edit');if(editor&&!editor.open){editor.open=true;await pause();}
+    if(key==='position')await openMenu(f,id);
     const field=card(f,id).querySelector('[data-arrangement-field="'+key+'"]');ok(field,'missing '+key+' field');
+    ok(visible(f,field),'editable field is hidden: '+key);
     field.focus();field.value=value;field.dispatchEvent(new f.win.Event('change',{bubbles:true}));await pause();return field;
   };
 
   await check('dedicated arrangement shows mixed plan entries in order and renders original content without opening a question',async()=>{
-    const f=await fixture();await mode(f,'arrangement');
+    const f=await fixture();
+    const selected=f.view.root.querySelector('.mwb-assembly-selected-count');
+    ok(selected&&/3\s*题/.test(selected.textContent)&&/1\s*篇知识/.test(selected.textContent)&&/2\s*个?分区/.test(selected.textContent),'selected count omitted mixed-content quantities');
+    selected.click();await pause();
     ok(f.view.workspaceMode==='arrangement'&&visible(f,f.view.arrangementPane),'dedicated mode did not become visible');
     ok(!visible(f,f.view.center)&&domOrder(f)===order(f),'selection pane competes with arrangement or mixed entry order differs');
     await until(()=>f.calls.some(call=>call.arrangement),'arrangement content required an extra click');
@@ -150,6 +177,7 @@ async function browserCases(sources,css) {
     ok(source&&call.md===body(source.markdown),'arrangement altered Markdown or used the wrong source path');
     ok(call.signal&&!call.signal.aborted,'arrangement renderer has no cancellation signal');
     ok(cards(f).length===6&&cards(f).filter(node=>node.dataset.sourceStatus==='section').length===2,'section and knowledge entries were omitted');
+    ok(!button(f.view.arrangementPane,'返回选题')&&!f.view.arrangementPane.querySelector('h3'),'dedicated mode repeats the top-level title or navigation');
     ok(f.view.arrangementPane.getBoundingClientRect().width>=f.view.root.clientWidth-40,'dedicated preview does not use workspace width');fit(f);
   });
 
@@ -159,7 +187,13 @@ async function browserCases(sources,css) {
     const beforePlan=JSON.stringify(f.view.plan),beforeFilters=JSON.stringify(f.view.filters),selection=f.view.selection;
     ok(selection.items.length===4,'candidate fixture did not generate');
     f.view.center.scrollTop=140;const top=f.view.center.scrollTop;
-    await mode(f,'arrangement');await mode(f,'library');
+    await mode(f,'arrangement');
+    const title=card(f,entry(f,'Q0').entryId).querySelector('[data-arrangement-field="title"]'),oldTitle=title.value,oldDirty=f.view.dirty;
+    title.focus();title.value=oldTitle+'未提交';title.dispatchEvent(new f.win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    title.dispatchEvent(new f.win.Event('change',{bubbles:true}));
+    ok(title.value===oldTitle&&JSON.stringify(f.view.plan)===beforePlan&&f.view.dirty===oldDirty,'cancelled inline edit changed the plan or dirty state');
+    ok(f.view.selection===selection&&f.view.selectionIsCurrent(),'cancelled or unchanged title edit invalidated valid candidates');
+    await mode(f,'library');
     ok(JSON.stringify(f.view.plan)===beforePlan&&JSON.stringify(f.view.filters)===beforeFilters&&f.view.dirty,'mode switch changed draft or filters');
     ok(f.view.selection===selection&&f.view.selectionIsCurrent(),'mode switch discarded or invalidated candidate review');
     ok(Math.abs(f.view.center.scrollTop-top)<2,'returning to selection lost list scroll position');
@@ -186,6 +220,7 @@ async function browserCases(sources,css) {
     await act(f,id,'up');ok(f.view.plan.entries[2].entryId===id,'up did not restore the source item');
     await setField(f,id,'position','2');await act(f,id,'move');
     ok(f.view.plan.entries[1].entryId===id,'numeric placement treated 2 as a question number rather than the second plan item');
+    ok(visible(f,f.doc.activeElement)&&f.doc.activeElement.closest('[data-entry-id]')?.dataset.entryId===id,'numeric move restored focus inside a closed menu');
     const before=order(f);await setField(f,id,'position','999');await act(f,id,'move');ok(order(f)===before,'out-of-range target changed the plan');
     await act(f,id,'up');
     ok(f.view.plan.entries[0].entryId===id&&action(f,id,'up').disabled,'boundary move did not reach the first item');
@@ -214,13 +249,20 @@ async function browserCases(sources,css) {
 
   await check('editing, original-source navigation and persistence operate on the same plan without mutating source records',async()=>{
     const f=await fixture();await mode(f,'arrangement');const id=entry(f,'Q1').entryId;
-    await setField(f,id,'title','本次讲义标题');await setField(f,id,'role','例题');
+    await setField(f,id,'title','本次讲义标题');
+    const titleField=card(f,id).querySelector('[data-arrangement-field="title"]');
+    titleField.focus();titleField.dispatchEvent(new f.win.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+    ok(f.doc.activeElement===action(f,id,'drag'),'Enter after title editing did not return focus to the item handle');
+    const originalBody=card(f,id).querySelector('.mwb-assembly-snippet-body');await setField(f,id,'role','例题');
+    ok(card(f,id).querySelector('.mwb-assembly-snippet-body')===originalBody,'role editing restarted the question preview');
     ok(entry(f,'Q1').title==='本次讲义标题'&&entry(f,'Q1').role==='例题','arrangement fields did not update the plan');
-    ok(card(f,id).querySelector('.mwb-assembly-arrangement-edit').open,'editing closed the currently used controls');
+    ok(visible(f,card(f,id).querySelector('[data-arrangement-field="title"]'))&&visible(f,card(f,id).querySelector('[data-arrangement-field="role"]')),'inline fields disappeared after editing');
     await act(f,id,'source');ok(f.opened.at(-1)==='题库/章节/Q1.md','source action opened the wrong file');
     await setField(f,id,'position','2');await act(f,id,'move');ok(f.view.plan.entries[1].entryId===id,'persistence fixture did not change source order');
-    const sectionInput=f.view.arrangementSectionInput||[...f.view.arrangementPane.querySelectorAll('input')].find(node=>node.closest('label')?.textContent.includes('分区'));
-    ok(sectionInput,'arrangement has no section title field');sectionInput.value='课堂小结';await click(f.view.arrangementPane,'添加分区');
+    const sectionMenu=f.view.arrangementPane.querySelector('.mwb-assembly-section-menu');
+    ok(sectionMenu&&!sectionMenu.open,'add-section form should start collapsed');sectionMenu.querySelector('summary').click();await pause();
+    const sectionInput=f.view.arrangementSectionInput;
+    ok(sectionInput&&visible(f,sectionInput),'arrangement has no accessible section title field');sectionInput.value='课堂小结';await click(sectionMenu,'加入分区');
     ok(f.view.plan.entries.at(-1).kind==='section'&&f.view.plan.entries.at(-1).title==='课堂小结','section was not appended to the same plan');
     await click(f.view.root,'保存方案');ok(f.saved.length===1&&JSON.stringify(f.saved[0])===JSON.stringify(f.view.plan)&&!f.view.dirty,'saving used a different or stale plan');
     await click(f.view.root,'A4 预览 / PDF');ok(f.previews.length===1&&JSON.stringify(f.previews[0])===JSON.stringify(f.view.plan),'A4 preview used stale arrangement order or fields');
@@ -249,6 +291,63 @@ async function browserCases(sources,css) {
     f.view.savedSelect.value='方案/编排.json';await click(f.view.root,'打开方案');
     positionsCleared('loading a saved plan');
     ok(order(f)===savedOrder&&domOrder(f)===savedOrder&&!f.view.dirty,'loaded plan did not replace arrangement cards with the saved order');
+  });
+
+  await check('compact controls keep secondary actions behind an accessible menu and do not swallow the click after title editing',async()=>{
+    const f=await fixture();await mode(f,'arrangement');const id=entry(f,'Q0').entryId;
+    let menu=card(f,id).querySelector('.mwb-assembly-arrangement-more'),summary=menu.querySelector('summary');
+    ok(!menu.open&&visible(f,summary),'item menu must remain discoverable while collapsed');
+    for(const key of ['source','remove','move'])ok(!visible(f,action(f,id,key)),'secondary action is permanently expanded: '+key);
+    const title=card(f,id).querySelector('[data-arrangement-field="title"]'),down=action(f,id,'down'),previewBody=card(f,id).querySelector('.mwb-assembly-snippet-body');
+    title.focus();title.value='编辑后立即移动';title.dispatchEvent(new f.win.Event('change',{bubbles:true}));
+    ok(card(f,id).querySelector('.mwb-assembly-snippet-body')===previewBody&&previewBody.isConnected,'title edit rebuilt the rendered question body');
+    // A real blur/change occurs before the click on the button the user pressed.
+    // That pending click must still reach the same live entry after the edit.
+    down.focus();down.click();await pause();
+    ok(entry(f,'Q0').title==='编辑后立即移动'&&f.view.plan.entries[3].entryId===id,'title change replaced the pending move target or lost its value');
+    menu=await openMenu(f,id);summary=menu.querySelector('summary');
+    const position=menu.querySelector('[data-arrangement-field="position"]');position.focus();
+    ok(f.doc.activeElement===position&&visible(f,position),'numeric placement is not keyboard reachable from the menu');
+    position.dispatchEvent(new f.win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await pause();
+    ok(!menu.open&&f.doc.activeElement===summary,'Escape did not close the item menu and restore its trigger focus');
+    const before=order(f);let finishSave;
+    f.service.savePlan=()=>new Promise(resolve=>{finishSave=resolve;});
+    const saving=f.view.saveCurrentPlan();await pause();
+    for(const key of ['title','role'])ok(card(f,id).querySelector('[data-arrangement-field="'+key+'"]').disabled,'saving leaves editable field active: '+key);
+    for(const key of ['up','down','move','remove'])ok(action(f,id,key).disabled,'saving leaves mutation active: '+key);
+    action(f,id,'down').click();await pause();ok(order(f)===before,'busy compact control changed the plan');
+    finishSave('方案/编排.json');await saving;
+    ok(!action(f,id,'down').disabled&&!card(f,id).querySelector('[data-arrangement-field="title"]').disabled,'compact controls did not recover after saving');
+  });
+
+  await check('full-content control appears only when async rendering, hidden answers or narrower width conceal content',async()=>{
+    const short=await fixture({previewShape:'short',manual:true,deferred:true});await mode(short,'arrangement');
+    const shortId=entry(short,'Q0').entryId;
+    ok(!visible(short,action(short,shortId,'expand')),'unfinished short content already shows an unnecessary expansion control');
+    emit(short,short.view.arrangementList);short.setDeferred(false);short.finishAll();
+    await until(()=>card(short,shortId).querySelector('.mwb-assembly-snippet')?.dataset.previewState==='ready','short excerpt did not finish');
+    await pause(30);ok(!visible(short,action(short,shortId,'expand')),'fully visible short text retains an expansion control');
+    const hidden=await fixture({previewShape:'answer-only'});await mode(hidden,'arrangement');
+    const hiddenId=entry(hidden,'Q0').entryId;card(hidden,hiddenId).scrollIntoView({block:'start'});
+    await until(()=>visible(hidden,action(hidden,hiddenId,'expand')),'short text with hidden answers has no way to reveal them');
+    await act(hidden,hiddenId,'expand');
+    ok(visible(hidden,card(hidden,hiddenId).querySelector('[data-callout="answer"]')),'hidden answer could not be revealed');
+    const wide=await fixture({previewShape:'short',wideFormula:true});await mode(wide,'arrangement');const wideId=entry(wide,'Q0').entryId;
+    card(wide,wideId).scrollIntoView({block:'start'});
+    await until(()=>card(wide,wideId).querySelector('.mwb-assembly-snippet')?.dataset.previewState==='ready','short wide formula did not render');
+    const wideSnippet=card(wide,wideId).querySelector('.mwb-assembly-snippet');
+    ok(wideSnippet.scrollHeight<=wideSnippet.clientHeight+1&&wideSnippet.scrollWidth>wideSnippet.clientWidth+1,'wide-formula fixture is not horizontally clipped short content');
+    await until(()=>visible(wide,action(wide,wideId,'expand')),'horizontal clipping has no way to reveal the entire formula');
+    await act(wide,wideId,'expand');wideSnippet.scrollLeft=wideSnippet.scrollWidth;
+    ok(wideSnippet.scrollLeft>0,'expanded short wide formula is not horizontally readable');fit(wide);
+    const resized=await fixture({previewShape:'responsive'});await mode(resized,'arrangement');const id=entry(resized,'Q0').entryId;
+    card(resized,id).scrollIntoView({block:'start'});
+    await until(()=>card(resized,id).querySelector('.mwb-assembly-snippet')?.dataset.previewState==='ready','responsive excerpt did not render');
+    await pause(30);ok(!visible(resized,action(resized,id,'expand')),'wide unclipped content has an unnecessary expansion control');
+    resized.host.style.width='420px';await until(()=>visible(resized,action(resized,id,'expand')),'resize failed to expose expansion for newly clipped text');fit(resized);
+    const snippet=card(resized,id).querySelector('.mwb-assembly-snippet'),expand=action(resized,id,'expand');
+    ok(!!(snippet.compareDocumentPosition(expand)&resized.win.Node.DOCUMENT_POSITION_FOLLOWING),'expand control precedes the content instead of following it');
+    resized.host.style.width='1400px';await until(()=>!visible(resized,action(resized,id,'expand')),'widening did not remove the now-unnecessary expansion control');
   });
 
   await check('expanding content reveals complete callouts in place and collapsing restores the safe excerpt',async()=>{
@@ -300,6 +399,7 @@ async function browserCases(sources,css) {
     const closing=f.calls.filter(call=>call.arrangement&&call.owner.loaded);ok(closing.length>=1,'close fixture has no current owners');
     const count=f.calls.length;await f.view.onClose();f.finishAll();await pause();
     ok(closing.every(call=>call.signal.aborted&&!call.owner.loaded)&&f.observers.every(value=>value.disconnected),'close retained preview owners or observers');
+    ok(f.resizeObservers.every(value=>value.disconnected),'close retained snippet resize observers');
     ok(f.calls.length===count&&!f.host.childElementCount,'late work revived a closed workspace');
   });
 
@@ -308,7 +408,7 @@ async function browserCases(sources,css) {
     ok(!cards(empty).length&&empty.view.arrangementPane.textContent.includes('选题'),'empty arrangement has no selection guidance');
     const f=await fixture();await mode(f,'arrangement');f.host.style.width='420px';f.host.style.height='600px';await pause(30);fit(f);
     const id=entry(f,'Q2').entryId,node=card(f,id);node.scrollIntoView({block:'start'});await pause();
-    const editor=node.querySelector('.mwb-assembly-arrangement-edit');editor.open=true;await pause();
+    await openMenu(f,id);
     const move=action(f,id,'move');move.scrollIntoView({block:'nearest'});await pause();
     const rect=move.getBoundingClientRect(),pane=f.view.arrangementList.getBoundingClientRect();
     ok(rect.top>=pane.top-1&&rect.bottom<=pane.bottom+1,'numeric reorder control cannot be scrolled into the short pane');

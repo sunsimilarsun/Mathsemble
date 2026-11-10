@@ -87,6 +87,16 @@
 
 最终五套定向测试 **33/33 通过**；完整 `prepublish-check` **505 项通过，0 失败、0 跳过**。独立只读复核无剩余阻断，源码和生成文件一致，打印 CSS 保持不变。`src/plugin.js` 与 `main.js` SHA-256 均为 `37a4fd01f78745c0fdf65e9f01617ff35677494370da37fadf65f31e393ceaac`。
 
+## 候选 v7：精简组题操作区
+
+按用户确认的三项方向精简界面：每题操作集中为紧凑工具行，标题和角色直接编辑，指定位置、原文和移除收进更多；顶部合并标题、模式及主要操作，分区标题按需输入；选题页移除重复的右侧编排栏，通过已选数量入口进入预览编排。
+
+每项正文末尾按实际内容决定是否展示全文入口，覆盖长内容、横向溢出和隐藏答案／解析。原方案格式、来源核验和保存／A4 流程继续使用同一实现；标题与角色只影响本次方案。
+
+更新三份界面回归，以新的已选入口和更多菜单验证原有编辑、排序、源文不变及保存行为；补充两组场景，并扩充既有断言：菜单 Escape 与焦点、编辑后首击仍有效、相同值与取消编辑保持候选、忙态禁用恢复、短文／隐藏答案／超宽公式／异步与窗口变窄时的展开入口，以及 ResizeObserver 释放。原来源、候选核验、并发和阅读锚点断言保留。
+
+最终五套定向测试 **35/35 通过**；完整 `prepublish-check` **507 项通过，0 失败、0 跳过**。独立只读复核无剩余阻断，源码／生成文件一致，打印 CSS 与组题生成模块外的 JavaScript 保持不变。`src/plugin.js` 与 `main.js` SHA-256 均为 `41f8e78e58d553c4ce95ca36feff842351911c05c110803aecea748bb0667a7e`。
+
 ## 证据边界与产物
 
 日志保存在工作树上一层 `features-20261109/`：首次候选为 `0.2.4-prepublish.log`，候选 v2 首轮为 `0.2.4-audit-fixes-prepublish.log`，通过的完整检查为 `0.2.4-audit-fixes-verified.log`；候选 v3 为 `0.2.4-ui-prepublish.log`，定向检查为 `0.2.4-ui-functional.log`。远程 Ubuntu／Windows 检查结果以该分支 PR 的精确提交状态为准，本页的测试总数是对应候选的本地结果。
@@ -97,6 +107,8 @@
 
 候选 v6 日志保存在工作树上一层 `features-20261110/`，定向检查为 `0.2.4-arrangement-functional.log`，完整检查为 `0.2.4-arrangement-prepublish.log`。
 
-候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v6 摘要见 `release/SHA256SUMS_0.2.4-candidate-v6.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
+候选 v7 日志同样保存在 `features-20261110/`，定向检查为 `0.2.4-simplify-functional.log`，完整检查为 `0.2.4-simplify-prepublish.log`。
+
+候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v7 摘要见 `release/SHA256SUMS_0.2.4-candidate-v7.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
 
 0.2.4 新功能的真实 Obsidian 操作、视觉和原生 PDF 验收：**NOT_RUN，由用户负责**。本轮未修改正式 Markdown 库或本机已安装插件，未创建正式 0.2.4 标签或 Release。既有 0.2.3 用户验收仅作为基线，不代表新功能已验收。
