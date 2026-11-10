@@ -75,6 +75,18 @@
 
 更新既有卡片几何断言，宽／窄容器及候选均为单列，分页操作可达；异步渲染与数据安全断言保留。四套定向 Chromium 测试 **23/23 通过**，夹具中宽容器正文预览为 286px、窄容器为 320px、短题为 52px。完整 `prepublish-check` **495 项通过，0 失败、0 跳过**。本轮仅调整组题 CSS，JavaScript 与打印 CSS 均保持 v4 内容；实际 Obsidian 视觉验收仍由用户负责。
 
+## 候选 v6：独立预览编排
+
+2026-11-10，新增“选题／预览编排”工作模式。已选题目、知识与分区按同一方案连续展示，可拖动、上下移动或指定编排位置，修改本次标题和角色，添加分区与移除内容；题干修改使用原文入口。方案 schema 与来源核验沿用原实现。
+
+自动正文预览使用独立渲染组和滚动区域，长内容可在原位置展开。模式切换保留筛选、候选与未保存状态，实际编排修改仍使旧候选失效；缺失、冲突和来源变化保留提示与输出拦截。
+
+新增 `tests/assembly-arrangement-preview.test.cjs` 的 9 组回归，覆盖混合内容顺序与题号、拖动和指定位置、标题／角色编辑、原文入口、保存与 A4 使用同一方案、来源异常拦截、模式恢复、渲染取消和共享并发上限。使用实际视图模块、核心逻辑和 CSS，在 Chromium 中核对宽／窄容器及短窗口的操作可达性；不替代真实 Obsidian 验收。
+
+定向检查发现移至首项后被禁用的“上移”按钮会丢失焦点，已改为恢复到该项拖动手柄。异步正文增长时按内容身份恢复阅读位置，用户滚动或操作后立即停止校正；新建／打开方案会清除旧位置。展开长题后的宽公式使用局部横向滚动，避免撑宽整个工作区。
+
+最终五套定向测试 **33/33 通过**；完整 `prepublish-check` **505 项通过，0 失败、0 跳过**。独立只读复核无剩余阻断，源码和生成文件一致，打印 CSS 保持不变。`src/plugin.js` 与 `main.js` SHA-256 均为 `37a4fd01f78745c0fdf65e9f01617ff35677494370da37fadf65f31e393ceaac`。
+
 ## 证据边界与产物
 
 日志保存在工作树上一层 `features-20261109/`：首次候选为 `0.2.4-prepublish.log`，候选 v2 首轮为 `0.2.4-audit-fixes-prepublish.log`，通过的完整检查为 `0.2.4-audit-fixes-verified.log`；候选 v3 为 `0.2.4-ui-prepublish.log`，定向检查为 `0.2.4-ui-functional.log`。远程 Ubuntu／Windows 检查结果以该分支 PR 的精确提交状态为准，本页的测试总数是对应候选的本地结果。
@@ -83,6 +95,8 @@
 
 候选 v5 日志为 `0.2.4-single-row-prepublish.log` 与 `0.2.4-single-row-functional.log`。
 
-候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v5 摘要见 `release/SHA256SUMS_0.2.4-candidate-v5.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
+候选 v6 日志保存在工作树上一层 `features-20261110/`，定向检查为 `0.2.4-arrangement-functional.log`，完整检查为 `0.2.4-arrangement-prepublish.log`。
+
+候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v6 摘要见 `release/SHA256SUMS_0.2.4-candidate-v6.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
 
 0.2.4 新功能的真实 Obsidian 操作、视觉和原生 PDF 验收：**NOT_RUN，由用户负责**。本轮未修改正式 Markdown 库或本机已安装插件，未创建正式 0.2.4 标签或 Release。既有 0.2.3 用户验收仅作为基线，不代表新功能已验收。

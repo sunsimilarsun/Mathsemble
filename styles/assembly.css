@@ -181,3 +181,46 @@
   .mwb-assembly-panel-heading p { display:none; }
   .mwb-assembly-filter-grid { grid-template-columns:minmax(0,1fr); }
 }
+
+/* Selected content stays in one wide reading and editing surface. */
+.mwb-assembly-mode-nav { display:flex; gap:4px; padding:3px; border-radius:var(--radius-s,5px); background:var(--background-secondary); }
+.mwb-assembly-mode-nav button { box-shadow:none; background:transparent; }
+.mwb-assembly-mode-nav button[aria-pressed="true"] { background:var(--background-primary); color:var(--text-accent); font-weight:600; }
+.mwb-assembly[data-workspace-mode="arrangement"] .mwb-assembly-pane-nav { display:none; }
+.mwb-assembly-arrangement { display:flex; flex-direction:column; gap:9px; flex:1; min-height:0; min-width:0; }
+.mwb-assembly-arrangement-toolbar { display:flex; align-items:end; flex-wrap:wrap; gap:8px; flex-shrink:0; }
+.mwb-assembly-arrangement-heading { display:flex; align-items:center; flex-wrap:wrap; gap:8px; flex:1 1 180px; align-self:center; }
+.mwb-assembly-arrangement-heading h3 { margin:0; }
+.mwb-assembly-arrangement-toolbar > .mwb-assembly-field { flex:1 1 180px; max-width:280px; }
+.mwb-assembly-arrangement-help { margin:0; color:var(--text-muted); font-size:var(--font-smallest,12px); line-height:1.5; flex-shrink:0; }
+.mwb-assembly-arrangement-list { min-width:0; min-height:0; flex:1; overflow:auto; scrollbar-gutter:stable; padding:2px 3px 12px; }
+.mwb-assembly-arrangement-entry { min-width:0; padding:14px; margin-bottom:12px; border:1px solid var(--background-modifier-border); border-radius:var(--mwb-panel-radius); background:var(--background-primary); }
+.mwb-assembly-arrangement-entry.is-section { background:var(--background-secondary); border-left:3px solid var(--interactive-accent); }
+.mwb-assembly-arrangement-entry.is-dragging { opacity:.5; }
+.mwb-assembly-arrangement-entry-header { display:flex; align-items:start; gap:12px; }
+.mwb-assembly-arrangement-identity { flex:1; min-width:0; }
+.mwb-assembly-arrangement-identity h4 { margin:4px 0 0; font-size:1em; line-height:1.5; overflow-wrap:anywhere; }
+.mwb-assembly-arrangement-position { color:var(--text-accent); font-size:var(--font-smallest,12px); font-variant-numeric:tabular-nums; }
+.mwb-assembly-arrangement-drag { cursor:grab; flex-shrink:0; font-size:var(--font-smallest,12px); }
+.mwb-assembly-arrangement-actions { display:flex; gap:6px; flex-wrap:wrap; align-items:end; margin:12px 0 9px; }
+.mwb-assembly-arrangement-actions button { font-size:var(--font-smallest,12px); }
+.mwb-assembly-arrangement-actions > .mwb-assembly-field { width:100px; }
+.mwb-assembly-arrangement-actions .mwb-assembly-remove { color:var(--text-muted); }
+.mwb-assembly-arrangement-edit { margin:8px 0 12px; }
+.mwb-assembly-arrangement-edit > summary { cursor:pointer; color:var(--text-muted); font-size:var(--font-small,13px); }
+.mwb-assembly-arrangement-edit[open] { display:grid; grid-template-columns:minmax(0,1fr) minmax(140px,220px); gap:10px; }
+.mwb-assembly-arrangement-edit > summary { grid-column:1 / -1; }
+.mwb-assembly-arrangement-entry > .mwb-assembly-snippet { max-height:480px; padding-top:8px; border-top:1px solid var(--background-modifier-border); }
+.mwb-assembly-arrangement-entry.is-expanded > .mwb-assembly-snippet { max-height:none; overflow:auto; }
+.mwb-assembly-arrangement-entry.is-expanded .mwb-assembly-snippet-body .callout:is([data-callout="answer"],[data-callout="solution"]) { display:block; }
+.mwb-assembly-arrangement-entry .mwb-assembly-snippet-body :is(pre,table) { max-width:100%; overflow:auto; }
+.mwb-assembly-arrangement-entry > .mwb-assembly-result-path { margin-top:9px; }
+.mwb-assembly.is-busy .mwb-assembly-arrangement-list { opacity:.8; }
+@container mathsemble-assembly (max-width:520px) {
+  .mwb-assembly-mode-nav { width:100%; }
+  .mwb-assembly-mode-nav button { flex:1; }
+  .mwb-assembly-arrangement-toolbar > .mwb-assembly-field { max-width:none; }
+  .mwb-assembly-arrangement-entry { padding:10px; }
+  .mwb-assembly-arrangement-entry-header { gap:6px; }
+  .mwb-assembly-arrangement-edit[open] { grid-template-columns:minmax(0,1fr); }
+}
