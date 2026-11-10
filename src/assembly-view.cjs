@@ -868,7 +868,23 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const expanded=row.classList.contains('is-expanded');
         const hiddenAnswer=[...record.body.querySelectorAll('.callout[data-callout="answer"],.callout[data-callout="solution"]')]
           .some(node=>win.getComputedStyle(node).display==='none');
-        const more=record.node.scrollHeight>record.node.clientHeight+1||record.node.scrollWidth>record.node.clientWidth+1||hiddenAnswer;
+        let more=record.node.scrollHeight>record.node.clientHeight+1||record.node.scrollWidth>record.node.clientWidth+1||hiddenAnswer;
+        if(!expanded&&!more){
+          // A code/table/math scroller can fit the excerpt while hiding content
+          // inside it. The inert excerpt cannot scroll, so it still needs expand.
+          const checked=new Set();
+          outer:for(const target of record.body.querySelectorAll('pre,table,mjx-container')){
+            for(let node=target;node&&node!==record.node;node=node.parentElement){
+              if(checked.has(node))break;
+              checked.add(node);
+              const wide=node.clientWidth>0&&node.scrollWidth>node.clientWidth+1;
+              const tall=node.clientHeight>0&&node.scrollHeight>node.clientHeight+1;
+              if((!wide&&!tall)||!node.getClientRects().length)continue;
+              const style=win.getComputedStyle(node);
+              if((wide&&/^(auto|scroll)$/.test(style.overflowX))||(tall&&/^(auto|scroll)$/.test(style.overflowY))){more=true;break outer;}
+            }
+          }
+        }
         const hidden=!expanded&&!more;
         if(hidden&&this.contentEl.ownerDocument.activeElement===expand)row.querySelector('[data-arrangement-action="drag"]')?.focus({preventScroll:true});
         expand.hidden=hidden;expand.textContent=expanded?'收起全文':'展开全文';expand.setAttribute('aria-expanded',String(expanded));

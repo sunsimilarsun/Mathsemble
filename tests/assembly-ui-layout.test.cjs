@@ -203,11 +203,26 @@ async function browserCases(sources,css) {
       for(const [width,height] of [[1240,860],[420,600]]) {
         host.style.width=width+'px';host.style.height=height+'px';visiblePane('library').click();
         search('');view.limit=10;view.renderResults();await pause();
+        // Setting scrollTop alone is not a user gesture. Release the saved
+        // reading anchor before simulating the wheel's normal scrolling.
+        view.center.dispatchEvent(new frame.contentWindow.WheelEvent('wheel',{deltaY:500,bubbles:true}));
+        ok(view.workspaceAnchors.library===null,'user scrolling retained the old reading anchor');
         view.results.scrollTop=view.results.scrollHeight;
         const more=button(view.results,'再显示 100 条');ok(more,'pagination fixture missing');
         for(let ancestor=view.results.parentElement;ancestor&&ancestor!==view.root;ancestor=ancestor.parentElement)
           if(['auto','scroll'].includes(doc.defaultView.getComputedStyle(ancestor).overflowY))ancestor.scrollTop=ancestor.scrollHeight;
-        await pause();
+        let stableFrames=0,previousGeometry='';const deadline=Date.now()+2500;
+        while(stableFrames<2&&Date.now()<deadline){
+          await new Promise(resolve=>frame.contentWindow.requestAnimationFrame(resolve));
+          const bounds=view.center.getBoundingClientRect(),buttonBounds=more.getBoundingClientRect();
+          const visiblePending=[...view.results.querySelectorAll('.mwb-assembly-snippet[data-preview-state="pending"]')].some(node=>{
+            const rect=node.getBoundingClientRect();return rect.bottom>bounds.top&&rect.top<bounds.bottom;
+          });
+          const geometry=[view.center.scrollTop,view.center.scrollHeight,buttonBounds.top,buttonBounds.bottom].join(',');
+          stableFrames=!visiblePending&&!view.inlinePreviewActive&&geometry===previousGeometry?stableFrames+1:0;
+          previousGeometry=geometry;
+        }
+        ok(stableFrames===2,'visible previews and pagination geometry did not settle');
         const rect=more.getBoundingClientRect(),pane=view.center.getBoundingClientRect();
         const list=view.results.getBoundingClientRect(),visibleHeight=Math.min(list.bottom,pane.bottom)-Math.max(list.top,pane.top);
         ok(visibleHeight>=30,width+'px result scroll region remains clipped after scrolling: '+JSON.stringify({paneTop:pane.top,paneBottom:pane.bottom,listTop:list.top,listBottom:list.bottom}));

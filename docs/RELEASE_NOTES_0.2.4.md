@@ -47,4 +47,4 @@
 
 安装时将同一候选包中的 `main.js`、`manifest.json`、`styles.css` 一起覆盖现有 Mathsemble 插件目录，再重新启用插件。现有外观、课程属性、长公式换行和双版 PDF 功能继续沿用 0.2.3 基线。
 
-候选 v7 的本地完整 `prepublish-check` 共 507 项通过，0 失败、0 跳过；包含构建、真实 Chromium 功能检查和源码／产物一致性检查，详情见 [测试记录](TESTING_0.2.4.md)。新功能的视觉与真实 Obsidian 操作验收由用户负责。
+候选 v8 的本地完整 `prepublish-check` 共 508 项通过，0 失败、0 跳过；包含构建、真实 Chromium 功能检查和源码／产物一致性检查，详情见 [测试记录](TESTING_0.2.4.md)。新功能的视觉与真实 Obsidian 操作验收由用户负责。

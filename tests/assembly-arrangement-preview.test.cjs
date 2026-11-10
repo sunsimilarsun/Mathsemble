@@ -47,7 +47,7 @@ async function browserCases(sources,css) {
   const originalSources=JSON.stringify(records);
   const body=md=>md.replace(/^---\n[\s\S]*?\n---\n/,'');
 
-  async function fixture({manual=false,deferred=false,empty=false,wideFormula=false,previewShape='long',state=null}={}) {
+  async function fixture({manual=false,deferred=false,empty=false,wideFormula=false,nestedScroll='',previewShape='long',state=null}={}) {
     const frame=document.createElement('iframe');frame.style.cssText='width:1440px;height:920px;border:0;';
     const loaded=new Promise(resolve=>{frame.onload=resolve;});
     frame.srcdoc='<!doctype html><meta charset="utf-8"><style>'+css.replace(/<\/style/gi,'<\\/style')+'</style><div id="view"></div>';
@@ -101,10 +101,20 @@ async function browserCases(sources,css) {
         node.append(paragraph);
         if(arrangement){
           if(previewShape==='long')for(let i=0;i<14;i++){const p=doc.createElement('p');p.textContent='长题的完整条件和推导 '+i;node.append(p);}
-          if(wideFormula){
+          if(wideFormula||nestedScroll==='math'){
             const math=doc.createElement('mjx-container');math.style.display='block';
+            if(nestedScroll==='math'){math.style.overflowX='auto';math.tabIndex=0;math.dataset.innerScrollFixture='math';}
             const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('width','1600');svg.setAttribute('height','60');
             math.append(svg);node.append(math);
+          }
+          if(nestedScroll==='pre'){
+            const pre=doc.createElement('pre');pre.style.cssText='white-space:pre;overflow:auto';pre.tabIndex=0;pre.dataset.innerScrollFixture='pre';
+            pre.textContent='a = b + c + d; '.repeat(100);node.append(pre);
+          }
+          if(nestedScroll==='table-wrapper'){
+            const wrapper=doc.createElement('div');wrapper.style.overflowX='auto';wrapper.tabIndex=0;wrapper.dataset.innerScrollFixture='table-wrapper';
+            const table=doc.createElement('table');table.style.minWidth='1800px';
+            const tr=doc.createElement('tr'),td=doc.createElement('td');td.textContent='宽表格的完整推导';tr.append(td);table.append(tr);wrapper.append(table);node.append(wrapper);
           }
           if(['long','answer-only'].includes(previewShape))for(const type of ['answer','solution']){const block=doc.createElement('div');block.className='callout';block.dataset.callout=type;block.textContent='完整的 '+type+' 内容';node.append(block);}
           const link=doc.createElement('a');link.href='#source';link.textContent='原文中的可访问链接';node.append(link);
@@ -366,6 +376,26 @@ async function browserCases(sources,css) {
     scrollable.scrollLeft=scrollable.scrollWidth;ok(scrollable.scrollLeft>0,'wide formula scroll control does not reveal the remainder');
     await act(f,id,'expand');shell=card(f,id).querySelector('.mwb-assembly-snippet');
     ok(shell.inert&&!visible(f,shell.querySelector('[data-callout="answer"]')),'collapse did not restore excerpt behavior');
+  });
+
+  await check('nested scrolling in code, math or a table wrapper remains reachable when the excerpt itself fits',async()=>{
+    for(const kind of ['pre','math','table-wrapper']){
+      const f=await fixture({previewShape:'short',nestedScroll:kind});await mode(f,'arrangement');const id=entry(f,'Q0').entryId;
+      card(f,id).scrollIntoView({block:'start'});
+      await until(()=>card(f,id).querySelector('.mwb-assembly-snippet')?.dataset.previewState==='ready',kind+' did not finish rendering');
+      const shell=card(f,id).querySelector('.mwb-assembly-snippet'),inner=shell.querySelector('[data-inner-scroll-fixture]');
+      ok(shell.scrollWidth<=shell.clientWidth+1&&shell.scrollHeight<=shell.clientHeight+1,kind+' fixture overflows the outer excerpt instead of only its inner scroller');
+      ok(inner.scrollWidth>inner.clientWidth+1&&['auto','scroll'].includes(f.win.getComputedStyle(inner).overflowX),kind+' fixture lacks internal scrolling');
+      if(kind==='table-wrapper'){
+        const table=inner.querySelector('table');
+        ok(table.scrollWidth<=table.clientWidth+1,'table wrapper fixture accidentally overflows the table itself');
+      }
+      ok(shell.inert,kind+' excerpt unexpectedly starts interactive');
+      await until(()=>visible(f,action(f,id,'expand')),kind+' internal overflow has no expansion entry');
+      await act(f,id,'expand');ok(!shell.inert,kind+' expanded content remains inert');
+      inner.focus();ok(f.doc.activeElement===inner,kind+' inner scrolling region is still unreachable by keyboard');
+      inner.scrollLeft=inner.scrollWidth;ok(inner.scrollLeft>0,kind+' hidden remainder is not scrollable after expansion');fit(f);
+    }
   });
 
   await check('source changes, missing files and conflicting identities remain explicit until references are checked',async()=>{

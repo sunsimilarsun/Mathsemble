@@ -97,6 +97,16 @@
 
 最终五套定向测试 **35/35 通过**；完整 `prepublish-check` **507 项通过，0 失败、0 跳过**。独立只读复核无剩余阻断，源码／生成文件一致，打印 CSS 与组题生成模块外的 JavaScript 保持不变。`src/plugin.js` 与 `main.js` SHA-256 均为 `41f8e78e58d553c4ce95ca36feff842351911c05c110803aecea748bb0667a7e`。
 
+## 候选 v8：内部滚动内容的展开入口
+
+打包复核在 `33a0243` 发现：短题的公式、代码块或表格若自行横向滚动，外层预览尺寸可能完全正常，原来的全文判断就会隐藏入口，同时摘要仍禁止内部交互。临时浏览器复现中，外层宽度为 1344/1344，内层公式为 1600/1344，全文按钮隐藏且内部容器无法获得焦点。
+
+全文判断补充检测公式、代码块、表格及其包裹层的实际滚动溢出。折叠摘要继续保留原交互限制，用户展开后可在内部滚动查看；不遍历全部公式叶子，也不修改原文或打印样式。
+
+新增回归覆盖三种内部滚动容器，确认外层不溢出时仍可展开，展开后能聚焦和横向滚动；同一回归在旧 `33a0243` 上按预期失败。首轮完整检查还捕捉到旧分页可达性夹具遗漏用户滚动事件：直接赋值的 scrollTop 被异步预览按旧阅读锚点恢复。仓库外双对照复现了无滚动事件时的回跳，以及加入冒泡滚动事件后的稳定位置；修正夹具操作顺序并按渲染帧读取几何，保留原来的严格可达性和点击断言。
+
+预览编排定向套件 **13/13 通过**，分页与界面布局套件 **12/12 通过**；最终完整 `prepublish-check` **508 项通过，0 失败、0 跳过**，独立只读复核通过。`src/plugin.js` 与 `main.js` SHA-256 均为 `16a8110b480e9200bbc12df34b4eef58507e39b9001752240a3e66cdc3f5cac8`，CSS 与 v7 一致。
+
 ## 证据边界与产物
 
 日志保存在工作树上一层 `features-20261109/`：首次候选为 `0.2.4-prepublish.log`，候选 v2 首轮为 `0.2.4-audit-fixes-prepublish.log`，通过的完整检查为 `0.2.4-audit-fixes-verified.log`；候选 v3 为 `0.2.4-ui-prepublish.log`，定向检查为 `0.2.4-ui-functional.log`。远程 Ubuntu／Windows 检查结果以该分支 PR 的精确提交状态为准，本页的测试总数是对应候选的本地结果。
@@ -109,6 +119,8 @@
 
 候选 v7 日志同样保存在 `features-20261110/`，定向检查为 `0.2.4-simplify-functional.log`，完整检查为 `0.2.4-simplify-prepublish.log`。
 
-候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v7 摘要见 `release/SHA256SUMS_0.2.4-candidate-v7.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
+候选 v8 的定向检查为 `0.2.4-simplify-v8-functional.log` 和 `0.2.4-simplify-v8-pagination-functional.log`，完整检查为 `0.2.4-simplify-v8-prepublish.log`，首轮失败保存在 `0.2.4-simplify-v8-prepublish-first.log`；原问题复现保存在 `nested-overflow-probe/`，分页夹具对照在 `pagination-anchor-probe/`。
+
+候选包仅包含 `main.js`、`manifest.json`、`styles.css`、开发说明和 MIT 许可证；当前 v8 摘要见 `release/SHA256SUMS_0.2.4-candidate-v8.txt`，此前候选摘要保留。依赖、测试、日志和私人内容不进入安装包。
 
 0.2.4 新功能的真实 Obsidian 操作、视觉和原生 PDF 验收：**NOT_RUN，由用户负责**。本轮未修改正式 Markdown 库或本机已安装插件，未创建正式 0.2.4 标签或 Release。既有 0.2.3 用户验收仅作为基线，不代表新功能已验收。
