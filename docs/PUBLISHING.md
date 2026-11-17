@@ -1,17 +1,17 @@
 # Mathsemble 发布指引
 
-当前源码为 **0.2.5 本地合流版，尚未远端发布**。本轮接回已安装版本的额外改动、同步源码与文档；不创建远端标签或 Release。最新公开版本仍为 [0.2.4](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.4)。本轮来源、检查与安装结果见 [0.2.5 测试记录](TESTING_0.2.5.md)，公开发布与社区目录提交分别记录。
+当前发布版本为 [0.2.5](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5)。2026-11-17，用户在本地合流完成后明确授权推送 GitHub、合并 main 并发布 0.2.5，取代此前仅本地处理的范围。本地完整检查 592 项通过、0 失败、0 跳过；真实 Obsidian 操作、视觉与原生 PDF 验收仍未完成，此次授权不将其改记为通过。来源、检查、安装及发布阶段记录见 [0.2.5 测试记录](TESTING_0.2.5.md)，远端执行结果以目标提交的 Actions 与 Release 为准；社区目录提交另行记录。
 
-本地安装或后续发布均使用同版本的 `main.js`、`manifest.json`、`styles.css`，先保留被替换的三件套和方案备份。0.2.5 保存的方案为 v3，正式 0.2.4 无法读取；回退插件时须同时选用升级前的兼容方案，不能只改 JSON 的版本号。新旧 Callout 契约差异见 [0.2.5 说明](RELEASE_NOTES_0.2.5.md)。
+安装与发布均使用同版本的 `main.js`、`manifest.json`、`styles.css`，先保留被替换的三件套和方案备份。0.2.5 保存的方案为 v3，正式 0.2.4 无法读取；回退插件时须同时选用升级前的兼容方案，不能只改 JSON 的版本号。新旧 Callout 契约差异见 [0.2.5 说明](RELEASE_NOTES_0.2.5.md)。
 
 ## 本地与 CI 门槛
 
 1. 在目标提交上执行 `npm ci` 和带 Chrome／Chromium 的 `npm run prepublish-check`；测试不得跳过浏览器场景。
 2. 核对 `src/plugin.js` 与构建后的 `main.js`，打印 CSS 与 `styles.css` 保持一致；Linux 与 Windows CI 均应通过。
-3. 完成 [Obsidian 宿主验收](OBSIDIAN_HOST_ACCEPTANCE.md)，保存真实讲义双版本 PDF、截图和问题记录。
+3. 按 [Obsidian 宿主验收](OBSIDIAN_HOST_ACCEPTANCE.md)记录真实执行范围、双版本 PDF、截图和问题。0.2.5 本次获明确发布授权，宿主验收未完成的状态须在发布说明中保留，不以自动化或发布成功替代。
 4. 核对 MIT 许可证、隐私披露及安装文件。不要提交私人题库、学生档案、个人文档或凭据。
 
-## 后续正式 Release
+## 正式 Release
 
 1. 确定发布版本，同步 `manifest.json`、`package.json` 和 `package-lock.json`，编写 `docs/RELEASE_NOTES_<version>.md`。
 2. 提交经过验证的源码和生成文件后，再创建匹配版本的 Git 标签。

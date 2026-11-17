@@ -1,7 +1,9 @@
-# Mathsemble Obsidian host acceptance (0.2.5 local reconciliation build)
+# Mathsemble Obsidian host acceptance (0.2.5)
 
 This is a checklist, not a completed acceptance report. Record actual results in
 [TESTING_0.2.5.md](TESTING_0.2.5.md). Earlier release results retain their original scope.
+The user explicitly authorized the 0.2.5 release; native Obsidian operation,
+visual and PDF acceptance remains incomplete and is not implied by publication.
 
 ## Preparation
 
@@ -46,7 +48,7 @@ This is a checklist, not a completed acceptance report. Record actual results in
 - [ ] GitHub `npm run check` and clean-build CI succeed on the exact target commit.
 - [ ] Community dashboard **Review branch** scan shows no blocking Errors; Warning cleanup is not itself an approval requirement.
 - [ ] Record actual screenshots / exported PDFs and pass/fail per check. Until this is done, host acceptance is **not completed**.
-- [ ] For an authorized later public release, keep manifest.json, package.json and package-lock.json versions aligned, provide matching release notes and record the new tag. The current reconciliation does not publish remotely.
+- [ ] Keep manifest.json, package.json and package-lock.json versions aligned, provide matching release notes and record the new tag. The 0.2.5 release is explicitly authorized; record actual remote results separately from this incomplete host checklist.
 - [ ] Verify the 3 Release assets and GitHub artifact attestations when published. Do not overwrite existing releases.
 
 Official scanner: https://docs.obsidian.md/community-directory/manage-entry

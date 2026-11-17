@@ -1,4 +1,4 @@
-# Mathsemble privacy and security notes (0.2.5 local reconciliation build)
+# Mathsemble privacy and security notes (0.2.5)
 
 - The application is local-first and does not implement analytics, telemetry, accounts, or application-managed cloud sync.
 - The plugin reads Markdown from the current note, folder-based exam collection, or configured question/knowledge directories. Assembly schemes store references, ordering and course/output settings; explicitly saved handout copies contain compiled Markdown. Temporary A4 previews use in-memory snapshots without creating a handout file. It updates frontmatter after a direct user action to set a teaching role, or changes the current question heading after the user explicitly invokes the H5 conversion command. Preview, export and the Reading View answer toggle do not rewrite source notes.

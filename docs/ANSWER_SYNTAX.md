@@ -1,6 +1,6 @@
 # Typed answer slots: fill / choice
 
-Current source: 0.2.5 local reconciliation build, not yet released remotely. The authoritative writing contract is
+Current version: [0.2.5](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5). The authoritative writing contract is
 [MARKDOWN_SPEC.md](MARKDOWN_SPEC.md); this page summarizes answer migration.
 
 Mathsemble now recognizes `?{answer}` as fill and `!{answer}` as choice.

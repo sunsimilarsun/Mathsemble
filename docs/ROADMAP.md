@@ -1,6 +1,6 @@
 # Mathsemble 路线图
 
-当前源码为 0.2.5 本地合流版，尚未远端发布；公开版本仍为 [0.2.4](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.4)。书写契约以 [Markdown 规范](MARKDOWN_SPEC.md) 为准；历史演进见 [变更索引](CHANGELOG.md)，当前流程与保存范围见[产品设计](PRODUCT_DESIGN.md)，实现与验证状态见 [功能矩阵](FEATURE_MATRIX.md)。本轮测试与宿主记录见 [0.2.5 验证](TESTING_0.2.5.md)，历史版本的通过结果不扩展到本轮增量。
+当前版本为 [0.2.5](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5)。书写契约以 [Markdown 规范](MARKDOWN_SPEC.md) 为准；历史演进见 [变更索引](CHANGELOG.md)，当前流程与保存范围见[产品设计](PRODUCT_DESIGN.md)，实现与验证状态见 [功能矩阵](FEATURE_MATRIX.md)。本轮测试与宿主记录见 [0.2.5 验证](TESTING_0.2.5.md)，历史版本的通过结果不扩展到本轮增量。
 
 ## 当前：选材、编排与排版输出
 
@@ -38,6 +38,6 @@
 ## 发布条件
 
 - 目标提交通过干净构建、全量测试、模板检查和发布预检，浏览器用例无跳过。
-- 完成 [宿主验收清单](OBSIDIAN_HOST_ACCEPTANCE.md)，确认真实长 PDF 和学生输出。
+- 记录 [宿主验收清单](OBSIDIAN_HOST_ACCEPTANCE.md)的真实执行结果，确认长 PDF 和学生输出。0.2.5 按用户明确授权发布，但本版宿主／原生 PDF 验收尚未完成，继续保留为优先工作。
 - 版本、标签、对应发布说明和三个安装文件保持一致；不覆盖旧 Release。
 - 按 [发布指引](PUBLISHING.md)执行，社区审核状态以实际结果为准。

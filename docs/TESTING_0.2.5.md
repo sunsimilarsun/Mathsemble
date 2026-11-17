@@ -1,4 +1,6 @@
-# 0.2.5 本地版本合流与验证记录
+# 0.2.5 验证与发布记录
+
+## 本地合流阶段（截至提交 `d559d5b`）
 
 日期：2026-11-17。工作分支：`codex/reconcile-installed-0.2.5`。本轮将本机安装版差异接回正式 0.2.4 基线，尚未远端发布。
 
@@ -46,3 +48,17 @@ QA 目录中的 `prepublish-check.log` 保存最终全量结果，`clean-build.l
 | `styles.css` | `dd2d782963a572ec50c08471364ec4a8040ae775bb5aaf042c46e809b7aceb8a` |
 
 摘要同时保存于 [版本摘要](../release/SHA256SUMS_0.2.5.txt)。JS 与 CSS 保持合流前安装版的原字节；版本差异已回到可维护源码中，不再依赖从安装目录恢复构建。相邻模板目录 README 仅同步插件版本、命令名和文档入口，未改数学正文或模板内容。
+
+## 正式发布阶段（2026-11-17）
+
+本地合流完成后，用户明确授权推送 GitHub、合并 main 并发布 0.2.5，取代此前“仅本地合流、不远端发布”的任务范围。本次发布沿用上文已验证的运行代码和样式，更新现行文档与正式版本说明；上文“尚未远端发布”和“远端未执行”只描述提交 `d559d5b` 的本地阶段，不描述后续远端状态。
+
+本地完整检查仍为 **592 项通过、0 失败、0 跳过**。真实 Obsidian 操作、视觉与原生 PDF 验收仍未完成；此次明确发布授权不改写该事实，也不把应用启动、磁盘安装或 GitHub 发布成功当作宿主验收通过。
+
+远端执行结果按实际目标提交读取，不在准备文档时预填成功：
+
+- [0.2.5 Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5)：正式标签、对应提交和三个独立安装资产。
+- [Build and test](https://github.com/sunsimilarsun/Mathsemble/actions/workflows/ci.yml)：目标提交的 Linux／Windows 干净构建与回归结果。
+- [Publish GitHub release assets](https://github.com/sunsimilarsun/Mathsemble/actions/workflows/release.yml)：版本及说明文件检查、资产生成和来源证明。
+
+正式安装文件应与 [版本摘要](../release/SHA256SUMS_0.2.5.txt) 一致。发布说明与摘要更新不改变上文记录的运行文件哈希；社区目录审核状态另按实际审核结果记录。

@@ -1,6 +1,6 @@
 # Mathsemble 产品流程与设计边界
 
-适用版本：0.2.5 本地合流版，尚未远端发布。本文说明当前流程、编辑对象和保存范围；实现与验证状态见[功能矩阵](FEATURE_MATRIX.md)，内容语法以 [Markdown 规范](MARKDOWN_SPEC.md) 为准。[旧版 FRD](REQUIREMENTS.md)保留历史，不作为当前功能状态。
+适用版本：[0.2.5](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5)。本文说明当前流程、编辑对象和保存范围；实现与验证状态见[功能矩阵](FEATURE_MATRIX.md)，内容语法以 [Markdown 规范](MARKDOWN_SPEC.md) 为准。[旧版 FRD](REQUIREMENTS.md)保留历史，不作为当前功能状态。
 
 ## 主流程
 

@@ -2,7 +2,7 @@
 
 Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作讲义、题卡和试卷，预览并导出 A4 学生版／教师版 PDF、打印稿及 HTML。
 
-**当前源码：0.2.5 本地合流版，尚未远端发布。** 以正式 [0.2.4](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.4) 为基线，接回本机安装版的 Callout 显隐、方案 v3、阅读答案开关和试听兼容调整。完整流程与保存范围见[产品设计](docs/PRODUCT_DESIGN.md)，增量与验证范围见 [0.2.5 说明](docs/RELEASE_NOTES_0.2.5.md)及[测试记录](docs/TESTING_0.2.5.md)。正式 0.2.4 的答案规则与本版不同，不可只按相同的旧安装版本号判断内容一致。
+**当前版本：[0.2.5](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5)。** 本版更新 Callout 显隐与按类型留白／显示选项、方案 v3、阅读答案开关和试听属性兼容。完整流程与保存范围见[产品设计](docs/PRODUCT_DESIGN.md)，升级说明见 [0.2.5 说明](docs/RELEASE_NOTES_0.2.5.md)。本地完整检查 **592 项通过，0 失败、0 跳过**；本版真实 Obsidian 操作、视觉及原生 PDF 验收仍未完成，发布授权不改变该边界。远端检查与详细证据见[测试记录](docs/TESTING_0.2.5.md)。
 
 ## 选材与编排
 
@@ -121,7 +121,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 ## 安装
 
-最新公开 Release 仍为 [0.2.4](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.4)，可下载三个独立文件：`main.js`、`manifest.json`、`styles.css`。本地 0.2.5 使用本次构建的同版本三件套；其 Callout 契约和 v3 方案兼容性按本页核对。
+从 [0.2.5 Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5) 下载三个独立文件：`main.js`、`manifest.json`、`styles.css`。安装前保留旧三件套及方案备份；升级后的 Callout 契约与 v3 方案兼容性按本页核对。
 
 1. 将三个同版本文件放入 `<vault>/.obsidian/plugins/mathsemble/`。
 2. 重启 Obsidian，在社区插件设置中启用 Mathsemble。

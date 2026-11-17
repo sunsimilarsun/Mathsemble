@@ -1,6 +1,6 @@
 # 当前功能与验收边界
 
-对应源码：0.2.5 本地合流版，尚未远端发布；公开基线为 [0.2.4](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.4)。主流程、编辑对象与保存范围见[产品设计](PRODUCT_DESIGN.md)，本轮验证见 [0.2.5 测试记录](TESTING_0.2.5.md)。代码存在、自动测试通过和真实 Obsidian 验收是不同状态；历史版本记录见 [变更索引](CHANGELOG.md)。
+对应版本：[0.2.5](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5)。主流程、编辑对象与保存范围见[产品设计](PRODUCT_DESIGN.md)，本轮验证见 [0.2.5 测试记录](TESTING_0.2.5.md)。本地完整检查 592 项通过、0 失败、0 跳过；真实 Obsidian 操作、视觉与原生 PDF 验收未完成。代码存在、自动测试通过和真实宿主验收是不同状态；历史版本记录见 [变更索引](CHANGELOG.md)。
 
 | 子系统 | 当前实现 | 验证与剩余边界 |
 | --- | --- | --- |
