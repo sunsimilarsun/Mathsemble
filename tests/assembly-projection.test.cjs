@@ -30,7 +30,7 @@ test('mixed compiled handout uses real projection without losing knowledge or ex
  const lines=markdown.split('\n');
  assert.equal(lines[first.end],'## 知识乙');
  const student=api.handoutPlan(boundaries.markdown,'student');
- const teacher=api.handoutPlan(boundaries.markdown,'teacher');
+ const teacher=api.handoutPlan(boundaries.markdown,'teacher',{teacherVisibleCallouts:['solution']});
  const markers=['KNOWLEDGE_ALPHA','QUESTION_ONE','KNOWLEDGE_BETA','QUESTION_TWO'];
  for(const output of [student.markdown,teacher.markdown]){
   let previous=-1;

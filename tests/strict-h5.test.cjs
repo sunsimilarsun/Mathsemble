@@ -192,7 +192,7 @@ async function browserCases(fixtures,math){
   }
  });
  for(const fixture of fixtures)await check('CommonMark fixture: '+fixture.name,()=>{
-  const plan=a.mwbHandoutQuestionPlan(fixture.source),projection=a.handoutPlan(plan.markdown,fixture.mode,fixture.options||{});
+  const plan=a.mwbHandoutQuestionPlan(fixture.source),projection=a.handoutPlan(plan.markdown,fixture.mode,fixture.options||(fixture.mode==='teacher'?{teacherVisibleCallouts:['solution']}:{}));
   ok(projection.markdown===fixture.projected,'fixture is stale');
   const root=document.createElement('div');root.innerHTML=fixture.html;a.mwbApplyHandoutQuestions(root,plan,'fixture.md');
   const blocks=[...root.querySelectorAll('.mwb-handout-question')];
@@ -216,6 +216,7 @@ async function browserCases(fixtures,math){
   const fixture=fixtures.find(f=>f.name==='interleaved-teacher');ok(fixture,'missing rendering fixture');
   host?.remove();host=document.createElement('div');host.className='mwb-modal';document.body.appendChild(host);
   const modal=new a.PreviewModal({}, {manifest:{version:'test'}},{path:'notes.md',basename:'notes'},fixture.source,null,{documentMode:true});
+  modal.solutionOptions={studentBlankCallouts:[],teacherVisibleCallouts:['solution']};
   modal.page=host.createDiv({cls:'mwb-page'});modal.rendered=modal.page.createDiv({cls:'mwb-typography mwb-print-document'});
   modal.status=host.createDiv({});modal.questionBoundaryPanel=host.createDiv({});
   const oldRender=mockObsidian.MarkdownRenderer.render;

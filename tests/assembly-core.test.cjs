@@ -105,7 +105,7 @@ test('ID-less sources use exact paths and require review if a new identity appea
 test('validation rejects hostile properties, unknown versions and malformed references',()=>{
   const valid=core.createPlan();
   assert.throws(()=>core.validatePlan(JSON.parse('{"schemaVersion":1,"title":"x","entries":[],"__proto__":{}}')),/属性/);
-  assert.throws(()=>core.validatePlan({...valid,schemaVersion:3}),/版本/);
+  assert.throws(()=>core.validatePlan({...valid,schemaVersion:4}),/版本/);
   assert.throws(()=>core.validatePlan({...valid,extra:'bad'}),/未知字段/);
   const getter={schemaVersion:1,title:'x',get entries(){throw Error('getter must not execute');}};
   assert.throws(()=>core.validatePlan(getter),/不允许的属性/);
@@ -130,7 +130,7 @@ test('legacy plans migrate in memory with independent course and output defaults
   const current=core.addItem(core.createPlan('旧方案'),core.buildIndex([question()]).items[0]);
   const legacy=frozen({schemaVersion:1,title:current.title,entries:current.entries});
   const migrated=core.validatePlan(legacy);
-  assert.equal(migrated.schemaVersion,2);
+  assert.equal(migrated.schemaVersion,3);
   assert.deepEqual(migrated.entries,legacy.entries);
   assert.equal(migrated.entries[0].entryId,legacy.entries[0].entryId);
   assert.deepEqual(migrated.course,core.defaultCourse());
@@ -147,7 +147,7 @@ test('all entry edits preserve explicit course settings and blank title through 
   const index=core.buildIndex([question()]);
   let plan=core.createPlan('集合讲义');
   plan.course={teacher:'  李老师 ',student:'小甲',time:'周六',subject:'数学',grade:'高一',title:'',objectives:'第一条\n第二条'};
-  plan.output={layout:'trial',mode:'teacher',spaceSettings:{ratio:125,minimumCm:4},solutionOptions:{solutionSpaces:true,showSolution:false}};
+  plan.output={layout:'trial',mode:'teacher',spaceSettings:{ratio:125,minimumCm:4},solutionOptions:{studentBlankCallouts:['solution','hint'],teacherVisibleCallouts:['note']}};
   const settings=JSON.stringify({course:plan.course,output:plan.output});
   plan=core.addItem(frozen(plan),index.items[0]);
   const id=plan.entries[0].entryId;

@@ -106,7 +106,7 @@ for (const fixture of materialTemplates) {
       for (const secret of secrets) assert.ok(!student.includes(secret), 'student output leaked ' + secret);
       assert.doesNotMatch(student, /[?!]\{TEMPLATE_/);
     }
-    const teacher = api.handoutPlan(marked, 'teacher').markdown;
+    const teacher = api.handoutPlan(marked, 'teacher', {teacherVisibleCallouts:['solution']}).markdown;
     for (const secret of secrets) assert.ok(teacher.includes(secret), 'teacher output lost ' + secret);
   });
 }

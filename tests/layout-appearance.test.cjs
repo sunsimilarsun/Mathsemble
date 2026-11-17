@@ -178,7 +178,7 @@ async function browserUiCases() {
     Object.assign(plan.course,{student:'小甲',subject:'高中数学',grade:'高一',objectives:'观察图象\n解释变化'});
     Object.assign(plan.output,{layout:'trial',mode:'teacher'});
     Object.assign(plan.output.spaceSettings,{ratio:125,minimumCm:2});
-    Object.assign(plan.output.solutionOptions,{solutionSpaces:true,showSolution:false});
+    Object.assign(plan.output.solutionOptions,{studentBlankCallouts:['solution'],teacherVisibleCallouts:[]});
     let applies = 0;
     const openPlan = async saved => {
       const markdown = await mwbAssemblyMarkdown.compileMarkdown(saved,[{entry:saved.entries[0],item,status:'ok'}]);
@@ -197,7 +197,7 @@ async function browserUiCases() {
       ok(modal.ready && modal.layout==='trial' && modal.mode==='teacher',modal.lastRenderError || 'saved appearance or edition was lost');
       ok(control('排版外观').value==='trial' && modal.modeButtons.teacher.getAttribute('aria-pressed')==='true','visible selectors disagree with restored mode');
       ok(control('教师专用块高度比例').value==='125' && control('最小留白高度').value==='2','leave-space controls reset to defaults');
-      ok(control('学生版为 solution 预留答题空白').checked && !control('教师版显示 solution 解题思路').checked,'solution controls reset to defaults');
+      ok(control('学生版为 solution- 留空').checked && !control('教师版显示 solution-').checked,'solution controls reset to defaults');
       const header=modal.previewPages.querySelector('.mwb-trial-header').textContent;
       ok(header.includes('函数复习')&&header.includes('孙老师')&&header.includes('小甲')&&header.includes('观察图象'),'generated course properties did not reach the actual trial header');
       modal.applyPlanSettingsButton.click();await new Promise(resolve=>setTimeout(resolve,0));

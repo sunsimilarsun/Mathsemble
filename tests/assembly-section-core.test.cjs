@@ -18,7 +18,7 @@ function fixture() {
   const plan=core.createPlan('分区移动讲义');
   plan.course={...plan.course,teacher:'李老师',title:'本次课题',objectives:'目标一\n目标二'};
   plan.output={layout:'trial',mode:'teacher',spaceSettings:{ratio:125,minimumCm:2},
-    solutionOptions:{solutionSpaces:true,showSolution:false}};
+    solutionOptions:{studentBlankCallouts:['solution'],teacherVisibleCallouts:[]}};
   plan.entries=[item('intro-k','knowledge'),item('intro-q'),
     section('a'),item('a-q'),item('a-k','knowledge'),section('b'),
     section('c'),item('c-k','knowledge'),item('c-q1'),item('c-q2'),section('d')];
@@ -117,7 +117,7 @@ test('section operations reject invalid identities, positions and malformed plan
 test('section order and all source overrides survive JSON save and reopening without a schema change',()=>{
   const original=freeze(fixture()),moved=core.moveSection(original,'c',0);
   const saved=JSON.stringify(moved),reopened=core.validatePlan(JSON.parse(saved));
-  assert.deepEqual(reopened,moved);assert.equal(reopened.schemaVersion,2);
+  assert.deepEqual(reopened,moved);assert.equal(reopened.schemaVersion,3);
   assert.deepEqual(Object.keys(reopened).sort(),Object.keys(original).sort());
   assert.deepEqual(core.getSections(reopened).map(entry=>entry.entryId),['c','a','b','d']);
   assertPreserved(original,reopened);

@@ -201,7 +201,9 @@ async function browserCases(sources,css) {
     follow().click();await pause();ok(f.view.plan.course.title===null,'title inheritance could not be restored');
     follow().click();await pause();await setting(f,'course','title','试听专题');
     for(const [key,value] of [['teacher','李老师'],['student','小明'],['time','周六 09:00'],['subject','高中数学'],['grade','高一'],['objectives','目标一\n目标二']])await setting(f,'course',key,value);
-    for(const [key,value] of [['layout','trial'],['mode','student'],['ratio','125'],['minimumCm','2'],['solutionSpaces',true],['showSolution',false]])await setting(f,'output',key,value);
+    for(const [key,value] of [['layout','trial'],['mode','student'],['ratio','125'],['minimumCm','2'],['studentBlankCallouts','hint'],['teacherVisibleCallouts','remark']])await setting(f,'output',key,value);
+    const solution=f.view.planSettingsInputs.callouts.get('studentBlankCallouts').get('solution');
+    solution.checked=true;solution.dispatchEvent(new f.win.Event('change',{bubbles:true}));await pause();
     ok(f.view.dirty&&f.view.saveStateEl.textContent.includes('未保存'),'settings edits were not included in draft state');
     const expected=JSON.stringify(f.view.plan);await click(f.view.root,'保存方案');
     ok(f.saved.length===1&&JSON.stringify(f.saved[0])===expected&&!f.view.dirty,'save omitted or altered course/output fields');
@@ -214,9 +216,10 @@ async function browserCases(sources,css) {
     ok(f.view.plan.course.teacher===''&&!f.view.dirty,'detached course control mutated a replacement plan');
     f.view.savedSelect.value='方案/编排.json';await click(f.view.root,'打开方案');await openPlanSettings(f);
     ok(JSON.stringify(f.view.plan)===expected&&course('title').value==='试听专题'&&!follow().checked,'opening saved plan lost course values or explicit-title mode');
-    ok(f.view.planSettingsInputs.output.get('ratio').value==='125'&&f.view.planSettingsInputs.output.get('solutionSpaces').checked&&!f.view.planSettingsInputs.output.get('showSolution').checked,'opening saved plan restored incomplete output controls');
+    ok(f.view.planSettingsInputs.output.get('ratio').value==='125'&&f.view.planSettingsInputs.callouts.get('studentBlankCallouts').get('solution').checked&&!f.view.planSettingsInputs.callouts.get('teacherVisibleCallouts').get('solution').checked,'opening saved plan restored incomplete output controls');
+    ok(f.view.planSettingsInputs.output.get('studentBlankCallouts').value==='hint'&&f.view.planSettingsInputs.output.get('teacherVisibleCallouts').value==='remark','custom Callout choices were lost');
     const legacy=await fixture({state:{plan:{schemaVersion:1,title:'旧方案',entries:f.view.plan.entries},planPath:'方案/旧方案.json',dirty:false}});
-    ok(legacy.view.plan.schemaVersion===2&&legacy.view.plan.course.title===null&&legacy.view.plan.output.mode==='document','old workspace plan did not receive safe defaults');
+    ok(legacy.view.plan.schemaVersion===3&&legacy.view.plan.course.title===null&&legacy.view.plan.output.mode==='document','old workspace plan did not receive safe defaults');
     ok(!legacy.view.dirty&&legacy.saved.length===0,'restoring legacy settings wrote or dirtied the old plan');
   });
 
@@ -322,15 +325,17 @@ async function browserCases(sources,css) {
     await openPlanSettings(f);await pause(30);
     const menu=f.view.planMenuBody,rootRect=f.view.root.getBoundingClientRect();
     ok(menu.getBoundingClientRect().bottom<=rootRect.bottom+1&&menu.scrollHeight>menu.clientHeight,'expanded settings escape the short workspace or cannot scroll');
-    const last=f.view.planSettingsInputs.output.get('showSolution');last.scrollIntoView({block:'nearest'});await pause();
+    const last=f.view.planSettingsInputs.output.get('teacherVisibleCallouts');last.scrollIntoView({block:'nearest'});await pause();
     const control=last.getBoundingClientRect(),bounds=menu.getBoundingClientRect();
     ok(control.top>=bounds.top&&control.bottom<=bounds.bottom,'last output setting cannot be reached');
     ok(f.view.root.scrollWidth<=f.view.root.clientWidth+1,'settings menu introduces horizontal workspace overflow');
     const before=JSON.stringify(f.view.plan);f.view.actionBusy=true;f.view.updateSummary();
-    ok([...f.view.planSettingsInputs.course.values(),...f.view.planSettingsInputs.output.values(),f.view.planSettingsInputs.follow].every(input=>input.disabled),'busy state leaves writable profile controls');
-    last.checked=false;last.dispatchEvent(new f.win.Event('change',{bubbles:true}));await pause();
+    const calloutBoxes=[...f.view.planSettingsInputs.callouts.values()].flatMap(group=>[...group.values()]);
+    ok([...f.view.planSettingsInputs.course.values(),...f.view.planSettingsInputs.output.values(),...calloutBoxes,f.view.planSettingsInputs.follow].every(input=>input.disabled),'busy state leaves writable profile controls');
+    last.value='hint';last.dispatchEvent(new f.win.Event('change',{bubbles:true}));await pause();
+    const callout=calloutBoxes[0];callout.checked=true;callout.dispatchEvent(new f.win.Event('change',{bubbles:true}));await pause();
     ok(JSON.stringify(f.view.plan)===before,'detached or queued setting event bypassed busy guard');
-    f.view.actionBusy=false;f.view.updateSummary();ok(!last.disabled&&last.checked,'busy recovery did not restore persisted control values');
+    f.view.actionBusy=false;f.view.updateSummary();ok(!last.disabled&&last.value===''&&!callout.disabled&&!callout.checked,'busy recovery did not restore persisted control values');
     menu.dispatchEvent(new f.win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await pause();
     ok(!f.view.planMenu.open&&f.doc.activeElement===f.view.planMenu.querySelector(':scope > summary'),'settings Escape did not return focus to the menu');
   });

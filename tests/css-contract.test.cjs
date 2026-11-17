@@ -23,8 +23,13 @@ test('the isolated PDF stylesheet matches styles.css print section exactly', () 
   assert.equal(embeddedPrintCss(), css.slice(0, end));
 });
 
-test('plugin stylesheet avoids important declarations and confines modal controls', () => {
-  assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ''), /!important\b/i);
+test('important declarations only override native inline folding in the opted-in reading view', () => {
+  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(rule => /!important\b/i.test(rule[2]));
+  assert.equal(rules.length,1);
+  assert.equal(rules[0][1].trim(),'.markdown-preview-view.mwb-reading-show-answers .callout.is-collapsed > .callout-content');
+  assert.equal(rules[0][2].trim(),'display: block !important;');
+  assert.doesNotMatch(embeddedPrintCss(), /!important\b/i);
   assert.match(css, /\.mwb-modal \.mwb-page/);
   assert.match(css, /\.mwb-modal \.mwb-measure-layer/);
   assert.match(css, /\.mwb-modal \.mwb-controls/);

@@ -328,7 +328,7 @@ function mwbMarkdownLines(markdown) {
       return record;
     }
     const header = !startsLiteral && depth && /^ {0,3}\[!([\w-]+)\]([+-])?(?:[ \t]+(.*))?\s*$/.exec(record.body);
-    if (header) record.callout = {type:header[1].toLowerCase(), title:(header[3] || '').trim(), teacherOnly:!!header[2]};
+    if (header) record.callout = {type:header[1].toLowerCase(), title:(header[3] || '').trim(), teacherOnly:header[2] === '-'};
     record.scan = mwbScanTypedLine(line, false, inlineContext);
     displayMath = record.scan.displayMath;
     // Inline tags/comments may precede real paragraph text. Only their literal
@@ -790,9 +790,16 @@ async function mwbRenderMarkdown(app, source, target, sourcePath, component, tim
     throw error;
   } finally { mwbRenderSignals.delete(staging); mwbRenderDeadlines.delete(staging); staging.remove(); }
 }
+function mwbCalloutSelected(type, options, key) {
+  // answer- is the fixed baseline. Legacy solution switches are accepted only
+  // when explicitly set and no new per-type selection has been supplied.
+  if (type === 'answer') return true;
+  if (Array.isArray(options[key])) return options[key].includes(type);
+  return type === 'solution' && options[key === 'studentBlankCallouts' ? 'solutionSpaces' : 'showSolution'] === true;
+}
 function mwbSpaceTargets(blocks, options = {}) {
   return blocks.filter(block => {
-    if (!block.teacherOnly || (block.type === 'solution' && options.solutionSpaces !== true)) return false;
+    if (!block.teacherOnly || !mwbCalloutSelected(block.type, options, 'studentBlankCallouts')) return false;
     for (let parent = block.parent; parent; parent = parent.parent) if (parent.teacherOnly) return false;
     return true;
   });
@@ -805,9 +812,15 @@ function mwbProjectCallouts(markdown, mode, options = {}, spaces = false, measur
   for (let i = 0; i < parsed.lines.length; i++) {
     const row = parsed.lines[i], block = headers.get(i);
     if (!block) { output.push(row.line); continue; }
-    const omitted = mode === 'student' ? block.teacherOnly : measurement
-      ? block.type === 'solution' && block.teacherOnly && options.solutionSpaces !== true
-      : block.type === 'solution' && options.showSolution === false;
+    // A blank measures the complete omitted source block, including descendants.
+    // Teacher display choices must never shrink student writing space.
+    let insideTarget = false;
+    if (measurement) for (let parent = block.parent; parent; parent = parent.parent) {
+      if (targetIndex.has(parent.id)) { insideTarget = true; break; }
+    }
+    const omitted = block.teacherOnly && (mode === 'student' || (measurement
+      ? !targetIndex.has(block.id) && !insideTarget
+      : !mwbCalloutSelected(block.type, options, 'teacherVisibleCallouts')));
     if (omitted) {
       if (spaces && targetIndex.has(block.id)) {
         // Preserve the containing shared quote; the placeholder is a child
@@ -819,6 +832,12 @@ function mwbProjectCallouts(markdown, mode, options = {}, spaces = false, measur
       continue;
     }
     visible.push(block);
+    // A new same-depth marker inside one continuous quote is plain text to
+    // Obsidian. Separate projected Callouts at their parent quote depth so the
+    // rendered tree matches the source identities used for answer spacing.
+    const previousPrefix = /^(?: {0,3}>[ \t]?)+/.exec(output.at(-1) || '')?.[0] || '';
+    const previousDepth = (previousPrefix.match(/>/g) || []).length;
+    if (previousDepth >= block.depth) output.push('> '.repeat(block.depth - 1).trimEnd());
     output.push(row.line.replace(/(\[![\w-]+\])[+-]?/i, '$1+'));
   }
   return {markdown:output.join('\n'), targets, blocks:visible};
@@ -1252,13 +1271,104 @@ function mwbDecorateReadingTypedSlots(element,source){
         const last=texts[texts.length-1];if(last.data.length)last.deleteData(last.data.length-1,1);
         const mark=doc.createElement('mark');
         mark.className='mwb-hover-answer '+(c.kind==='choice'?'mwb-choice-answer':'mwb-fill-answer');
-        if(fragment.querySelector('.math-inline,mjx-container,.MathJax,.katex'))mark.classList.add('mwb-reading-answer-math');
+        if(fragment.querySelector('.math-inline,.math-block,mjx-container,.MathJax,.katex'))mark.classList.add('mwb-reading-answer-math');
         mark.setAttribute('title','悬停或聚焦显示答案');mark.setAttribute('tabindex','0');
         mark.appendChild(fragment);range.insertNode(mark);count++;
       }catch(e){console.warn('[Mathsemble] reading typed answer:',e);}
     }
   }
   return count;
+}
+
+class MwbReadingAnswerController {
+  constructor(view) {
+    this.view = view;
+    this.path = view.file?.path;
+    this.shown = false;
+    this.reading = null;
+    this.onCalloutClick = event => {
+      if (!this.shown) return;
+      const target = event.target?.closest ? event.target : event.target?.parentElement;
+      const title = target?.closest('.callout-title');
+      if (!title || !this.reading?.contains(title) ||
+        !title.parentElement?.classList.contains('is-collapsible')) return;
+      // Native title handlers defer folding and respect defaultPrevented.
+      // Keep links and other interactive content in titles usable.
+      if (target.closest('.callout-fold')) {
+        event.preventDefault();
+        event.stopPropagation();
+      } else if (!target.closest('a,button,input,select,textarea,[contenteditable="true"]')) {
+        event.preventDefault();
+      }
+    };
+    this.button = view.addAction('eye', '显示答案', () => this.toggle());
+    this.button.classList.add('mwb-reading-answer-toggle');
+    const Observer = view.containerEl.ownerDocument.defaultView?.MutationObserver;
+    if (Observer) {
+      this.modeObserver = new Observer(() => this.sync());
+      this.modeObserver.observe(view.containerEl, {attributes:true, attributeFilter:['data-mode']});
+    }
+    this.sync();
+  }
+
+  sync() {
+    const path = this.view.file?.path;
+    if (path !== this.path) {
+      this.path = path;
+      this.shown = false;
+    }
+    const reading = this.view.containerEl.querySelector('.markdown-preview-view');
+    const readingChanged = reading !== this.reading;
+    const anchor = readingChanged && this.shown ? this.view.previewMode?.getScroll?.() : null;
+    if (readingChanged) {
+      this.reading?.classList.remove('mwb-reading-show-answers');
+      this.reading?.removeEventListener('click', this.onCalloutClick, true);
+      this.reading = reading;
+      this.reading?.addEventListener('click', this.onCalloutClick, true);
+    }
+    this.reading?.classList.toggle('mwb-reading-show-answers', this.shown);
+    if (readingChanged && this.shown) this.remeasure(anchor);
+    const hidden = !path || this.view.getMode?.() !== 'preview';
+    if (this.button.hidden !== hidden) this.button.hidden = hidden;
+    const label = this.shown ? '隐藏答案' : '显示答案';
+    if (this.button.textContent !== label) {
+      this.button.textContent = label;
+      this.button.setAttribute('aria-label', label);
+      this.button.setAttribute('aria-pressed', String(this.shown));
+      this.button.setAttribute('title', label);
+    }
+  }
+
+  remeasure(anchor) {
+    // Obsidian caches offscreen section heights. A window resize alone does not
+    // invalidate those heights when only collapsed Callout bodies grow/shrink.
+    const preview = this.view.previewMode;
+    const renderer = preview?.renderer;
+    for (const section of renderer?.sections || []) {
+      if (section.el?.matches?.('.callout.is-collapsed') ||
+        section.el?.querySelector?.('.callout.is-collapsed')) section.resetCompute?.();
+    }
+    renderer?.queueRender?.();
+    if (Number.isFinite(anchor)) preview?.setEphemeralState?.({scroll:anchor});
+  }
+
+  toggle() {
+    this.sync();
+    if (!this.reading || this.view.getMode?.() !== 'preview') return;
+    const anchor = this.view.previewMode?.getScroll?.();
+    this.shown = !this.shown;
+    this.sync();
+    this.remeasure(anchor);
+  }
+
+  dispose() {
+    this.modeObserver?.disconnect();
+    const anchor = this.view.previewMode?.getScroll?.();
+    this.reading?.classList.remove('mwb-reading-show-answers');
+    this.reading?.removeEventListener('click', this.onCalloutClick, true);
+    if (this.shown && this.reading?.isConnected) this.remeasure(anchor);
+    this.button.remove();
+  }
 }
 
 const { DEFAULTS, transformQuestion, assertValidQuestionSource, stripFrontmatter, normalizePrintBlanks } = (() => { const module = {exports:{}};
@@ -1275,18 +1385,18 @@ function stripFrontmatter(source) {
   return lines.slice(end + 1).join('\n').replace(/^\n+/, '');
 }
 
-// Edition rule: callouts with + or - are teacher-only; without a marker,
-// callouts are shared by student and teacher. Teacher-only answer/success
-// blocks of ANY type are measured for student writing space.
+// Edition rule: only callouts marked - are filtered by edition.
+// Callouts marked + and unmarked callouts are shared. Only answer- reserves
+// student writing space by default; other - types are selected explicitly.
 function pedagogicalCallout(line) {
   // Visibility is determined ONLY by the marker after [!type]:
-  // [!type]+ / [!type]- -> teacher-only; [!type] -> shared.
+  // [!type]- -> edition-specific; [!type]+ / [!type] -> shared.
   // This applies to all Obsidian callout types, not just built-in teaching types.
   const match = String(line).match(/^\s*>\s*\[!([\w-]+)\]([+-])?(?:[ \t]+(.*))?\s*$/i);
   if (!match) return null;
   const type = match[1].toLowerCase();
   const title = (match[3] || '').trim();
-  const teacherOnly = match[2] === '+' || match[2] === '-';
+  const teacherOnly = match[2] === '-';
   let kind = type;
   if (type === 'answer' || type === 'success') kind = 'answer';
   else if (type === 'solution' || (type === 'info' && /^(解析|解题思路)$/.test(title))) kind = 'analysis';
@@ -1381,7 +1491,7 @@ function paginatePrintDocument(root, allowPartialMath = false, preview = false, 
     .mwb-paper.mwb-paper-trial { display:flex; flex-direction:column; }
     .mwb-paper-trial > .mwb-trial-header { flex:none; }
     .mwb-trial-frame { box-sizing:border-box; flex:1; min-height:0; border:1px solid #888; padding:4mm; }
-    .mwb-paper-footer { position:absolute; left:0; right:0; bottom:7mm; text-align:center; font-size:8pt; color:#555; line-height:1; }
+    .mwb-paper-footer { position:absolute; left:0; right:0; bottom:7mm; text-align:center; font-size:9pt; color:#000; line-height:1; }
     .mwb-paper .mwb-exam-section { break-after:auto !important; page-break-after:auto !important; }
     .mwb-paper .mwb-exam-question { break-inside:auto !important; page-break-inside:auto !important; }
     .mwb-paper .mwb-exam-question-content > p:first-child { break-after:auto !important; page-break-after:auto !important; }
@@ -2822,7 +2932,7 @@ async function pdfBufferFromHtml(html, BrowserWindow, options = {}) {
       landscape: false,
       displayHeaderFooter: !paginationRequired,
       headerTemplate: '<span></span>',
-      footerTemplate: '<div style="box-sizing:border-box;width:100%;text-align:center;font-size:8px;color:#555;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>',
+      footerTemplate: '<div style="box-sizing:border-box;width:100%;text-align:center;font-size:9pt;color:#000;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>',
       margins: { marginType: 'none', top: 0, bottom: 0, left: 0, right: 0 },
     }), 'PDF 生成');
     mwbThrowIfExportAborted(options.signal);
@@ -3009,18 +3119,18 @@ function stripFrontmatter(source) {
   return lines.slice(end + 1).join('\n').replace(/^\n+/, '');
 }
 
-// Edition rule: callouts with + or - are teacher-only; without a marker,
-// callouts are shared by student and teacher. Teacher-only answer/success
-// blocks of ANY type are measured for student writing space.
+// Edition rule: only callouts marked - are filtered by edition.
+// Callouts marked + and unmarked callouts are shared. Only answer- reserves
+// student writing space by default; other - types are selected explicitly.
 function pedagogicalCallout(line) {
   // Visibility is determined ONLY by the marker after [!type]:
-  // [!type]+ / [!type]- -> teacher-only; [!type] -> shared.
+  // [!type]- -> edition-specific; [!type]+ / [!type] -> shared.
   // This applies to all Obsidian callout types, not just built-in teaching types.
   const match = String(line).match(/^\s*>\s*\[!([\w-]+)\]([+-])?(?:[ \t]+(.*))?\s*$/i);
   if (!match) return null;
   const type = match[1].toLowerCase();
   const title = (match[3] || '').trim();
-  const teacherOnly = match[2] === '+' || match[2] === '-';
+  const teacherOnly = match[2] === '-';
   let kind = type;
   if (type === 'answer' || type === 'success') kind = 'answer';
   else if (type === 'solution' || (type === 'info' && /^(解析|解题思路)$/.test(title))) kind = 'analysis';
@@ -3098,18 +3208,18 @@ function stripFrontmatter(source) {
   return lines.slice(end + 1).join('\n').replace(/^\n+/, '');
 }
 
-// Edition rule: callouts with + or - are teacher-only; without a marker,
-// callouts are shared by student and teacher. Teacher-only answer/success
-// blocks of ANY type are measured for student writing space.
+// Edition rule: only callouts marked - are filtered by edition.
+// Callouts marked + and unmarked callouts are shared. Only answer- reserves
+// student writing space by default; other - types are selected explicitly.
 function pedagogicalCallout(line) {
   // Visibility is determined ONLY by the marker after [!type]:
-  // [!type]+ / [!type]- -> teacher-only; [!type] -> shared.
+  // [!type]- -> edition-specific; [!type]+ / [!type] -> shared.
   // This applies to all Obsidian callout types, not just built-in teaching types.
   const match = String(line).match(/^\s*>\s*\[!([\w-]+)\]([+-])?(?:[ \t]+(.*))?\s*$/i);
   if (!match) return null;
   const type = match[1].toLowerCase();
   const title = (match[3] || '').trim();
-  const teacherOnly = match[2] === '+' || match[2] === '-';
+  const teacherOnly = match[2] === '-';
   let kind = type;
   if (type === 'answer' || type === 'success') kind = 'answer';
   else if (type === 'solution' || (type === 'info' && /^(解析|解题思路)$/.test(title))) kind = 'analysis';
@@ -3198,8 +3308,8 @@ function stripSolutionsToMarkers(markdown, options = {}) {
   return mwbStudentSpacePlan(markdown, options);
 }
 
-// Every Obsidian callout appears in the teacher DOM, while only +/- headers
-// create student spaces. Map by full callout ordinal, never by its type.
+// Selected - callouts create student spaces. This legacy ordinal helper
+// maps the full source; production measurement verifies source identities.
 function teacherOnlyCalloutIndices(markdown, options = {}) {
   // Compatibility helper only. Production measurement uses verified source IDs.
   const {blocks}=mwbCalloutDocument(markdown), targets=new Set(mwbSpaceTargets(blocks,options).map(b=>b.id));
@@ -3770,7 +3880,7 @@ async function mwbPaginateSavedHtml(html, doc, options = {}) {
   }
 }
 const { typographyCss } = (() => { const module = {exports:{}};
-module.exports = {typographyCss:"/* Mathsemble style boundaries: modal UI uses .mwb-modal; teaching material\n * uses .mwb-typography; PDF uses .mwb-print-document in isolated HTML.\n * The named teaching callout palette intentionally also works in ordinary notes.\n */\n/* One mathematical typography contract, shared verbatim by reading, A4 preview and PDF.\n * IMPORTANT: MathJax owns <mjx-container> and its descendant SVG dimensions, baseline,\n * viewBox, overflow and font metrics. Never apply generic svg{height:auto} here.\n */\n.mwb-typography {\n  font-family: \"Noto Serif CJK SC\", \"Songti SC\", \"SimSun\", serif;\n  font-size: 11pt;\n  line-height: 1.65;\n  letter-spacing: normal;\n  font-kerning: normal;\n  overflow: visible;\n}\n.mwb-typography p,\n.mwb-typography ul,\n.mwb-typography ol {\n  margin-block: 0.55em;\n  line-height: inherit;\n}\n.mwb-typography li { margin-block: 0.24em; line-height: inherit; }\n.mwb-typography h1,\n.mwb-typography h2,\n.mwb-typography h3,\n.mwb-typography h4,\n.mwb-typography h5,\n.mwb-typography h6 {\n  line-height: 1.45;\n  margin-block: 0.85em 0.4em;\n  break-after: avoid;\n}\n.mwb-typography h1 { font-size: 1.42em; }\n.mwb-typography h2 { font-size: 1.27em; }\n.mwb-typography h3 { font-size: 1.13em; }\n.mwb-typography h4 { font-size: 1.03em; }\n.mwb-typography h5 { font-size: 1.03em; font-weight: 700; }\n.mwb-typography h6 { font-size: 1em; font-weight: 600; }\n.mwb-typography img {\n  max-width: 100%; height: auto; filter: none;\n  object-fit: contain;\n}\n/* Only known TikZ wrappers are scaled. Never select arbitrary SVG descendants. */\n.mwb-typography :is(.tikzjax, .tikzjax-output, .mwb-tikz, .tikz) > svg,\n.mwb-typography .block-language-tikz svg,\n.mwb-typography .block-language-tikzjax svg {\n  max-width: 100%; height: auto; filter: none;\n}\n.mwb-typography .mwb-answer-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  /* Answer text is intentionally transparent. A currentColor underline would\n     therefore be transparent too; the writing line needs its own ink color. */\n  --mwb-answer-underline-color: var(--text-normal, #141414);\n  border-bottom: 1px solid var(--mwb-answer-underline-color);\n  vertical-align: baseline;\n  color: transparent;\n  white-space: nowrap;\n}\n/* Teacher-mode fill answers: red text centered on a persistent black line.\n * Choice letters use mwb-answer-revealed instead and are never underlined.\n * Math answers use TeX \\underline{\\color{red}{...}} for correct MathJax baselines. */\n.mwb-typography .mwb-teacher-fill-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  border: 0;\n  border-bottom: 1px solid var(--mwb-answer-underline-color, #141414);\n  color: #ad2323;\n  font-weight: 600;\n  text-align: center;\n  white-space: nowrap;\n  vertical-align: baseline;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n.mwb-print-document .mwb-teacher-fill-slot {\n  border-bottom-color: #141414;\n}\n/* Choice slots reserve a little inline space in parentheses, NEVER a writing line. */\n.mwb-typography .mwb-choice-slot,\n.mwb-typography.mwb-print-document .mwb-choice-slot {\n  display: inline-block;\n  min-width: 1.4em;\n  min-height: 0;\n  padding: 0;\n  border: 0;\n  border-bottom: none;\n  box-shadow: none;\n  background: transparent;\n  vertical-align: baseline;\n  text-decoration: none;\n  white-space: nowrap;\n}\n.mwb-typography .mwb-answer-revealed { color: #ad2323; font-weight: 600; }\n.mwb-typography blockquote { margin-block: 0.8em; padding: 0.3em 0.85em; border-left: 3px solid #999; }\n.mwb-typography .callout { border: 1px solid #bbb; border-radius: 4px; padding: 0.4em 0.75em; margin-block: 0.7em; }\n.mwb-print-document .callout-icon,\n.mwb-print-document .callout-fold { display: none; }\n.mwb-typography table { border-collapse: collapse; max-width: 100%; }\n.mwb-typography td, .mwb-typography th { border: 1px solid #999; padding: 0.25em 0.45em; }\n/* A unified print-mode font/color, distinct from dark-theme reading foreground. */\n.mwb-print-document { color: #141414; background: white; }\n/* Keep explicit Markdown page breaks when saved HTML is printed directly.\n * The A4 paginator consumes these markers before placing content on paper. */\n.mwb-print-document .mwb-page-break {\n  display: block;\n  height: 0;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  break-before: page;\n  page-break-before: always;\n}\n/* Keep ink black even when the original Obsidian theme is dark or inherited\n   text fill is transparent. This is separate from the hidden answer content. */\n.mwb-print-document .mwb-answer-slot {\n  --mwb-answer-underline-color: #141414;\n  border-bottom-color: #141414;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n/* White print background; unthemed callouts retain a gray fallback border. */\n.mwb-typography.mwb-print-document .callout { background: #fff; border-color: #c4c4c4; border-left: 2px solid #999; }\n/* Teacher solutions must occupy the same geometry in preview and isolated PDF. */\n.mwb-print-document .callout-title { display: block; font-weight: 600; line-height: 1.5; padding: 0; margin: 0 0 0.35em; }\n.mwb-print-document .callout-content { display: block; padding: 0; margin: 0; }\n/* Export-only callout expansion: Obsidian themes can make folded content\n   display:none with higher specificity. Do not change the reading view. */\n.mwb-typography.mwb-print-document .callout > .callout-content,\n.mwb-typography.mwb-print-document .callout.is-collapsed > .callout-content {\n  display: block;\n  visibility: visible;\n}\n.mwb-print-document .callout-content > :first-child { margin-top: 0; }\n.mwb-print-document .callout-content > :last-child { margin-bottom: 0; }\n/* TikZJax can invert drawings in dark themes; the paper output stays unfiltered. */\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container svg { filter: none; }\n.mwb-print-document pre,\n.mwb-print-document figure,\n.mwb-print-document table,\n.mwb-print-document blockquote { break-inside: avoid; }\n.mwb-print-document p,\n.mwb-print-document li { orphans: 2; widows: 2; }\n/* Do not force height, overflow, vertical-align or display on MathJax containers. */\n\n/* Student response space measured from the fully rendered teacher solution.\n * Short questions with a response space are permitted to split on these chunks;\n * the first prompt paragraph remains protected by the rule below. */\n.mwb-print-document .mwb-answer-space {\n  display: block;\n  box-sizing: border-box;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  overflow: visible;\n  break-inside: auto;\n  page-break-inside: auto;\n}\n.mwb-print-document .mwb-answer-space-chunk {\n  box-sizing: border-box;\n  display: block;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  break-inside: avoid;\n  page-break-inside: avoid;\n}\n\n/* v0.1.4: options use the SAME responsive grid after live measurement. */\n.mwb-typography :is(ul,ol).mwb-options {\n  display: grid;\n  gap: 0.3em 12px;\n  margin: 0.3em 0 0.7em;\n  padding: 0;\n  list-style: none;\n  break-inside: avoid;\n}\n.mwb-typography .mwb-options li { list-style: none; margin:0; min-width:0; }\n.mwb-typography .mwb-options-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-1 { grid-template-columns: minmax(0, 1fr); }\n/* Measure natural, unwrapped MathJax and text widths without retaining these rules in PDF. */\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring { display: block; padding: 0; margin: 0; }\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring > li {\n  display: block;\n  width: max-content;\n  max-width: none;\n  white-space: nowrap;\n  margin:0;\n  padding:0;\n  list-style:none;\n}\n.mwb-typography .mwb-options-1 > li { overflow-wrap: anywhere; }\n/* Q numbering and sectional headers are print content, not Obsidian file metadata. */\n.mwb-print-document .mwb-exam-title { font-size: 18pt; text-align:center; margin: 0 0 0.85em; line-height:1.4; }\n.mwb-print-document .mwb-exam-section {\n  font-weight:700; font-size: 12pt; margin: 1.15em 0 0.65em;\n  break-after:avoid; page-break-after:avoid;\n}\n.mwb-print-document .mwb-exam-question { margin: 0 0 1.05em; break-inside: auto; }\n.mwb-print-document .mwb-exam-question.mwb-question-keep { break-inside: avoid; page-break-inside: avoid; }\n.mwb-print-document .mwb-number-only { break-after: avoid; page-break-after: avoid; }\n.mwb-print-document .mwb-question-index { font-weight:700; display:inline-block; margin-right:0.42em; white-space:nowrap; vertical-align:baseline; }\n.mwb-print-document .mwb-exam-question-content > p:first-child { break-after: avoid; page-break-after:avoid; }\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container[display=\"true\"],\n.mwb-print-document .math.math-block,\n.mwb-print-document .block-language-tikz,\n.mwb-print-document .block-language-tikzjax { break-inside: avoid; page-break-inside: avoid; }\n/* No forced no-break for a *long* question; a long answer space can split. */\n\n/* v0.1.4.1: MathJax-based answers have a stable underlined inline slot. */\n.mwb-typography .mwb-answer-slot-math { min-width: 3em; height: 1.65em; line-height: 1.65em; }\n.mwb-print-document .mwb-exam-edition {\n  text-align: right; font-size: 9pt; font-weight: 600; color:#444;\n  margin: -0.85em 0 0.85em;\n}\n\n/* Mathsemble mathematics teaching palette — reading-view reach fix (2026-10-23).\n * Read/Live Preview: match native Obsidian .callout markup DIRECTLY, even for\n * notes lacking YAML or Mathsemble class annotations. The previous version\n * required .mwb-math-material/.mwb-answer-note and could miss regular notes.\n * Keep colors independent of teacher/student +/- blank-space projection.\n * Example questions remain ordinary Markdown; [!example] gets no special look.\n * Do not globally style mark, strong, body fonts, or MathJax containers.\n */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  background-color: transparent;\n  /* Match all four edge colors without changing the existing border widths. */\n  border-color: var(--mwb-callout-accent, #999);\n}\n/* Default Obsidian callouts have zero-width borders. Draw a matching inner\n * outline as well as the left accent so all four edges are visible without\n * changing their box geometry. Paper retains its physical 2px left border. */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  box-shadow: inset 3px 0 0 var(--mwb-callout-accent, #999),\n    inset 0 0 0 1px var(--mwb-callout-accent, #999);\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) > .callout-title {\n  color: var(--mwb-callout-title-ink, #444);\n  font-weight: 600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"definition\"] {\n  --callout-color: 46, 164, 79;\n  --callout-icon: book-open;\n  --mwb-callout-accent: #2ea44f;\n  --mwb-callout-title-ink: #237b39;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"theorem\"] {\n  --callout-color: 47, 129, 247;\n  --callout-icon: sigma;\n  --mwb-callout-accent: #2f81f7;\n  --mwb-callout-title-ink: #1f64c2;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"method\"] {\n  --callout-color: 155, 89, 182;\n  --callout-icon: lightbulb;\n  --mwb-callout-accent: #9b59b6;\n  --mwb-callout-title-ink: #793a97;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"conclusion\"] {\n  --callout-color: 0, 168, 150;\n  --callout-icon: check-circle;\n  --mwb-callout-accent: #00a896;\n  --mwb-callout-title-ink: #007d70;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"attention\"] {\n  --callout-color: 241, 196, 15;\n  --callout-icon: alert-triangle;\n  --mwb-callout-accent: #f1c40f;\n  --mwb-callout-title-ink: #866600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"thinking\"] {\n  --callout-color: 99, 110, 114;\n  --callout-icon: help-circle;\n  --mwb-callout-accent: #636e72;\n  --mwb-callout-title-ink: #525c60;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"answer\"] {\n  --callout-color: 230, 126, 34;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #e67e22;\n  --mwb-callout-title-ink: #a44f06;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"scaffold\"] {\n  --callout-color: 143, 112, 181;\n  --callout-icon: list-checks;\n  --mwb-callout-accent: #8f70b5;\n  --mwb-callout-title-ink: #684b91;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"solution\"] {\n  --callout-color: 135, 148, 173;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #8794ad;\n  --mwb-callout-title-ink: #53637e;\n}\n\n/* v0.2.1: optional metadata is always separate from math/answer DOM. */\n.mwb-typography .mwb-print-meta { color:#666; font-size:8.5pt; line-height:1.5;\n  display:flex; flex-wrap:wrap; gap:0.12em 1.1em; margin:0.2em 0 0.45em;\n  break-inside:avoid; }\n.mwb-typography .mwb-print-meta-item { white-space:normal; overflow-wrap:anywhere; }\n.mwb-typography .mwb-long-document { line-height:inherit; }\n\n/* v0.1.7: literal Markdown writing blanks, not LaTeX or answer reveal slots. */\n.mwb-typography .mwb-fixed-blank {\n  display:inline-block; box-sizing:border-box; min-height:1em;\n  border-bottom:1px solid #333; margin:0 0.22em; vertical-align:baseline;\n}\n/* Marker + and - control student/teacher projection in JavaScript only.\n * Do not apply visibility, fixed height, text recoloring or break-inside rules\n * based on callout names; long teacher solutions must remain fully measurable. */\n/* Headings must stay with following paragraphs. Do NOT break before all H2:\n   an automatic new page on every unit wastes sheets and disrupts space. */\n@media print {\n  .mwb-print-document h2,.mwb-print-document h3,.mwb-print-document h4 { break-after:avoid; page-break-after:avoid; }\n  .mwb-print-document .mwb-fixed-blank { border-bottom-color:#333; }\n}\n\n/* Source-mapped question containers add no padding or extra height. */\n.mwb-print-document .mwb-handout-question { display: flow-root; margin: 0; padding: 0; }\n.mwb-print-document .mwb-section-leaders { display: flow-root; margin: 0; padding: 0; }\n\n/* Physical layout is shared by the A4 preview, saved HTML and PDF. The\n * paginator fills explicit column bodies in reading order, not CSS columns. */\n.mwb-print-document[data-mwb-layout=\"two-column\"] .mwb-paper-two-column .mwb-paper-columns {\n  display: flex; height: 100%; gap: 8mm;\n}\n.mwb-print-document[data-mwb-layout=\"two-column\"] .mwb-paper-two-column .mwb-paper-body {\n  flex: 1; min-width: 0; width: 0; height: 100%;\n}\n.mwb-print-document[data-mwb-layout=\"trial\"] .mwb-paper.mwb-paper-trial {\n  display: flex; flex-direction: column;\n}\n.mwb-print-document .mwb-trial-header { flex: none; margin: 0; padding: 0; color: #141414; }\n.mwb-print-document table.mwb-trial-table {\n  table-layout: fixed; border-collapse: collapse; width: 100%; max-width: 100%;\n  margin: 0; font-size: 10.5pt; line-height: 1.55; background: #fff;\n}\n.mwb-print-document .mwb-trial-table :is(th, td) {\n  border: 1px solid #888; padding: 2mm; height: 10mm;\n  vertical-align: middle; color: #141414; background: #fff;\n  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;\n}\n.mwb-print-document .mwb-trial-table th { text-align: center; font-weight: 700; }\n.mwb-print-document .mwb-trial-table td { text-align: left; font-weight: 400; }\n.mwb-print-document .mwb-trial-content-label {\n  box-sizing: border-box; border: 1px solid #888; border-top: 0; border-bottom: 0;\n  padding: 1.5mm; margin: 0; text-align: center; font-weight: 700;\n  color: #141414; background: #ddd; line-height: 1.5;\n  print-color-adjust: exact; -webkit-print-color-adjust: exact;\n}\n.mwb-print-document .mwb-trial-frame {\n  box-sizing: border-box; flex: 1; min-height: 0;\n  border: 1px solid #888; padding: 4mm;\n}\n.mwb-print-document .mwb-trial-frame > .mwb-paper-body { height: 100%; width: 100%; }\n\n/* Modal-only UI rules below are excluded from export CSS. */\n"};
+module.exports = {typographyCss:"/* Mathsemble style boundaries: modal UI uses .mwb-modal; teaching material\n * uses .mwb-typography; PDF uses .mwb-print-document in isolated HTML.\n * The named teaching callout palette intentionally also works in ordinary notes.\n */\n/* One mathematical typography contract, shared verbatim by reading, A4 preview and PDF.\n * IMPORTANT: MathJax owns <mjx-container> and its descendant SVG dimensions, baseline,\n * viewBox, overflow and font metrics. Never apply generic svg{height:auto} here.\n */\n.mwb-typography {\n  font-family: \"Noto Serif CJK SC\", \"Songti SC\", \"SimSun\", serif;\n  font-size: 11pt;\n  line-height: 1.65;\n  letter-spacing: normal;\n  font-kerning: normal;\n  overflow: visible;\n}\n.mwb-typography p,\n.mwb-typography ul,\n.mwb-typography ol {\n  margin-block: 0.55em;\n  line-height: inherit;\n}\n.mwb-typography li { margin-block: 0.24em; line-height: inherit; }\n.mwb-typography h1,\n.mwb-typography h2,\n.mwb-typography h3,\n.mwb-typography h4,\n.mwb-typography h5,\n.mwb-typography h6 {\n  line-height: 1.45;\n  margin-block: 0.85em 0.4em;\n  break-after: avoid;\n}\n.mwb-typography h1 { font-size: 1.42em; }\n.mwb-typography h2 { font-size: 1.27em; }\n.mwb-typography h3 { font-size: 1.13em; }\n.mwb-typography h4 { font-size: 1.03em; }\n.mwb-typography h5 { font-size: 1.03em; font-weight: 700; }\n.mwb-typography h6 { font-size: 1em; font-weight: 600; }\n.mwb-typography img {\n  max-width: 100%; height: auto; filter: none;\n  object-fit: contain;\n}\n/* Only known TikZ wrappers are scaled. Never select arbitrary SVG descendants. */\n.mwb-typography :is(.tikzjax, .tikzjax-output, .mwb-tikz, .tikz) > svg,\n.mwb-typography .block-language-tikz svg,\n.mwb-typography .block-language-tikzjax svg {\n  max-width: 100%; height: auto; filter: none;\n}\n.mwb-typography .mwb-answer-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  /* Answer text is intentionally transparent. A currentColor underline would\n     therefore be transparent too; the writing line needs its own ink color. */\n  --mwb-answer-underline-color: var(--text-normal, #141414);\n  border-bottom: 1px solid var(--mwb-answer-underline-color);\n  vertical-align: baseline;\n  color: transparent;\n  white-space: nowrap;\n}\n/* Teacher-mode fill answers: red text centered on a persistent black line.\n * Choice letters use mwb-answer-revealed instead and are never underlined.\n * Math answers use TeX \\underline{\\color{red}{...}} for correct MathJax baselines. */\n.mwb-typography .mwb-teacher-fill-slot {\n  display: inline-block;\n  box-sizing: border-box;\n  min-width: 3em;\n  min-height: 1.35em;\n  padding-inline: 0.18em;\n  border: 0;\n  border-bottom: 1px solid var(--mwb-answer-underline-color, #141414);\n  color: #ad2323;\n  font-weight: 600;\n  text-align: center;\n  white-space: nowrap;\n  vertical-align: baseline;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n.mwb-print-document .mwb-teacher-fill-slot {\n  border-bottom-color: #141414;\n}\n/* Choice slots reserve a little inline space in parentheses, NEVER a writing line. */\n.mwb-typography .mwb-choice-slot,\n.mwb-typography.mwb-print-document .mwb-choice-slot {\n  display: inline-block;\n  min-width: 1.4em;\n  min-height: 0;\n  padding: 0;\n  border: 0;\n  border-bottom: none;\n  box-shadow: none;\n  background: transparent;\n  vertical-align: baseline;\n  text-decoration: none;\n  white-space: nowrap;\n}\n.mwb-typography .mwb-answer-revealed { color: #ad2323; font-weight: 600; }\n.mwb-typography blockquote { margin-block: 0.8em; padding: 0.3em 0.85em; border-left: 3px solid #999; }\n.mwb-typography .callout { border: 1px solid #bbb; border-radius: 4px; padding: 0.4em 0.75em; margin-block: 0.7em; }\n.mwb-print-document .callout-icon,\n.mwb-print-document .callout-fold { display: none; }\n.mwb-typography table { border-collapse: collapse; max-width: 100%; }\n.mwb-typography td, .mwb-typography th { border: 1px solid #999; padding: 0.25em 0.45em; }\n/* A unified print-mode font/color, distinct from dark-theme reading foreground. */\n.mwb-print-document { color: #141414; background: white; }\n/* Keep explicit Markdown page breaks when saved HTML is printed directly.\n * The A4 paginator consumes these markers before placing content on paper. */\n.mwb-print-document .mwb-page-break {\n  display: block;\n  height: 0;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  break-before: page;\n  page-break-before: always;\n}\n/* Keep ink black even when the original Obsidian theme is dark or inherited\n   text fill is transparent. This is separate from the hidden answer content. */\n.mwb-print-document .mwb-answer-slot {\n  --mwb-answer-underline-color: #141414;\n  border-bottom-color: #141414;\n  print-color-adjust: exact;\n  -webkit-print-color-adjust: exact;\n}\n/* White print background; unthemed callouts retain a gray fallback border. */\n.mwb-typography.mwb-print-document .callout { background: #fff; border-color: #c4c4c4; border-left: 2px solid #999; }\n/* Teacher solutions must occupy the same geometry in preview and isolated PDF. */\n.mwb-print-document .callout-title { display: block; font-weight: 600; line-height: 1.5; padding: 0; margin: 0 0 0.35em; }\n.mwb-print-document .callout-content { display: block; padding: 0; margin: 0; }\n/* Export-only callout expansion: Obsidian themes can make folded content\n   display:none with higher specificity. Do not change the reading view. */\n.mwb-typography.mwb-print-document .callout > .callout-content,\n.mwb-typography.mwb-print-document .callout.is-collapsed > .callout-content {\n  display: block;\n  visibility: visible;\n}\n.mwb-print-document .callout-content > :first-child { margin-top: 0; }\n.mwb-print-document .callout-content > :last-child { margin-bottom: 0; }\n/* TikZJax can invert drawings in dark themes; the paper output stays unfiltered. */\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container svg { filter: none; }\n.mwb-print-document pre,\n.mwb-print-document figure,\n.mwb-print-document table,\n.mwb-print-document blockquote { break-inside: avoid; }\n.mwb-print-document p,\n.mwb-print-document li { orphans: 2; widows: 2; }\n/* Do not force height, overflow, vertical-align or display on MathJax containers. */\n\n/* Student response space measured from the fully rendered teacher solution.\n * Short questions with a response space are permitted to split on these chunks;\n * the first prompt paragraph remains protected by the rule below. */\n.mwb-print-document .mwb-answer-space {\n  display: block;\n  box-sizing: border-box;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  overflow: visible;\n  break-inside: auto;\n  page-break-inside: auto;\n}\n.mwb-print-document .mwb-answer-space-chunk {\n  box-sizing: border-box;\n  display: block;\n  width: 100%;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  break-inside: avoid;\n  page-break-inside: avoid;\n}\n\n/* v0.1.4: options use the SAME responsive grid after live measurement. */\n.mwb-typography :is(ul,ol).mwb-options {\n  display: grid;\n  gap: 0.3em 12px;\n  margin: 0.3em 0 0.7em;\n  padding: 0;\n  list-style: none;\n  break-inside: avoid;\n}\n.mwb-typography .mwb-options li { list-style: none; margin:0; min-width:0; }\n.mwb-typography .mwb-options-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n.mwb-typography .mwb-options-1 { grid-template-columns: minmax(0, 1fr); }\n/* Measure natural, unwrapped MathJax and text widths without retaining these rules in PDF. */\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring { display: block; padding: 0; margin: 0; }\n.mwb-typography :is(ul,ol).mwb-options.mwb-options-measuring > li {\n  display: block;\n  width: max-content;\n  max-width: none;\n  white-space: nowrap;\n  margin:0;\n  padding:0;\n  list-style:none;\n}\n.mwb-typography .mwb-options-1 > li { overflow-wrap: anywhere; }\n/* Q numbering and sectional headers are print content, not Obsidian file metadata. */\n.mwb-print-document .mwb-exam-title { font-size: 18pt; text-align:center; margin: 0 0 0.85em; line-height:1.4; }\n.mwb-print-document .mwb-exam-section {\n  font-weight:700; font-size: 12pt; margin: 1.15em 0 0.65em;\n  break-after:avoid; page-break-after:avoid;\n}\n.mwb-print-document .mwb-exam-question { margin: 0 0 1.05em; break-inside: auto; }\n.mwb-print-document .mwb-exam-question.mwb-question-keep { break-inside: avoid; page-break-inside: avoid; }\n.mwb-print-document .mwb-number-only { break-after: avoid; page-break-after: avoid; }\n.mwb-print-document .mwb-question-index { font-weight:700; display:inline-block; margin-right:0.42em; white-space:nowrap; vertical-align:baseline; }\n.mwb-print-document .mwb-exam-question-content > p:first-child { break-after: avoid; page-break-after:avoid; }\n/* stylelint-disable-next-line selector-type-no-unknown -- MathJax creates mjx-container DOM elements. */\n.mwb-print-document mjx-container[display=\"true\"],\n.mwb-print-document .math.math-block,\n.mwb-print-document .block-language-tikz,\n.mwb-print-document .block-language-tikzjax { break-inside: avoid; page-break-inside: avoid; }\n/* No forced no-break for a *long* question; a long answer space can split. */\n\n/* v0.1.4.1: MathJax-based answers have a stable underlined inline slot. */\n.mwb-typography .mwb-answer-slot-math { min-width: 3em; height: 1.65em; line-height: 1.65em; }\n.mwb-print-document .mwb-exam-edition {\n  text-align: right; font-size: 9pt; font-weight: 600; color:#444;\n  margin: -0.85em 0 0.85em;\n}\n\n/* Mathsemble mathematics teaching palette — reading-view reach fix (2026-10-23).\n * Read/Live Preview: match native Obsidian .callout markup DIRECTLY, even for\n * notes lacking YAML or Mathsemble class annotations. The previous version\n * required .mwb-math-material/.mwb-answer-note and could miss regular notes.\n * Keep colors independent of edition-specific - Callout projection.\n * Example questions remain ordinary Markdown; [!example] gets no special look.\n * Do not globally style mark, strong, body fonts, or MathJax containers.\n */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  background-color: transparent;\n  /* Match all four edge colors without changing the existing border widths. */\n  border-color: var(--mwb-callout-accent, #999);\n}\n/* Default Obsidian callouts have zero-width borders. Draw a matching inner\n * outline as well as the left accent so all four edges are visible without\n * changing their box geometry. Paper retains its physical 2px left border. */\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) {\n  box-shadow: inset 3px 0 0 var(--mwb-callout-accent, #999),\n    inset 0 0 0 1px var(--mwb-callout-accent, #999);\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout:is(\n  [data-callout=\"definition\"],\n  [data-callout=\"theorem\"],\n  [data-callout=\"method\"],\n  [data-callout=\"conclusion\"],\n  [data-callout=\"attention\"],\n  [data-callout=\"thinking\"],\n  [data-callout=\"answer\"],\n  [data-callout=\"scaffold\"],\n  [data-callout=\"solution\"]\n) > .callout-title {\n  color: var(--mwb-callout-title-ink, #444);\n  font-weight: 600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"definition\"] {\n  --callout-color: 46, 164, 79;\n  --callout-icon: book-open;\n  --mwb-callout-accent: #2ea44f;\n  --mwb-callout-title-ink: #237b39;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"theorem\"] {\n  --callout-color: 47, 129, 247;\n  --callout-icon: sigma;\n  --mwb-callout-accent: #2f81f7;\n  --mwb-callout-title-ink: #1f64c2;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"method\"] {\n  --callout-color: 155, 89, 182;\n  --callout-icon: lightbulb;\n  --mwb-callout-accent: #9b59b6;\n  --mwb-callout-title-ink: #793a97;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"conclusion\"] {\n  --callout-color: 0, 168, 150;\n  --callout-icon: check-circle;\n  --mwb-callout-accent: #00a896;\n  --mwb-callout-title-ink: #007d70;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"attention\"] {\n  --callout-color: 241, 196, 15;\n  --callout-icon: alert-triangle;\n  --mwb-callout-accent: #f1c40f;\n  --mwb-callout-title-ink: #866600;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"thinking\"] {\n  --callout-color: 99, 110, 114;\n  --callout-icon: help-circle;\n  --mwb-callout-accent: #636e72;\n  --mwb-callout-title-ink: #525c60;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"answer\"] {\n  --callout-color: 230, 126, 34;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #e67e22;\n  --mwb-callout-title-ink: #a44f06;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"scaffold\"] {\n  --callout-color: 143, 112, 181;\n  --callout-icon: list-checks;\n  --mwb-callout-accent: #8f70b5;\n  --mwb-callout-title-ink: #684b91;\n}\n:is(.markdown-preview-view, .markdown-source-view.mod-cm6, .mwb-typography) .callout[data-callout=\"solution\"] {\n  --callout-color: 135, 148, 173;\n  --callout-icon: list-ordered;\n  --mwb-callout-accent: #8794ad;\n  --mwb-callout-title-ink: #53637e;\n}\n\n/* v0.2.1: optional metadata is always separate from math/answer DOM. */\n.mwb-typography .mwb-print-meta { color:#666; font-size:8.5pt; line-height:1.5;\n  display:flex; flex-wrap:wrap; gap:0.12em 1.1em; margin:0.2em 0 0.45em;\n  break-inside:avoid; }\n.mwb-typography .mwb-print-meta-item { white-space:normal; overflow-wrap:anywhere; }\n.mwb-typography .mwb-long-document { line-height:inherit; }\n\n/* v0.1.7: literal Markdown writing blanks, not LaTeX or answer reveal slots. */\n.mwb-typography .mwb-fixed-blank {\n  display:inline-block; box-sizing:border-box; min-height:1em;\n  border-bottom:1px solid #333; margin:0 0.22em; vertical-align:baseline;\n}\n/* Marker - controls student/teacher projection in JavaScript only; + is shared.\n * Do not apply visibility, fixed height, text recoloring or break-inside rules\n * based on callout names; long teacher solutions must remain fully measurable. */\n/* Headings must stay with following paragraphs. Do NOT break before all H2:\n   an automatic new page on every unit wastes sheets and disrupts space. */\n@media print {\n  .mwb-print-document h2,.mwb-print-document h3,.mwb-print-document h4 { break-after:avoid; page-break-after:avoid; }\n  .mwb-print-document .mwb-fixed-blank { border-bottom-color:#333; }\n}\n\n/* Source-mapped question containers add no padding or extra height. */\n.mwb-print-document .mwb-handout-question { display: flow-root; margin: 0; padding: 0; }\n.mwb-print-document .mwb-section-leaders { display: flow-root; margin: 0; padding: 0; }\n\n/* Physical layout is shared by the A4 preview, saved HTML and PDF. The\n * paginator fills explicit column bodies in reading order, not CSS columns. */\n.mwb-print-document[data-mwb-layout=\"two-column\"] .mwb-paper-two-column .mwb-paper-columns {\n  display: flex; height: 100%; gap: 8mm;\n}\n.mwb-print-document[data-mwb-layout=\"two-column\"] .mwb-paper-two-column .mwb-paper-body {\n  flex: 1; min-width: 0; width: 0; height: 100%;\n}\n.mwb-print-document[data-mwb-layout=\"trial\"] .mwb-paper.mwb-paper-trial {\n  display: flex; flex-direction: column; padding-top: 20mm;\n}\n.mwb-print-document .mwb-trial-header { flex: none; margin: 0; padding: 0; color: #141414; }\n.mwb-print-document table.mwb-trial-table {\n  table-layout: fixed; border-collapse: collapse; width: 100%; max-width: 100%;\n  margin: 0; font-size: 10.5pt; line-height: 1.55; background: #fff;\n}\n.mwb-print-document .mwb-trial-table :is(th, td) {\n  border: 1px solid #888; padding: 2mm; height: 10mm;\n  vertical-align: middle; color: #141414; background: #fff;\n  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;\n}\n.mwb-print-document .mwb-trial-table tr:nth-child(-n+2) > :is(th, td) {\n  height: 7.5mm; padding-block: 1.5mm; line-height: 1.15;\n  text-align: center;\n}\n.mwb-print-document .mwb-trial-table th { text-align: center; font-weight: 700; }\n.mwb-print-document .mwb-trial-table td { text-align: left; font-weight: 400; }\n.mwb-print-document .mwb-trial-content-label {\n  box-sizing: border-box; border: 1px solid #888; border-top: 0; border-bottom: 0;\n  padding: 1.5mm; margin: 0; text-align: center; font-weight: 700;\n  color: #141414; background: #ddd; line-height: 1.5;\n  print-color-adjust: exact; -webkit-print-color-adjust: exact;\n}\n.mwb-print-document .mwb-trial-frame {\n  box-sizing: border-box; flex: 1; min-height: 0;\n  border: 1px solid #888; padding: 4mm;\n}\n.mwb-print-document .mwb-trial-frame > .mwb-paper-body { height: 100%; width: 100%; }\n\n/* Modal-only UI rules below are excluded from export CSS. */\n"};
 return module.exports; })();
 const { DEFAULT_SPACE_SETTINGS, studentSpacePlan, teacherOnlyCalloutIndices, teacherSolutionHeights, injectSpaceNodes, auditSpaceGeometry, assertMeasurementWidth } = (() => { const module = {exports:{}};
 'use strict';
@@ -3790,18 +3900,18 @@ function stripFrontmatter(source) {
   return lines.slice(end + 1).join('\n').replace(/^\n+/, '');
 }
 
-// Edition rule: callouts with + or - are teacher-only; without a marker,
-// callouts are shared by student and teacher. Teacher-only answer/success
-// blocks of ANY type are measured for student writing space.
+// Edition rule: only callouts marked - are filtered by edition.
+// Callouts marked + and unmarked callouts are shared. Only answer- reserves
+// student writing space by default; other - types are selected explicitly.
 function pedagogicalCallout(line) {
   // Visibility is determined ONLY by the marker after [!type]:
-  // [!type]+ / [!type]- -> teacher-only; [!type] -> shared.
+  // [!type]- -> edition-specific; [!type]+ / [!type] -> shared.
   // This applies to all Obsidian callout types, not just built-in teaching types.
   const match = String(line).match(/^\s*>\s*\[!([\w-]+)\]([+-])?(?:[ \t]+(.*))?\s*$/i);
   if (!match) return null;
   const type = match[1].toLowerCase();
   const title = (match[3] || '').trim();
-  const teacherOnly = match[2] === '+' || match[2] === '-';
+  const teacherOnly = match[2] === '-';
   let kind = type;
   if (type === 'answer' || type === 'success') kind = 'answer';
   else if (type === 'solution' || (type === 'info' && /^(解析|解题思路)$/.test(title))) kind = 'analysis';
@@ -3890,8 +4000,8 @@ function stripSolutionsToMarkers(markdown, options = {}) {
   return mwbStudentSpacePlan(markdown, options);
 }
 
-// Every Obsidian callout appears in the teacher DOM, while only +/- headers
-// create student spaces. Map by full callout ordinal, never by its type.
+// Selected - callouts create student spaces. This legacy ordinal helper
+// maps the full source; production measurement verifies source identities.
 function teacherOnlyCalloutIndices(markdown, options = {}) {
   // Compatibility helper only. Production measurement uses verified source IDs.
   const {blocks}=mwbCalloutDocument(markdown), targets=new Set(mwbSpaceTargets(blocks,options).map(b=>b.id));
@@ -5331,7 +5441,34 @@ function defaultCourse() {
 }
 function defaultOutputSettings() {
   return {layout:'default',mode:'document',spaceSettings:{ratio:100,minimumCm:0},
-    solutionOptions:{solutionSpaces:false,showSolution:true}};
+    solutionOptions:{studentBlankCallouts:[],teacherVisibleCallouts:[]}};
+}
+function validateCalloutTypes(raw) {
+  if (!Array.isArray(raw) || Object.getPrototypeOf(raw) !== Array.prototype || raw.length > 128 ||
+      Reflect.ownKeys(raw).some(key => key !== 'length' && (typeof key !== 'string' || !/^\d+$/.test(key))) ||
+      Object.values(Object.getOwnPropertyDescriptors(raw)).some(descriptor => descriptor.get || descriptor.set))
+    throw new TypeError('Callout 类型列表无效');
+  const result = [], seen = new Set();
+  for (const type of raw) {
+    if (typeof type !== 'string' || !/^[a-z0-9_-]{1,64}$/.test(type)) throw new TypeError('Callout 类型无效');
+    if (type === 'answer') throw new TypeError('answer 的留白和显示已固定，无需加入类型列表');
+    if (seen.has(type)) throw new TypeError('Callout 类型重复');
+    seen.add(type); result.push(type);
+  }
+  return result;
+}
+function validateCalloutOptions(raw) {
+  safeObject(raw,'Callout 设置');
+  if (Object.prototype.hasOwnProperty.call(raw,'solutionSpaces') || Object.prototype.hasOwnProperty.call(raw,'showSolution')) {
+    exactFields(raw,['solutionSpaces','showSolution'],'旧解析设置');
+    if (typeof raw.solutionSpaces !== 'boolean' || typeof raw.showSolution !== 'boolean')
+      throw new TypeError('旧解析设置无效');
+    return {studentBlankCallouts:raw.solutionSpaces ? ['solution'] : [],
+      teacherVisibleCallouts:raw.showSolution ? ['solution'] : []};
+  }
+  exactFields(raw,['studentBlankCallouts','teacherVisibleCallouts'],'Callout 设置');
+  return {studentBlankCallouts:validateCalloutTypes(raw.studentBlankCallouts),
+    teacherVisibleCallouts:validateCalloutTypes(raw.teacherVisibleCallouts)};
 }
 function validateCourse(raw) {
   exactFields(raw,['teacher','student','time','subject','grade','title','objectives'],'课程信息');
@@ -5348,16 +5485,13 @@ function validateOutputSettings(raw) {
   exactFields(raw.spaceSettings,['ratio','minimumCm'],'留白设置');
   if (![50,75,90,100,110,125,150].includes(raw.spaceSettings.ratio) ||
       ![0,2,4].includes(raw.spaceSettings.minimumCm)) throw new TypeError('留白设置无效');
-  exactFields(raw.solutionOptions,['solutionSpaces','showSolution'],'解析设置');
-  if (typeof raw.solutionOptions.solutionSpaces !== 'boolean' || typeof raw.solutionOptions.showSolution !== 'boolean')
-    throw new TypeError('解析设置无效');
   return {layout:raw.layout,mode:raw.mode,
     spaceSettings:{ratio:raw.spaceSettings.ratio,minimumCm:raw.spaceSettings.minimumCm},
-    solutionOptions:{solutionSpaces:raw.solutionOptions.solutionSpaces,showSolution:raw.solutionOptions.showSolution}};
+    solutionOptions:validateCalloutOptions(raw.solutionOptions)};
 }
 function validatePlan(raw) {
   safeObject(raw,'组题方案');
-  if (![1,2].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
+  if (![1,2,3].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
   exactFields(raw,raw.schemaVersion === 1 ? ['schemaVersion','title','entries'] :
     ['schemaVersion','title','entries','course','output'],'组题方案');
   const title = boundedString(raw.title,'方案标题',500,false);
@@ -5394,10 +5528,10 @@ function validatePlan(raw) {
     }
     return result;
   });
-  return {schemaVersion:2,title,entries,course,output};
+  return {schemaVersion:3,title,entries,course,output};
 }
 function createPlan(title = '新讲义') {
-  return validatePlan({schemaVersion:2,title,entries:[],course:defaultCourse(),output:defaultOutputSettings()});
+  return validatePlan({schemaVersion:3,title,entries:[],course:defaultCourse(),output:defaultOutputSettings()});
 }
 function addItem(plan, item) {
   const next = validatePlan(plan);
@@ -6125,6 +6259,7 @@ const mwbAssemblyView = (() => { const module = {exports:{}};
 module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
+  const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
   const typeNames = {choice:'单选',multiple_choice:'多选',fill_blank:'填空',true_false:'判断',short_answer:'解答',calculation:'计算',proof:'证明',comprehensive:'综合'};
   const labelOf = value => String(value ?? '').replace(/^\[\[|\]\]$/g, '').split('|').at(-1);
   const errorText = error => String(error?.message || error);
@@ -6362,9 +6497,15 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       for(const [key,input] of this.planSettingsInputs.output){
         const value=Object.prototype.hasOwnProperty.call(this.plan.output,key)?this.plan.output[key]:
           Object.prototype.hasOwnProperty.call(this.plan.output.spaceSettings,key)?this.plan.output.spaceSettings[key]:this.plan.output.solutionOptions[key];
+        const text=Array.isArray(value)?value.filter(type=>!calloutTypes.includes(type)).join(', '):String(value);
         if(input.type==='checkbox')input.checked=value;
-        else if(input.value!==String(value))input.value=String(value);
+        else if(input.value!==text)input.value=text;
         input.disabled=busy;
+      }
+      for(const [key,types] of this.planSettingsInputs.callouts){
+        for(const [type,input] of types){
+          input.checked=this.plan.output.solutionOptions[key].includes(type);input.disabled=busy;
+        }
       }
     }
     renderPlanSettings(parent) {
@@ -6372,7 +6513,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.el('summary',panel,'','课程与排版');
       const body=this.el('div',panel,'mwb-assembly-plan-settings-body');
       this.el('p',body,'mwb-assembly-muted','随“保存方案”保存；下次从此方案生成 A4 时恢复。');
-      const inputs={course:new Map(),output:new Map(),follow:null};this.planSettingsInputs=inputs;
+      const inputs={course:new Map(),output:new Map(),callouts:new Map(),follow:null};this.planSettingsInputs=inputs;
       const edit=change=>{
         if(this.planSettingsInputs!==inputs||!panel.isConnected)return;
         try{if(this.applyPlanSettings(change()))this.setStatus('课程与排版已修改，请保存方案。');}
@@ -6403,13 +6544,37 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       select('mode','默认版本',[['document','原文预览'],['student','学生版'],['teacher','教师版']]);
       select('ratio','等高留白比例',[50,75,90,100,110,125,150].map(value=>[value,value+'%']),'spaceSettings');
       select('minimumCm','最小留白高度',[0,2,4].map(value=>[value,value+' cm']),'spaceSettings');
-      for(const [key,label] of [['solutionSpaces','学生版解析留白'],['showSolution','教师版显示解析']]){
-        const wrapper=this.el('label',body,'mwb-assembly-check');
-        const input=this.el('input',wrapper);input.type='checkbox';input.dataset.outputField=key;
-        wrapper.appendChild(this.contentEl.ownerDocument.createTextNode(label));
+      this.el('p',body,'mwb-assembly-muted','带 - 的 Callout：学生版全部隐藏，answer 固定留白；教师版 answer 固定显示。其他类型默认不留白、不显示。带 + 或无标记的 Callout 始终显示。');
+      const choices=[['studentBlankCallouts','学生留白'],['teacherVisibleCallouts','教师显示']];
+      const table=this.el('table',body,'mwb-assembly-callout-options');
+      const head=this.el('tr',this.el('thead',table));
+      for(const label of ['Callout 类型','学生留白','教师显示'])this.el('th',head,'',label);
+      const rows=this.el('tbody',table);
+      for(const [key] of choices)inputs.callouts.set(key,new Map());
+      for(const type of calloutTypes){
+        const row=this.el('tr',rows);this.el('td',row,'',type);
+        for(const [key,label] of choices){
+          const input=this.el('input',this.el('td',row));input.type='checkbox';
+          input.dataset.calloutOption=key;input.dataset.calloutType=type;
+          input.setAttribute('aria-label',type+' '+label);
+          inputs.callouts.get(key).set(type,input);
+          input.addEventListener('change',()=>edit(()=>{
+            const types=this.plan.output.solutionOptions[key].filter(value=>value!==type);
+            if(input.checked)types.push(type);
+            return {course:this.plan.course,output:{...this.plan.output,
+              solutionOptions:{...this.plan.output.solutionOptions,[key]:types}}};
+          }));
+        }
+      }
+      for(const [key,label] of [['studentBlankCallouts','学生版其他类型留白'],['teacherVisibleCallouts','教师版其他类型显示']]){
+        const input=this.field(body,label,'input');input.type='text';input.dataset.outputField=key;
+        input.placeholder='例如 hint, remark；用逗号分隔';
+        input.setAttribute('aria-description','填写表格之外的 Callout 类型，多个类型以逗号分隔；无需填写 answer。');
         this.planSettingsInputs.output.set(key,input);
         input.addEventListener('change',()=>edit(()=>({course:this.plan.course,
-          output:{...this.plan.output,solutionOptions:{...this.plan.output.solutionOptions,[key]:input.checked}}})));
+          output:{...this.plan.output,solutionOptions:{...this.plan.output.solutionOptions,
+            [key]:[...this.plan.output.solutionOptions[key].filter(type=>calloutTypes.includes(type)),
+              ...input.value.trim().toLowerCase().split(/[\s,，、]+/).filter(Boolean)]}}})));
       }
       this.refreshPlanSettings();
     }
@@ -7477,13 +7642,17 @@ function mwbNormalizeLayout(value) {
 }
 
 function mwbTrialDetailsFromMetadata(metadata = {}) {
+  // Generated handouts store an independent course title (including a blank) in titile.
+  const titleKeys = metadata.note_type === 'handout'
+    ? ['titile', 'title', '课题名称']
+    : ['title', '课题名称', 'titile'];
   const fields = {
     teacher:['author'],
     student:['学生', '学生姓名', 'student', 'student_name', 'students'],
     time:['上课时间', '授课时间', 'lesson_time', 'class_time', 'time', 'date'],
     subject:['subject', '学科'],
     grade:['年级', 'grade'],
-    title:['titile'],
+    title:titleKeys,
     objectives:['教学目标', '学习目标', 'learning_objectives', 'objectives'],
   };
   const text = value => {
@@ -7596,7 +7765,7 @@ class PreviewModal extends Modal {
     this.closed = false;
     this.generation = 0;
     this.spaceSettings = { ...DEFAULT_SPACE_SETTINGS };
-    this.solutionOptions = { solutionSpaces: false, showSolution: true };
+    this.solutionOptions = { studentBlankCallouts: [], teacherVisibleCallouts: [] };
     this.planCourse = null;
     this.onApplyPlanSettings = null;
     if (opts.planSettings) {
@@ -7989,24 +8158,13 @@ class PreviewModal extends Modal {
       option.value = String(amount);
       if (amount === this.spaceSettings.minimumCm) option.selected = true;
     }
-    // Both options are presentation-only; never rewrite the source note.
-    const studentSolutionLabel = settingsControls.createEl('label', { cls: 'mwb-setting-label', text: 'solution 留白 ' });
-    const studentSolutionCheckbox = studentSolutionLabel.createEl('input', { type: 'checkbox' });
-    studentSolutionCheckbox.checked = this.solutionOptions.solutionSpaces;
-    studentSolutionCheckbox.setAttribute('aria-label', '学生版为 solution 预留答题空白');
-    studentSolutionCheckbox.onchange = () => {
-      this.solutionOptions.solutionSpaces = !!studentSolutionCheckbox.checked;
-      if (this.mode === 'student') void this.renderMode('student');
-    };
-    const teacherSolutionLabel = settingsControls.createEl('label', { cls: 'mwb-setting-label', text: '显示 solution ' });
-    const teacherSolutionCheckbox = teacherSolutionLabel.createEl('input', { type: 'checkbox' });
-    teacherSolutionCheckbox.checked = this.solutionOptions.showSolution;
-    teacherSolutionCheckbox.setAttribute('aria-label', '教师版显示 solution 解题思路');
-    teacherSolutionCheckbox.onchange = () => {
-      this.solutionOptions.showSolution = !!teacherSolutionCheckbox.checked;
-      if (this.mode === 'teacher') void this.renderMode('teacher');
-    };
-    this.solutionModeLabels = { student: studentSolutionLabel, teacher: teacherSolutionLabel };
+    // Per-type choices apply only to - Callouts in this output copy.
+    this.solutionModeLabels = {};
+    for (const mode of ['student', 'teacher']) {
+      const group = settingsControls.createDiv({cls:'mwb-callout-options'});
+      this.solutionModeLabels[mode] = group;
+    }
+    this.syncCalloutOptionControls();
     if (this.documentMode) { ratioLabel.style.display = ''; minimumLabel.style.display = ''; }
     if (this.exam) {
       const groupingLabel = settingsControls.createEl('label', {cls:'mwb-setting-label', text:'分组依据'});
@@ -8548,6 +8706,50 @@ class PreviewModal extends Modal {
     this.addRenderWarnings(stage, warnings);
   }
 
+  syncCalloutOptionControls() {
+    if (!this.solutionModeLabels) return;
+    const focused = this.contentEl?.ownerDocument?.activeElement;
+    const focusedLabel = Object.values(this.solutionModeLabels).some(group => group.contains(focused))
+      ? focused?.getAttribute('aria-label') : null;
+    const sources = this.exam ? this.exam.items.map(item => item.markdown) : [this.markdown];
+    const types = new Set();
+    for (const source of sources) for (const block of mwbCalloutDocument(source).blocks) {
+      if (block.teacherOnly && block.type !== 'answer') types.add(block.type);
+    }
+    for (const key of ['studentBlankCallouts', 'teacherVisibleCallouts']) {
+      for (const type of this.solutionOptions[key] || []) if (type !== 'answer') types.add(type);
+    }
+    for (const mode of ['student', 'teacher']) {
+      const key = mode === 'student' ? 'studentBlankCallouts' : 'teacherVisibleCallouts';
+      const selected = this.solutionOptions[key] || (mwbCalloutSelected('solution', this.solutionOptions, key) ? ['solution'] : []);
+      const group = this.solutionModeLabels[mode];
+      group.empty();
+      group.createEl('strong', {text:mode === 'student' ? '其他 Callout - 留空' : '显示其他 Callout -'});
+      group.createEl('small', {text:mode === 'student'
+        ? '所有 - 块隐藏；answer 固定留空，其他默认不留空。'
+        : 'answer 固定显示，其他 - 块默认不显示。'});
+      const choices = group.createDiv({cls:'mwb-meta-fields'});
+      const available = [...new Set([...types, ...selected])].filter(type => type !== 'answer').sort();
+      for (const type of available) {
+        const label = choices.createEl('label');
+        const checkbox = label.createEl('input', {type:'checkbox'});
+        checkbox.checked = selected.includes(type);
+        checkbox.setAttribute('aria-label', mode === 'student' ? `学生版为 ${type}- 留空` : `教师版显示 ${type}-`);
+        label.appendText(type);
+        checkbox.onchange = () => {
+          const next = new Set(this.solutionOptions[key] || selected);
+          if (checkbox.checked) next.add(type); else next.delete(type);
+          this.solutionOptions = {...this.solutionOptions, [key]:[...next].sort()};
+          void this.renderMode(this.mode);
+        };
+      }
+      if (!available.length) choices.createEl('small', {text:'当前内容没有其他带 - 的 Callout。'});
+    }
+    if (focusedLabel) for (const group of Object.values(this.solutionModeLabels)) {
+      Array.from(group.querySelectorAll('input')).find(input => input.getAttribute('aria-label') === focusedLabel)?.focus();
+    }
+  }
+
   renderMode(mode) {
     if (this.closed) return Promise.resolve();
     this.cancelSourceRead('预览模式或设置已变化，读取已取消');
@@ -8564,6 +8766,7 @@ class PreviewModal extends Modal {
     this.diagnosticSequence = 0;
     this.mode = mode;
     if (this.singlePdfButton) this.singlePdfButton.setText(`保存${this.editionLabel()} PDF`);
+    this.syncCalloutOptionControls();
     if (this.solutionModeLabels) {
       this.solutionModeLabels.student.style.display = mode === 'student' ? '' : 'none';
       this.solutionModeLabels.teacher.style.display = mode === 'teacher' ? '' : 'none';
@@ -9491,6 +9694,25 @@ module.exports = class MathsemblePlugin extends Plugin {
       new Notice('Mathsemble 安装清单与代码不一致：请将同一版本的三个文件安装到 mathsemble 目录，然后重启。', 12000);
       throw new Error('Mathsemble plugin ID mismatch: expected mathsemble');
     }
+    const readingAnswerViews = new Map();
+    const syncReadingAnswerViews = () => {
+      const views = new Set((this.app.workspace.getLeavesOfType?.('markdown') || []).map(leaf => leaf.view));
+      for (const [view, controller] of readingAnswerViews) {
+        if (!views.has(view)) {
+          controller.dispose();
+          readingAnswerViews.delete(view);
+        }
+      }
+      for (const view of views) {
+        if (!view?.containerEl || typeof view.addAction !== 'function') continue;
+        if (!readingAnswerViews.has(view)) readingAnswerViews.set(view, new MwbReadingAnswerController(view));
+        else readingAnswerViews.get(view).sync();
+      }
+    };
+    this.register?.(() => {
+      for (const controller of readingAnswerViews.values()) controller.dispose();
+      readingAnswerViews.clear();
+    });
     const assemblyService = mwbAssemblyService(this, {core:mwbAssemblyCore,
       compileMarkdown:mwbAssemblyMarkdown.compileMarkdown, parseYaml,
       previewFile:async (file, options = {}) => {
@@ -9512,6 +9734,18 @@ module.exports = class MathsemblePlugin extends Plugin {
       await this.app.workspace.revealLeaf(leaf);
     };
     this.addCommand({id:'open-knowledge-assembly',name:'打开选材与编排',callback:openAssembly});
+    this.addCommand({
+      id:'toggle-reading-answers', name:'阅读视图：显示／隐藏答案',
+      checkCallback:checking => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file || view.getMode?.() !== 'preview') return false;
+        if (!checking) {
+          syncReadingAnswerViews();
+          readingAnswerViews.get(view)?.toggle();
+        }
+        return true;
+      },
+    });
     this.addRibbonIcon('library','选材与编排',()=>void openAssembly());
     this.addCommand({id:'set-current-line-question-heading',name:'将当前行设为五级块标题',
       editorCallback:(editor)=>{
@@ -9615,6 +9849,11 @@ module.exports = class MathsemblePlugin extends Plugin {
     // A processor root may not yet be connected to a reading view: annotate its
     // marks immediately rather than returning early based on element.closest().
     this.registerMarkdownPostProcessor((element, context) => {
+      // Inactive panes can navigate too. Reset their mode before a new note's
+      // detached sections are attached, while retaining the current note's mode.
+      for (const controller of readingAnswerViews.values()) {
+        if (controller.path !== controller.view.file?.path) controller.sync();
+      }
       const fm = this.app.metadataCache.getCache(context.sourcePath)?.frontmatter;
       const question = isQuestion(fm);
       const mathMaterial = question || /^(?:handout|lesson|lecture|worksheet|讲义|试卷)$/i
@@ -9624,7 +9863,10 @@ module.exports = class MathsemblePlugin extends Plugin {
       // Native ==highlight== remains a regular Obsidian mark.
       const sectionSource = typeof context.getSectionInfo === 'function'
         ? context.getSectionInfo(element)?.text : null;
+      // Section info contains the whole note. Skip its parser when this DOM
+      // section has no marker, especially during long-note virtual rendering.
       const sectionHasAnswers = typeof sectionSource === 'string' &&
+        /[?!]\{/.test(element.textContent || '') &&
         (sectionSource.includes('?{') || sectionSource.includes('!{')) &&
         answerSlots(sectionSource).length > 0;
       if (reading) {
@@ -9638,12 +9880,10 @@ module.exports = class MathsemblePlugin extends Plugin {
         }
       }
       if (sectionHasAnswers) {
-        void Promise.resolve(finishRenderMath()).then(() => {
-          (element.ownerDocument?.defaultView || window).requestAnimationFrame(() => {
-            if (!element.isConnected) return;
-            mwbDecorateReadingTypedSlots(element, sectionSource);
-          });
-        }).catch(() => {});
+        // Reading View virtualizes offscreen sections and reuses their DOM on
+        // scroll. Decorate before measurement, even while a section is detached.
+        // Native math wrappers are moved intact and can finish typesetting later.
+        mwbDecorateReadingTypedSlots(element, sectionSource);
       }
       if (reading && element.querySelector('ul, ol')) {
         void Promise.resolve(finishRenderMath()).then(() => {
@@ -9672,6 +9912,7 @@ module.exports = class MathsemblePlugin extends Plugin {
       const leaves=this.app.workspace.getLeavesOfType?.('markdown') || [];
       syncQuestionViewClasses(leaves,
         file => this.app.metadataCache.getFileCache(file)?.frontmatter, isQuestion);
+      syncReadingAnswerViews();
       // CodeMirror tracks edits and slot visibility itself. An empty dispatch
       // for every metadata update would repeatedly refresh all open editors.
     };

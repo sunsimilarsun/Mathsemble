@@ -6,7 +6,7 @@ const names='handoutPlan,transformQuestion,studentSpacePlan,mwbTeacherMeasuremen
 const stub=`const mwbTestObsidian={Plugin:class{},Modal:class{constructor(app){this.app=app;}},Notice:class{},MarkdownRenderer:{},MarkdownView:class{},finishRenderMath:()=>Promise.resolve(),renderMath:()=>{throw Error('not an actual Obsidian MathJax host');}};const module={exports:{}};function require(name){return name==='obsidian'?mwbTestObsidian:{};}`;
 const load=stub+'\n'+js+'\nglobalThis.audit={'+names+'};globalThis.mockObsidian=mwbTestObsidian;';
 const ctx={console,Buffer};vm.runInNewContext(load,ctx);const a=ctx.audit;
-const nested='> [!note] 提示\n> 外层内容\n> > [!answer]- 标准答案\n> > SECRET_ANSWER\n> > [!solution]+ 解题思路\n> > SECRET_SOLUTION\n> 外层结束';
+const nested='> [!note] 提示\n> 外层内容\n> > [!answer]- 标准答案\n> > SECRET_ANSWER\n> > [!solution]- 解题思路\n> > SECRET_SOLUTION\n> 外层结束';
 test('F01 nested teacher content is removed with its subtree and never leaked',()=>{
  const source=nested;
  for(const solutionSpaces of [false,true]){
@@ -17,7 +17,7 @@ test('F01 nested teacher content is removed with its subtree and never leaked',(
   assert.doesNotMatch(a.transformQuestion(source,'student'),/SECRET/);
  }
  assert.match(a.handoutPlan(source,'teacher').markdown,/SECRET_ANSWER/);
- assert.match(a.handoutPlan(source,'teacher').markdown,/SECRET_SOLUTION/);
+ assert.match(a.handoutPlan(source,'teacher',{teacherVisibleCallouts:['solution']}).markdown,/SECRET_SOLUTION/);
  assert.doesNotMatch(a.handoutPlan(source,'teacher',{showSolution:false}).markdown,/SECRET_SOLUTION/);
  assert.equal(nested,source,'no source mutation');
 });
