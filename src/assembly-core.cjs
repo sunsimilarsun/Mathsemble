@@ -242,7 +242,34 @@ function defaultCourse() {
 }
 function defaultOutputSettings() {
   return {layout:'default',mode:'document',spaceSettings:{ratio:100,minimumCm:0},
-    solutionOptions:{solutionSpaces:false,showSolution:true}};
+    solutionOptions:{studentBlankCallouts:[],teacherVisibleCallouts:[]}};
+}
+function validateCalloutTypes(raw) {
+  if (!Array.isArray(raw) || Object.getPrototypeOf(raw) !== Array.prototype || raw.length > 128 ||
+      Reflect.ownKeys(raw).some(key => key !== 'length' && (typeof key !== 'string' || !/^\d+$/.test(key))) ||
+      Object.values(Object.getOwnPropertyDescriptors(raw)).some(descriptor => descriptor.get || descriptor.set))
+    throw new TypeError('Callout 类型列表无效');
+  const result = [], seen = new Set();
+  for (const type of raw) {
+    if (typeof type !== 'string' || !/^[a-z0-9_-]{1,64}$/.test(type)) throw new TypeError('Callout 类型无效');
+    if (type === 'answer') throw new TypeError('answer 的留白和显示已固定，无需加入类型列表');
+    if (seen.has(type)) throw new TypeError('Callout 类型重复');
+    seen.add(type); result.push(type);
+  }
+  return result;
+}
+function validateCalloutOptions(raw) {
+  safeObject(raw,'Callout 设置');
+  if (Object.prototype.hasOwnProperty.call(raw,'solutionSpaces') || Object.prototype.hasOwnProperty.call(raw,'showSolution')) {
+    exactFields(raw,['solutionSpaces','showSolution'],'旧解析设置');
+    if (typeof raw.solutionSpaces !== 'boolean' || typeof raw.showSolution !== 'boolean')
+      throw new TypeError('旧解析设置无效');
+    return {studentBlankCallouts:raw.solutionSpaces ? ['solution'] : [],
+      teacherVisibleCallouts:raw.showSolution ? ['solution'] : []};
+  }
+  exactFields(raw,['studentBlankCallouts','teacherVisibleCallouts'],'Callout 设置');
+  return {studentBlankCallouts:validateCalloutTypes(raw.studentBlankCallouts),
+    teacherVisibleCallouts:validateCalloutTypes(raw.teacherVisibleCallouts)};
 }
 function validateCourse(raw) {
   exactFields(raw,['teacher','student','time','subject','grade','title','objectives'],'课程信息');
@@ -259,16 +286,13 @@ function validateOutputSettings(raw) {
   exactFields(raw.spaceSettings,['ratio','minimumCm'],'留白设置');
   if (![50,75,90,100,110,125,150].includes(raw.spaceSettings.ratio) ||
       ![0,2,4].includes(raw.spaceSettings.minimumCm)) throw new TypeError('留白设置无效');
-  exactFields(raw.solutionOptions,['solutionSpaces','showSolution'],'解析设置');
-  if (typeof raw.solutionOptions.solutionSpaces !== 'boolean' || typeof raw.solutionOptions.showSolution !== 'boolean')
-    throw new TypeError('解析设置无效');
   return {layout:raw.layout,mode:raw.mode,
     spaceSettings:{ratio:raw.spaceSettings.ratio,minimumCm:raw.spaceSettings.minimumCm},
-    solutionOptions:{solutionSpaces:raw.solutionOptions.solutionSpaces,showSolution:raw.solutionOptions.showSolution}};
+    solutionOptions:validateCalloutOptions(raw.solutionOptions)};
 }
 function validatePlan(raw) {
   safeObject(raw,'组题方案');
-  if (![1,2].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
+  if (![1,2,3].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
   exactFields(raw,raw.schemaVersion === 1 ? ['schemaVersion','title','entries'] :
     ['schemaVersion','title','entries','course','output'],'组题方案');
   const title = boundedString(raw.title,'方案标题',500,false);
@@ -305,10 +329,10 @@ function validatePlan(raw) {
     }
     return result;
   });
-  return {schemaVersion:2,title,entries,course,output};
+  return {schemaVersion:3,title,entries,course,output};
 }
 function createPlan(title = '新讲义') {
-  return validatePlan({schemaVersion:2,title,entries:[],course:defaultCourse(),output:defaultOutputSettings()});
+  return validatePlan({schemaVersion:3,title,entries:[],course:defaultCourse(),output:defaultOutputSettings()});
 }
 function addItem(plan, item) {
   const next = validatePlan(plan);

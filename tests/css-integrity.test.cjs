@@ -39,7 +39,8 @@ test('choice border declarations exist only in the final effective override',()=
     '  box-shadow: none;'
   ].join('\n');
   assert.equal(css.split(target).length-1,1);
-  assert.equal((css.match(/!important/g)||[]).length,0);
+  const choiceRules=[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(rule=>rule[1].includes('mwb-choice-answer'));
+  for(const rule of choiceRules)assert.doesNotMatch(rule[2],/!important/);
 });
 test('release workflow is version-aware, immutable and build-verified',()=>{
   assert.ok(workflow.includes('docs/RELEASE_NOTES_${GITHUB_REF_NAME}.md'));

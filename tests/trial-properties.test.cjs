@@ -26,24 +26,27 @@ test('trial teacher reads trimmed author values and defaults to 孙老师 when a
   }
 });
 
-test('trial header reads author, exact titile and multiline objectives from the source snapshot', () => {
+test('trial header prioritizes ordinary title and reads author and multiline objectives from the source snapshot', () => {
   const markdown = note('subject: 高中数学\n年级: 高二\ntitile: 椭圆\nauthor:\n  - " 李老师 "\n  - 赵老师\n课题名称: 旧课题属性\n学生:\n  - 小甲\n  - 小乙\n上课时间: 周六 09:00\n教学目标:\n  - 判断焦点位置\n  - 求解标准方程\ntitle: 旧题目\ngrade: 高一');
   const modal = new PreviewModal({metadataCache:{getFileCache(){throw Error('Do not read stale cache');}}}, {}, file, markdown);
-  assert.deepEqual(plain(modal.trialDetails), {teacher:'李老师、赵老师',student:'小甲、小乙',time:'周六 09:00',subject:'高中数学',grade:'高二',title:'椭圆',objectives:'判断焦点位置\n求解标准方程'});
+  assert.deepEqual(plain(modal.trialDetails), {teacher:'李老师、赵老师',student:'小甲、小乙',time:'周六 09:00',subject:'高中数学',grade:'高二',title:'旧题目',objectives:'判断焦点位置\n求解标准方程'});
   assert.equal(modal.sourceMetadata.subject, '高中数学', 'Chinese list must not be appended to the preceding English field');
   assert.equal(modal.markdown, markdown, 'property defaulting must not rewrite the source');
   assert.ok(Object.isFrozen(modal.sourceMetadata));
 });
 
 test('empty primary fields and 待补 stay blank instead of reviving stale aliases', () => {
-  const details = defaults({年级:'待补',grade:'高一',titile:null,课题名称:'旧课题',title:'旧标题',subject:'',学科:'数学',
+  const details = defaults({年级:'待补',grade:'高一',titile:'旧兼容标题',课题名称:'旧课题',title:null,subject:'',学科:'数学',
     教学目标:[],objectives:['旧目标'],学生:{name:'不可自动转换'},上课时间:false});
   for (const key of ['student','time','subject','grade','title','objectives']) assert.equal(details[key], '', key);
   assert.equal(defaults({教学目标:['',null,'待补','解释图象']}).objectives, '解释图象');
-  for (const titile of [undefined, null, '', '  ', '待补']) {
-    assert.equal(defaults({titile,课题名称:'旧课题',title:'旧标题'}).title, '', 'only exact titile supplies the course title');
+  for (const title of [undefined, null, '', '  ', '待补']) {
+    assert.equal(defaults({title,课题名称:'旧课题',titile:'旧兼容标题'}).title, '', 'explicit empty primary title suppresses legacy fallbacks');
+    assert.equal(defaults({note_type:'handout',titile:title,title:'旧标题'}).title, '', 'generated course title may be explicitly empty');
   }
-  assert.equal(defaults({课题名称:'旧课题',title:'旧标题',Titile:'错误大小写'}).title, '');
+  assert.equal(defaults({课题名称:'课题名称回退',titile:'旧兼容标题'}).title, '课题名称回退');
+  assert.equal(defaults({Titile:'错误大小写'}).title, '');
+  assert.equal(defaults({note_type:'handout',titile:'独立课程标题',title:'讲义标题'}).title, '独立课程标题');
 });
 
 test('compatible property names are supported without inventing missing values', () => {
@@ -60,7 +63,7 @@ test('reading the latest source refreshes automatic fields and controls, preserv
   modal.trialInputs = new Map(Object.keys(modal.trialDetails).map(key=>[key,{value:modal.trialDetails[key]}]));
   modal.trialEditedFields.add('student'); modal.trialDetails.student=''; modal.trialInputs.get('student').value='';
   modal.trialEditedFields.add('subject'); modal.trialDetails.subject='手动学科'; modal.trialInputs.get('subject').value='手动学科';
-  latest = note('年级: 高二\ntitile: 新课题\nauthor: 新教师\n课题名称: 不应读取的旧属性\nsubject: 数学\n学生: 小乙\n教学目标:\n  - 分析变化');
+  latest = note('年级: 高二\ntitile: 旧兼容标题\nauthor: 新教师\n课题名称: 新课题\nsubject: 数学\n学生: 小乙\n教学目标:\n  - 分析变化');
   assert.equal(await modal.reloadSource(), true);
   assert.equal(modal.trialDetails.title, '新课题');
   assert.equal(modal.trialDetails.teacher, '新教师');

@@ -141,14 +141,14 @@ test('legacy plan loading does not write and explicit saving persists course and
   const legacy={schemaVersion:1,title:f.plan.title,entries:f.plan.entries};
   const original=JSON.stringify(legacy,null,2)+'\n';f.file(path,original);
   const loaded=await f.service.loadPlan(path);
-  assert.equal(loaded.schemaVersion,2);assert.equal(f.nodes.get(path).content,original);assert.equal(f.writes.length,0);
+  assert.equal(loaded.schemaVersion,3);assert.equal(f.nodes.get(path).content,original);assert.equal(f.writes.length,0);
   loaded.course={teacher:'李老师',student:'小甲',time:'周六',subject:'数学',grade:'高一',title:null,objectives:'目标一\n目标二'};
-  loaded.output={layout:'two-column',mode:'student',spaceSettings:{ratio:125,minimumCm:2},solutionOptions:{solutionSpaces:true,showSolution:false}};
+  loaded.output={layout:'two-column',mode:'student',spaceSettings:{ratio:125,minimumCm:2},solutionOptions:{studentBlankCallouts:['solution'],teacherVisibleCallouts:[]}};
   await f.service.savePlan(loaded,path);
   const restarted=createService(f.plugin,f.deps),reloaded=await restarted.loadPlan(path);
   assert.deepEqual(reloaded,loaded);
   assert.equal(reloaded.entries[0].entryId,legacy.entries[0].entryId);
-  assert.equal(JSON.parse(f.nodes.get(path).content).schemaVersion,2);
+  assert.equal(JSON.parse(f.nodes.get(path).content).schemaVersion,3);
   assert(f.writes.every(([,target])=>target.startsWith('Mathsemble/组题方案')));
   assert.equal(f.nodes.get('题库/题.md').content,q());
 });

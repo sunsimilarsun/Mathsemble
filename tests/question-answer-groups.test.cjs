@@ -27,7 +27,7 @@ test('group pagination does not change answer/solution edition semantics or sour
  const snapshot=src;
  assert.equal(context.plan(src,'student').solutionCount,1);
  assert.equal(context.plan(src,'student',{solutionSpaces:true}).solutionCount,2);
- assert.match(context.plan(src,'teacher').markdown,/先观察结构/);
+ assert.match(context.plan(src,'teacher',{teacherVisibleCallouts:['solution']}).markdown,/先观察结构/);
  assert.doesNotMatch(context.plan(src,'teacher',{showSolution:false}).markdown,/先观察结构/);
  assert.equal(src,snapshot);
 });

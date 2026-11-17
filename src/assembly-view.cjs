@@ -5,6 +5,7 @@
 module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
+  const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
   const typeNames = {choice:'单选',multiple_choice:'多选',fill_blank:'填空',true_false:'判断',short_answer:'解答',calculation:'计算',proof:'证明',comprehensive:'综合'};
   const labelOf = value => String(value ?? '').replace(/^\[\[|\]\]$/g, '').split('|').at(-1);
   const errorText = error => String(error?.message || error);
@@ -242,9 +243,15 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       for(const [key,input] of this.planSettingsInputs.output){
         const value=Object.prototype.hasOwnProperty.call(this.plan.output,key)?this.plan.output[key]:
           Object.prototype.hasOwnProperty.call(this.plan.output.spaceSettings,key)?this.plan.output.spaceSettings[key]:this.plan.output.solutionOptions[key];
+        const text=Array.isArray(value)?value.filter(type=>!calloutTypes.includes(type)).join(', '):String(value);
         if(input.type==='checkbox')input.checked=value;
-        else if(input.value!==String(value))input.value=String(value);
+        else if(input.value!==text)input.value=text;
         input.disabled=busy;
+      }
+      for(const [key,types] of this.planSettingsInputs.callouts){
+        for(const [type,input] of types){
+          input.checked=this.plan.output.solutionOptions[key].includes(type);input.disabled=busy;
+        }
       }
     }
     renderPlanSettings(parent) {
@@ -252,7 +259,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.el('summary',panel,'','课程与排版');
       const body=this.el('div',panel,'mwb-assembly-plan-settings-body');
       this.el('p',body,'mwb-assembly-muted','随“保存方案”保存；下次从此方案生成 A4 时恢复。');
-      const inputs={course:new Map(),output:new Map(),follow:null};this.planSettingsInputs=inputs;
+      const inputs={course:new Map(),output:new Map(),callouts:new Map(),follow:null};this.planSettingsInputs=inputs;
       const edit=change=>{
         if(this.planSettingsInputs!==inputs||!panel.isConnected)return;
         try{if(this.applyPlanSettings(change()))this.setStatus('课程与排版已修改，请保存方案。');}
@@ -283,13 +290,37 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       select('mode','默认版本',[['document','原文预览'],['student','学生版'],['teacher','教师版']]);
       select('ratio','等高留白比例',[50,75,90,100,110,125,150].map(value=>[value,value+'%']),'spaceSettings');
       select('minimumCm','最小留白高度',[0,2,4].map(value=>[value,value+' cm']),'spaceSettings');
-      for(const [key,label] of [['solutionSpaces','学生版解析留白'],['showSolution','教师版显示解析']]){
-        const wrapper=this.el('label',body,'mwb-assembly-check');
-        const input=this.el('input',wrapper);input.type='checkbox';input.dataset.outputField=key;
-        wrapper.appendChild(this.contentEl.ownerDocument.createTextNode(label));
+      this.el('p',body,'mwb-assembly-muted','带 - 的 Callout：学生版全部隐藏，answer 固定留白；教师版 answer 固定显示。其他类型默认不留白、不显示。带 + 或无标记的 Callout 始终显示。');
+      const choices=[['studentBlankCallouts','学生留白'],['teacherVisibleCallouts','教师显示']];
+      const table=this.el('table',body,'mwb-assembly-callout-options');
+      const head=this.el('tr',this.el('thead',table));
+      for(const label of ['Callout 类型','学生留白','教师显示'])this.el('th',head,'',label);
+      const rows=this.el('tbody',table);
+      for(const [key] of choices)inputs.callouts.set(key,new Map());
+      for(const type of calloutTypes){
+        const row=this.el('tr',rows);this.el('td',row,'',type);
+        for(const [key,label] of choices){
+          const input=this.el('input',this.el('td',row));input.type='checkbox';
+          input.dataset.calloutOption=key;input.dataset.calloutType=type;
+          input.setAttribute('aria-label',type+' '+label);
+          inputs.callouts.get(key).set(type,input);
+          input.addEventListener('change',()=>edit(()=>{
+            const types=this.plan.output.solutionOptions[key].filter(value=>value!==type);
+            if(input.checked)types.push(type);
+            return {course:this.plan.course,output:{...this.plan.output,
+              solutionOptions:{...this.plan.output.solutionOptions,[key]:types}}};
+          }));
+        }
+      }
+      for(const [key,label] of [['studentBlankCallouts','学生版其他类型留白'],['teacherVisibleCallouts','教师版其他类型显示']]){
+        const input=this.field(body,label,'input');input.type='text';input.dataset.outputField=key;
+        input.placeholder='例如 hint, remark；用逗号分隔';
+        input.setAttribute('aria-description','填写表格之外的 Callout 类型，多个类型以逗号分隔；无需填写 answer。');
         this.planSettingsInputs.output.set(key,input);
         input.addEventListener('change',()=>edit(()=>({course:this.plan.course,
-          output:{...this.plan.output,solutionOptions:{...this.plan.output.solutionOptions,[key]:input.checked}}})));
+          output:{...this.plan.output,solutionOptions:{...this.plan.output.solutionOptions,
+            [key]:[...this.plan.output.solutionOptions[key].filter(type=>calloutTypes.includes(type)),
+              ...input.value.trim().toLowerCase().split(/[\s,，、]+/).filter(Boolean)]}}})));
       }
       this.refreshPlanSettings();
     }

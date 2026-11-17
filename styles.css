@@ -231,7 +231,7 @@
  * Read/Live Preview: match native Obsidian .callout markup DIRECTLY, even for
  * notes lacking YAML or Mathsemble class annotations. The previous version
  * required .mwb-math-material/.mwb-answer-note and could miss regular notes.
- * Keep colors independent of teacher/student +/- blank-space projection.
+ * Keep colors independent of edition-specific - Callout projection.
  * Example questions remain ordinary Markdown; [!example] gets no special look.
  * Do not globally style mark, strong, body fonts, or MathJax containers.
  */
@@ -348,7 +348,7 @@
   display:inline-block; box-sizing:border-box; min-height:1em;
   border-bottom:1px solid #333; margin:0 0.22em; vertical-align:baseline;
 }
-/* Marker + and - control student/teacher projection in JavaScript only.
+/* Marker - controls student/teacher projection in JavaScript only; + is shared.
  * Do not apply visibility, fixed height, text recoloring or break-inside rules
  * based on callout names; long teacher solutions must remain fully measurable. */
 /* Headings must stay with following paragraphs. Do NOT break before all H2:
@@ -371,7 +371,7 @@
   flex: 1; min-width: 0; width: 0; height: 100%;
 }
 .mwb-print-document[data-mwb-layout="trial"] .mwb-paper.mwb-paper-trial {
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; padding-top: 20mm;
 }
 .mwb-print-document .mwb-trial-header { flex: none; margin: 0; padding: 0; color: #141414; }
 .mwb-print-document table.mwb-trial-table {
@@ -382,6 +382,10 @@
   border: 1px solid #888; padding: 2mm; height: 10mm;
   vertical-align: middle; color: #141414; background: #fff;
   white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+}
+.mwb-print-document .mwb-trial-table tr:nth-child(-n+2) > :is(th, td) {
+  height: 7.5mm; padding-block: 1.5mm; line-height: 1.15;
+  text-align: center;
 }
 .mwb-print-document .mwb-trial-table th { text-align: center; font-weight: 700; }
 .mwb-print-document .mwb-trial-table td { text-align: left; font-weight: 400; }
@@ -469,9 +473,9 @@
   right: 0;
   bottom: 7mm;
   text-align: center;
-  font-size: 8pt;
+  font-size: 9pt;
   line-height: 1;
-  color: #555;
+  color: #000;
 }
 
 /* Apply shared typography to reading only for confirmed item files. */
@@ -678,6 +682,42 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
   box-shadow: none;
 }
 
+/* Reading answer mode is local to one native preview, including virtualized
+ * sections inserted later. Source editing and exported documents have no class. */
+.mwb-reading-answer-toggle {
+  width: auto;
+  padding-inline: 8px;
+  white-space: nowrap;
+  font-size: var(--font-ui-small);
+}
+.mwb-reading-answer-toggle[aria-pressed="true"] {
+  color: var(--text-accent);
+}
+.mwb-reading-answer-toggle[hidden],
+[data-mode="source"] .mwb-reading-answer-toggle {
+  display: none;
+}
+.markdown-preview-view.mwb-reading-show-answers mark.mwb-hover-answer {
+  color: #bd2525;
+  -webkit-text-fill-color: #bd2525;
+}
+/* stylelint-disable-next-line selector-type-no-unknown -- Native MathJax answer nodes. */
+.markdown-preview-view.mwb-reading-show-answers mark.mwb-hover-answer :is(.math-inline, .math-block, mjx-container, .MathJax, .katex) {
+  visibility: visible;
+  color: #bd2525;
+}
+/* Native folding stores display:none inline. This scoped override preserves
+ * the native fold state so hiding answers restores the user's previous folds. */
+.markdown-preview-view.mwb-reading-show-answers .callout.is-collapsed > .callout-content {
+  display: block !important;
+}
+.markdown-preview-view.mwb-reading-show-answers .callout > .callout-title {
+  cursor: default;
+}
+.markdown-preview-view.mwb-reading-show-answers .callout > .callout-title .callout-fold {
+  visibility: hidden;
+}
+
 /* v0.1.5.0: opt-in metadata fields */
 .mwb-modal .mwb-meta-selector { margin:0 0 12px; padding:9px 12px; border:1px solid var(--mwb-ui-border); border-radius:6px; }
 .mwb-modal .mwb-meta-fields { display:flex; flex-wrap:wrap; gap:5px 13px; margin:6px 0; }
@@ -807,7 +847,12 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
 .mwb-modal .mwb-trial-fields label { display: flex; flex-direction: column; gap: 4px; }
 .mwb-modal .mwb-trial-fields :is(input, textarea) { box-sizing: border-box; width: 100%; min-width: 0; }
 .mwb-modal .mwb-trial-fields textarea { resize: vertical; }
-.mwb-modal .mwb-menu-panel .mwb-meta-selector { width: 100%; margin: 0; }
+.mwb-modal .mwb-menu-panel .mwb-meta-selector { box-sizing: border-box; width: 100%; margin: 0; }
+.mwb-modal .mwb-callout-options { width: 100%; }
+.mwb-modal .mwb-callout-options > small { display: block; margin-top: 4px; line-height: 1.5; color: var(--text-muted); }
+@media (max-width: 700px) {
+  .mwb-modal .mwb-settings-menu > .mwb-menu-panel { left: 0; right: auto; }
+}
 .mwb-modal .mwb-source-status { margin: 5px 0; }
 .mwb-modal button.mwb-source-action { margin: 0 0 8px 0; }
 .mwb-modal .mwb-risk-banner {
