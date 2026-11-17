@@ -2,7 +2,7 @@
 
 // Native Obsidian view. UI state belongs to the workspace; content writes are
 // delegated to explicit service actions. No source Markdown is mutated here.
-module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown}) {
+module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
   const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
@@ -63,7 +63,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           this.planPath = typeof state.planPath === 'string' ? state.planPath : null;
           this.dirty = !!state.dirty;
           if (state.filters && typeof state.filters === 'object') {
-            for (const key of ['kind','query','knowledge','subject','questionType','difficulty','tier','role','method','source']) {
+            for (const key of ['kind','query','knowledge','subject','questionType','difficulty','tier','role','method','source','familyId','familyState']) {
               if (typeof state.filters[key] === 'string') this.filters[key] = state.filters[key];
             }
           }
@@ -412,6 +412,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async onClose() {
       this.closed = true;
+      this.blueprintModal?.close();
+      this.familyModal?.close();
       this.clearArrangementDrag();
       this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
@@ -566,7 +568,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const menuActions=this.el('div',menuBody,'mwb-assembly-menu-actions');
       this.button(menuActions, '新建', () => {
         if (this.actionBusy || !this.confirmDiscard('new','新建')) return;
-        this.plan = core.createPlan(); this.planPath = null; this.dirty = false;
+        this.plan = core.createPlan(); this.planPath = null; this.dirty = false; this.pendingBlueprintRun=null;
         this.render(); this.setStatus('新建方案，可加入知识与题目。');
       });
       this.button(menuActions, '另存方案', () => this.saveCurrentPlan(true));
@@ -640,7 +642,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.advancedFilters=this.el('details',filters,'mwb-assembly-advanced-filters');
       this.el('summary',this.advancedFilters,'','更多筛选');
       const advanced=this.el('div',this.advancedFilters,'mwb-assembly-filter-grid');
-      const specs = [['subject','学段学科'],['questionType','题型'],['tier','教学分层'],['knowledge','知识标签'],['difficulty','难度'],['role','题目角色'],['method','方法'],['source','来源']];
+      const specs = [['subject','学段学科'],['questionType','题型'],['tier','教学分层'],['knowledge','知识标签'],['familyId','题族'],['familyState','题族状态'],['difficulty','难度'],['role','题目角色'],['method','方法'],['source','来源']];
       for (const [key,label] of specs) {
         const select = this.field(['difficulty','role','method','source'].includes(key)?advanced:basics,label,'select');
         select.addEventListener('change',()=>{this.filters[key]=select.value;this.limit=100;this.renderResults();});
@@ -653,9 +655,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     populateFilters() {
       if (!this.filterSelects) return;
+      const familyCounts=new Map();for(const item of this.index.items)if(item.kind==='question'&&item.familyState==='classified')familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
       for (const [key,select] of Object.entries(this.filterSelects)) {
         const values = new Set();
         for (const item of this.index.items) {
+          if(['familyId','familyState'].includes(key)&&item.kind!=='question')continue;
           const raw = key==='knowledge' ? item.knowledgeNodes : key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
           for (const value of Array.isArray(raw)?raw:[raw]) if (value !== null && value !== undefined && value !== '') values.add(String(value));
         }
@@ -667,7 +671,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         select.replaceChildren();this.el('option',select,'','不限').value='';
         for (const value of [...values].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}))) {
           const node = key==='knowledge' ? this.index.items.find(item=>item.kind==='knowledge'&&item.key===value) : null;
-          this.el('option',select,'',node ? node.title : key==='questionType' ? typeNames[value]||value : labelOf(value)).value=value;
+          const familyCount=key==='familyId'?familyCounts.get(value)||0:null;
+          this.el('option',select,'',node ? node.title : key==='familyId'?`${value}（${familyCount} 题）`:key==='familyState'?({classified:'已归族',unclassified:'未归族',invalid:'字段异常'}[value]||value):key==='questionType' ? typeNames[value]||value : labelOf(value)).value=value;
         }
         select.value=current;
       }
@@ -691,6 +696,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
             this.clearItemPreview();this.populateFilters();this.updateTabs();this.renderResults();
             this.switchPane('library');this.resultsDisclosure.open=true;this.resultsSummary.focus();
           });related.title='按此知识点筛选题目';
+        }
+      }
+      const issues=this.index.issues||[];
+      if(issues.length){
+        const details=this.el('details',this.tree,'mwb-assembly-index-issues');this.el('summary',details,'',`查看 ${issues.length} 项提示`);
+        for(const issue of issues.slice(0,100)){
+          const row=this.el('div',details,'mwb-assembly-index-issue');this.el('p',row,'',typeof issue==='string'?issue:issue.message||JSON.stringify(issue));
+          const paths=[...new Set([issue?.path,...(Array.isArray(issue?.paths)?issue.paths:[])].filter(path=>typeof path==='string'&&path))];
+          for(const path of paths.slice(0,10))this.button(row,path,()=>service.openSource(path),'mwb-assembly-text-button');
+          if(paths.length>10)this.el('span',row,'mwb-assembly-muted',`另有 ${paths.length-10} 个来源`);
         }
       }
     }
@@ -719,7 +734,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderActiveFilters() {
       if(!this.activeFilters)return;this.activeFilters.replaceChildren();
-      const labels={query:'搜索',subject:'学段学科',questionType:'题型',difficulty:'难度',tier:'教学分层',role:'题目角色',knowledge:'知识标签',method:'方法',source:'来源'};
+      const labels={query:'搜索',subject:'学段学科',questionType:'题型',difficulty:'难度',tier:'教学分层',role:'题目角色',knowledge:'知识标签',method:'方法',source:'来源',familyId:'题族',familyState:'题族状态'};
       for(const [key,label] of Object.entries(labels)){
         const value=String(this.filters[key]||'');if(!value)continue;
         const select=this.filterSelects?.[key];
@@ -752,6 +767,10 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.results.replaceChildren();
       const items=core.filterItems(this.index,this.filters);
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
+      if(this.filters.familyId&&core.familyGroups){
+        const family=core.familyGroups(this.index).groups.find(value=>value.familyId===this.filters.familyId);
+        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);this.resultsSummary.textContent+=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');}
+      }
       if(!items.length){
         const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再刷新素材。');
         if(Object.entries(this.filters).some(([key,value])=>key!=='kind'&&value))this.button(empty,'清除筛选',()=>{
@@ -773,6 +792,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const footer=this.el('div',row,'mwb-assembly-card-footer');
         this.el('div',footer,'mwb-assembly-result-path',item.path).title=item.path;
         this.button(footer,'查看全文',open,'mwb-assembly-card-open');
+        if(item.kind==='question'&&item.familyState==='classified')this.button(footer,'查看题族',()=>{
+          this.filters={kind:'question',query:'',familyId:item.familyId};this.limit=100;if(this.searchInput)this.searchInput.value='';this.populateFilters();this.renderResults();
+        },'mwb-assembly-card-family').title='查看题族 '+item.familyId;
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
@@ -837,6 +859,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       });
       const draw=this.button(tools,this.selection?'重新抽取':'生成候选',()=>this.drawSelection());
       draw.disabled=this.actionBusy||this.scanBusy;
+      if(openBlueprint){const blueprint=this.button(tools,'按配额组卷',()=>openBlueprint(this));blueprint.disabled=this.actionBusy||this.scanBusy;}
       this.applySelectionButton=this.button(tools,'加入编排',()=>this.applySelection(),'mod-cta');
       this.applySelectionButton.disabled=this.actionBusy||this.scanBusy||!this.selection?.items.length;
       this.applySelectionButton.hidden=!this.selection;
@@ -1239,6 +1262,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           const source=action(actions,'打开原文','source',()=>{if(row.isConnected)return service.openSource(item?.path||entry.sourcePath);});
           source.setAttribute('aria-label',`打开原文：${item?.path||entry.sourcePath}`);
         }
+        if(entry.kind==='question'&&openFamily){
+          const replace=action(actions,'同族换题','family',()=>{if(row.isConnected)openFamily(this,entry.entryId);});
+          replace.dataset.arrangementMutate='true';
+          replace.title=item?.familyState==='classified'?'选择同族题，保留位置、卷内标题和角色':'需有效 family_id；打开后可查看不能换题的原因';
+        }
         const remove=action(actions,entry.kind==='section'?'移除分区标题':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
         remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');
         if(section)remove.title='只移除分区标题，下方内容保留。';
@@ -1291,10 +1319,6 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
         const issues=index.issues?.length||0;
         this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);
-        if(issues){
-          const details=this.el('details',this.tree,'mwb-assembly-index-issues');this.el('summary',details,'',`查看 ${issues} 项提示`);
-          for(const issue of index.issues.slice(0,100))this.el('p',details,'',typeof issue==='string'?issue:issue.message||JSON.stringify(issue));
-        }
         return true;
       } catch(error){if(!this.closed&&generation===this.scanGeneration){this.indexState='error';this.setStatus(errorText(error),true);}}
       finally{if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}}
@@ -1316,13 +1340,23 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       return this.runAction(asNew ? '另存方案' : '保存方案', async () => {
         const snapshot = core.validatePlan(this.plan);
         const serialized = JSON.stringify(snapshot);
+        const pendingRun=this.pendingBlueprintRun;
         const path = await this.planSession.savePlan(snapshot, asNew ? undefined : this.planPath);
+        let recordPath,recordError;
+        if(pendingRun) {
+          try {
+            recordPath=await service.saveBlueprintRun(pendingRun,{planPath:path});
+            if(this.pendingBlueprintRun===pendingRun)this.pendingBlueprintRun=null;
+          } catch(error) {recordError=error;}
+        }
         if (this.closed) return;
         this.planPath = path;
         if (JSON.stringify(this.plan) === serialized) this.dirty = false;
         this.app.workspace.requestSaveLayout?.();
         await this.refreshPlans();
-        this.setStatus('方案已保存：' + path);
+        if(recordError)this.setStatus('方案已保存：'+path+'；配额记录尚未保存：'+errorText(recordError),true);
+        else if(recordPath)this.setStatus('方案已保存：'+path+'；配额与锁定记录已保存：'+recordPath);
+        else this.setStatus('方案已保存：' + path);
       });
     }
     async refreshPlans() {
@@ -1341,7 +1375,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(!this.confirmDiscard('load:'+path,'打开方案'))return;
       await this.runAction('打开方案',async()=>{
         const plan=core.validatePlan(await this.planSession.loadPlan(path));if(this.closed)return;
-        this.plan=plan;this.planPath=path;this.dirty=false;this.pendingDiscard=null;this.render();
+        this.plan=plan;this.planPath=path;this.dirty=false;this.pendingDiscard=null;this.pendingBlueprintRun=null;this.render();
         this.setStatus('方案已打开；缺失或变化的来源会在编排中标出。');this.app.workspace.requestSaveLayout?.();
       });
     }

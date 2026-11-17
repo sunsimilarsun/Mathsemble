@@ -13,6 +13,77 @@ const list = value => [...new Set((Array.isArray(value) ? value : typeof value =
 const normalizeRole = value => Object.hasOwn(ROLES,fold(value)) ? ROLES[fold(value)] : text(value);
 const basename = path => path.split('/').pop().replace(/\.md$/i, '');
 
+function normalizeFamilyMetadata(metadata = {}) {
+  // Identity uses the same trim-only, case-sensitive spelling as question IDs.
+  // Missing values never create a shared synthetic family or a parent link.
+  const field = value => {
+    if (value == null || typeof value === 'string' && !value.trim()) return {value:null,state:'empty'};
+    if (typeof value !== 'string' || value.length > 512 || /[\x00-\x1f\x7f]/.test(value)) return {value:null,state:'invalid'};
+    return {value:value.trim(),state:'valid'};
+  };
+  const family=field(metadata?.family_id),parent=field(metadata?.parent_id);
+  return {familyId:family.value,familyState:family.state==='empty'?'unclassified':family.state==='valid'?'classified':'invalid',
+    familyValid:family.state!=='invalid',parentId:parent.value,parentState:parent.state==='empty'?'none':parent.state==='valid'?'declared':'invalid',
+    parentValid:parent.state!=='invalid'};
+}
+
+function diagnoseParents(items,ids,issues) {
+  const next=new Map();
+  for (const item of items) {
+    item.parentRef={status:'none'};
+    if (item.kind!=='question') continue;
+    const issue=(code,message,extra={})=>issues.push({code,message,path:item.path,...extra});
+    if (!item.familyValid) issue('family-invalid','题族字段无效；应为非空文字或 null');
+    if (!item.parentValid) {item.parentRef={status:'invalid'};issue('parent-invalid','显式母题 ID 无效；应为非空文字或 null');continue;}
+    if (!item.parentId) continue;
+    const matches=ids.get(item.parentId) || [];
+    item.parentRef={id:item.parentId,status:'missing'};
+    if (item.id && item.id===item.parentId) {item.parentRef.status='self';issue('parent-self','母题 ID 指向题目自身',{parentId:item.parentId});continue;}
+    if (!matches.length) {issue('parent-missing','当前素材范围未找到显式母题 ID',{parentId:item.parentId});continue;}
+    if (matches.length>1 || matches[0].identityConflict) {
+      item.parentRef.status='ambiguous';issue('parent-ambiguous','显式母题 ID 对应多个文件',{parentId:item.parentId,paths:matches.map(parent=>parent.path)});continue;
+    }
+    const parent=matches[0];
+    if (parent.kind!=='question') {item.parentRef.status='non-question';issue('parent-non-question','显式母题 ID 指向知识笔记',{parentId:item.parentId,parentPath:parent.path});continue;}
+    item.parentRef={id:item.parentId,status:'resolved',parentKey:parent.key};next.set(item,parent);
+    if (item.familyId && parent.familyId && item.familyId!==parent.familyId)
+      issue('parent-cross-family','显式母题与本题声明了不同题族，请核对原文',{parentId:item.parentId,parentPath:parent.path});
+  }
+  // Each explicit relation has at most one target; iterative walks avoid a
+  // recursion limit on a long imported parent chain. A cycle is reported once.
+  const finished=new Set();
+  for (const start of next.keys()) {
+    if (finished.has(start)) continue;
+    const chain=[],positions=new Map();let current=start;
+    while (current && !finished.has(current) && !positions.has(current)) {
+      positions.set(current,chain.length);chain.push(current);current=next.get(current);
+    }
+    if (current && positions.has(current)) {
+      const cycle=chain.slice(positions.get(current));
+      for (const item of cycle) item.parentRef.status='cycle';
+      issues.push({code:'parent-cycle',message:'显式母题关系形成循环，请核对原文',paths:cycle.map(item=>item.path).sort()});
+    }
+    for (const item of chain) finished.add(item);
+  }
+}
+
+function familyGroups(index) {
+  const groups=new Map();let unclassifiedCount=0,invalidCount=0;
+  for (const item of index?.items || []) {
+    if (item.kind!=='question') continue;
+    const family=normalizeFamilyMetadata(item.metadata);
+    if (!family.familyValid) {invalidCount++;continue;}
+    if (!family.familyId) {unclassifiedCount++;continue;}
+    if (!groups.has(family.familyId)) groups.set(family.familyId,{familyId:family.familyId,count:0,memberKeys:[],tiers:{},roles:{},questionTypes:{}});
+    const group=groups.get(family.familyId);group.count++;group.memberKeys.push(item.key);
+    const count=(values,key)=>{if(key)Object.defineProperty(values,key,{value:(Object.hasOwn(values,key)?values[key]:0)+1,enumerable:true,writable:true,configurable:true});};
+    for (const tier of item.tiers || []) count(group.tiers,tier);
+    count(group.roles,item.role);count(group.questionTypes,item.questionType);
+  }
+  return {groups:[...groups.values()].sort((a,b)=>a.familyId<b.familyId?-1:a.familyId>b.familyId?1:0)
+    .map(group=>({...group,memberKeys:group.memberKeys.sort()})),unclassifiedCount,invalidCount};
+}
+
 function normalizePath(path) {
   const parts = [];
   for (const part of String(path).replace(/\\/g, '/').split('/')) {
@@ -97,7 +168,7 @@ function buildIndex(records) {
     const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
       ? {...record.metadata} : {};
     const id = text(metadata.id), tiers = normalizeTiers(metadata,record.kind);
-    const item = {key:'path:' + path, id, path, kind:record.kind,
+    const item = {key:'path:' + path, id, path, kind:record.kind,...normalizeFamilyMetadata(metadata),
       title:text(metadata.title) || basename(path), markdown:record.markdown, metadata,
       aliases:labels(metadata.aliases), knowledgeNodes:labels(metadata.knowledge_nodes),
       subject:text(metadata.subject), questionType:text(metadata.question_type || metadata.type),
@@ -116,6 +187,7 @@ function buildIndex(records) {
       issues.push({code:'duplicate-id',message:`ID ${id} 对应多个文件，请先处理冲突`,id,paths:matches.map(item => item.path)});
     }
   }
+  diagnoseParents(items,ids,issues);
   const nodes = items.filter(item => item.kind === 'knowledge');
   for (const item of items) {
     item.knowledgeRefs = item.knowledgeNodes.map(raw => {
@@ -138,7 +210,12 @@ function filterItems(index, filters = {}) {
   const nodes = items.filter(item => item.kind === 'knowledge');
   const options = value => (Array.isArray(value) ? value : [value]).filter(value => value !== null && value !== undefined && String(value).trim() !== '' && value !== 'all');
   const match = (filter, values) => !options(filter).length || options(filter).some(want => values.some(value => fold(value) === fold(want)));
+  const familyIds=(Array.isArray(filters.familyId)?filters.familyId:[filters.familyId]).filter(value=>value!=null&&!(typeof value==='string'&&!value.trim()));
+  const familyStates=options(filters.familyState);
   return items.filter(item => {
+    if (familyIds.length && (item.kind!=='question' || item.familyState!=='classified' ||
+      !familyIds.some(value=>typeof value==='string'&&value.trim()===item.familyId))) return false;
+    if (familyStates.length && (item.kind!=='question' || !familyStates.includes(item.familyState))) return false;
     if (!match(filters.kind,[item.kind]) || !match(filters.subject,[item.subject]) ||
       !match(filters.questionType,[item.questionType]) || !match(filters.difficulty,[item.difficulty]) ||
       !match(filters.tier,item.tiers) || !match(filters.role,[item.role]) ||
@@ -410,4 +487,4 @@ function resolvePlan(plan,index) {
 
 module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,getSections,moveSection,updateEntry,
   resolvePlan,validatePlan,defaultCourse,defaultOutputSettings,validateCourse,validateOutputSettings,
-  normalizeRole,parseKnowledgeRef,fingerprint};
+  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint};

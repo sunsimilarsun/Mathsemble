@@ -40,6 +40,94 @@ async function browserCases(){
     return {view,reading,counters};
   };
   const control=f=>{const controller=new api.Controller(f.view);controllers.push(controller);return controller;};
+  await check('escaped demonstrations in the whole note do not disable answers in a virtualized section',()=>{
+    const root=document.createElement('p');mount.append(root);
+    root.innerHTML='结果 ?{REAL_42}，选择 !{B}。';
+    const source=String.raw`语法演示 \?{literal}、\!{literal}。
+
+结果 ?{REAL_42}，选择 !{B}。`;
+    ok(api.decorate(root,source)===2,'unrelated escaped markers disabled the section');
+    ok(root.querySelector('.mwb-fill-answer')?.textContent==='REAL_42','fill answer not decorated');
+    ok(root.querySelector('.mwb-choice-answer')?.textContent==='B','choice answer not decorated');
+    ok(api.decorate(root,source)===0,'a repeated postprocessor wrapped answers twice');
+  });
+  await check('literal candidates remain visible while distinct parsed answers are decorated',()=>{
+    const root=document.createElement('div');mount.append(root);
+    root.innerHTML='<p>演示 ?{LITERAL}，实际 ?{REAL}。</p><p><code>?{CODE}</code> <a href="#x">!{LINK}</a></p><pre>?{HTML}</pre><p>?{UNLISTED}</p>';
+    const source=String.raw`演示 \?{LITERAL}，实际 ?{REAL}。`+
+      '\n\n`?{CODE}` [!{LINK}](#x)\n\n<pre>?{HTML}</pre>';
+    const count=api.decorate(root,source);
+    ok(count===1,'expected one parsed answer, got '+count+': '+root.innerHTML);
+    ok(root.querySelector('mark')?.textContent==='REAL','the real answer was not selected');
+    for(const marker of ['?{LITERAL}','?{CODE}','!{LINK}','?{HTML}','?{UNLISTED}'])
+      ok(root.textContent.includes(marker),'literal marker changed: '+marker);
+  });
+  await check('CRLF section source uses the same token offsets as the Markdown parser',()=>{
+    const root=document.createElement('p');mount.append(root);root.textContent='结果 ?{REAL}。';
+    const source=String.raw`演示 \?{LITERAL}。`+'\r\n'+Array(30).fill('说明').join('\r\n')+'\r\n结果 ?{REAL}。';
+    ok(api.decorate(root,source)===1,'CRLF offsets turned a parsed answer into a literal');
+    ok(root.querySelector('mark')?.textContent==='REAL','the real answer was not decorated');
+  });
+  await check('only identical ambiguous spellings are skipped, not the rest of the note',()=>{
+    const root=document.createElement('p');mount.append(root);
+    root.textContent='演示 ?{42}，实际 ?{42}，其他 ?{7}，选项 !{A}。';
+    const source=String.raw`演示 \?{42}，实际 ?{42}，其他 ?{7}，选项 !{A}。`;
+    ok(api.decorate(root,source)===2,'ambiguity affected an unrelated slot');
+    ok((root.textContent.match(/\?\{42\}/g)||[]).length===2,'an indistinguishable escaped token was hidden');
+    ok([...root.querySelectorAll('mark')].map(mark=>mark.textContent).join(',')==='7,A','wrong slots decorated');
+  });
+  await check('parsed visible HTML text remains an answer while attribute tokens remain literal',()=>{
+    const root=document.createElement('div');mount.append(root);
+    root.innerHTML='<div title="?{ATTRIBUTE}"><p>?{HTML}</p></div><p>?{ATTRIBUTE}</p>';
+    const source='<div title="?{ATTRIBUTE}"><p>?{HTML}</p></div>';
+    ok(api.decorate(root,source)===1,'visible HTML text no longer follows the typed-slot parser');
+    ok(root.querySelector('mark')?.textContent==='HTML','HTML attribute was treated as an answer');
+    ok(root.firstChild.getAttribute('title')==='?{ATTRIBUTE}'&&root.lastChild.textContent==='?{ATTRIBUTE}','an attribute marker escaped its protected source context');
+  });
+  await check('outer math answers retain their native MathJax nodes beside escaped examples',()=>{
+    const root=document.createElement('p');mount.append(root);
+    root.innerHTML='演示 ?{literal}，公式 ?{<span class="math-inline"><mjx-container><svg width="32" height="20"><text y="16">x=2</text></svg></mjx-container></span>}。';
+    const math=root.querySelector('mjx-container');
+    const source=String.raw`演示 \?{literal}，公式 ?{$x=2$}。`;
+    ok(api.decorate(root,source)===1,'outer math answer was disabled by an escaped text example');
+    ok(root.querySelector('mark')?.classList.contains('mwb-reading-answer-math'),'outer math lost its answer class');
+    ok(root.querySelector('mark mjx-container')===math,'native MathJax node was recreated');
+    ok(root.textContent.includes('?{literal}'),'escaped example changed');
+  });
+  await check('bold italic inline HTML and entities keep their existing reading decoration',()=>{
+    const root=document.createElement('p');mount.append(root);
+    root.innerHTML='?{<strong>42</strong>}，?{<em>text</em>}，?{<em>43</em>}，?{A&amp;B}，?{<span title="?{ATTRIBUTE}">44</span>}。';
+    const span=root.querySelector('span'),strong=root.querySelector('strong');
+    const source=String.raw`演示 \?{literal}。`+
+      '\n\n?{**42**}，?{*text*}，?{<em>43</em>}，?{A&amp;B}，?{<span title="?{ATTRIBUTE}">44</span>}。';
+    ok(api.decorate(root,source)===5,'inline formatting or an attribute marker suppressed a real answer');
+    ok(root.querySelector('mark strong')===strong&&root.querySelector('mark span')===span,'formatted native nodes were recreated');
+    ok(span.getAttribute('title')==='?{ATTRIBUTE}','attribute text was interpreted as another answer');
+  });
+  await check('escaped formatted and entity spellings remain ambiguous only for matching answers',()=>{
+    const root=document.createElement('p');mount.append(root);
+    root.innerHTML='演示 ?{<strong>42</strong>}、?{A&amp;B}，实际 ?{42}、?{A&amp;B}，其他 ?{OK}。';
+    const source=String.raw`演示 \?{**42**}、\?{A&amp;B}，实际 ?{42}、?{A&B}，其他 ?{OK}。`;
+    ok(api.decorate(root,source)===1,'an escaped formatted/entity token was mistaken for an answer');
+    ok(root.querySelector('mark')?.textContent==='OK','unrelated answer was suppressed');
+  });
+  await check('rendered entities are not decoded a second time or mistaken for inline HTML',()=>{
+    const root=document.createElement('p');mount.append(root);
+    root.innerHTML='演示 ?{&lt;b&gt;X&lt;/b&gt;}，实际 ?{X}，实体 ?{&amp;amp;}。';
+    const source=String.raw`演示 \?{&lt;b&gt;X&lt;/b&gt;}，实际 ?{X}，实体 ?{&amp;amp;}。`;
+    ok(api.decorate(root,source)===2,'rendered entity text was decoded twice');
+    ok([...root.querySelectorAll('mark')].map(mark=>mark.textContent).join(',')==='X,&amp;','an escaped encoded tag was hidden');
+    ok(root.textContent.includes('?{<b>X</b>}'),'the escaped example changed');
+  });
+  await check('candidates spanning protected DOM and formulas without an outer slot stay unchanged',()=>{
+    const root=document.createElement('div');mount.append(root);
+    root.innerHTML='<p>?{<a href="#x">LINK</a>}</p><p>?{<code>CODE</code>}</p><p><span class="math-inline"><mjx-container>?{2}</mjx-container></span>，真实 ?{OK}</p>';
+    const source='?{[LINK](#x)}\n\n?{`CODE`}\n\n$x=?{2}$，真实 ?{OK}';
+    ok(api.decorate(root,source)===1,'protected DOM or formula-internal tokens were decorated');
+    ok(root.querySelectorAll('mark').length===1&&root.querySelector('mark').textContent==='OK','wrong real candidate');
+    ok(root.querySelector('a')?.textContent==='LINK'&&root.querySelector('code')?.textContent==='CODE','protected nodes changed');
+    ok(root.querySelector('mjx-container')?.textContent==='?{2}','formula-internal syntax changed');
+  });
   await check('the action reveals text, MathJax and native collapsed content without changing fold state',()=>{
     const f=newView(),controller=control(f),mark=f.reading.querySelector('mark'),math=f.reading.querySelector('mjx-container'),content=f.reading.querySelector('.callout-content');
     ok(controller.button.textContent==='显示答案'&&controller.button.getAttribute('aria-pressed')==='false','initial action state');

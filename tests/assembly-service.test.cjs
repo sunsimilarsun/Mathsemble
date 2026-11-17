@@ -2,7 +2,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const core=require('../src/assembly-core.cjs');
-const {compileMarkdown}=require('../src/assembly-markdown.cjs');
+const {compileMarkdown,collectMediaDependencies}=require('../src/assembly-markdown.cjs');
 const createService=require('../src/assembly-service.cjs');
 const createView=require('../src/assembly-view.cjs');
 
@@ -42,7 +42,7 @@ function fixture(initial={},saved={}) {
     return nodes.get(prefix+target)||nodes.get(prefix+target+'.md')||null;
   }},workspace:{getLeaf:()=>({openFile:async node=>opened.push(node.path)})}},
     loadData:async()=>stored,saveData:async next=>{stored=JSON.parse(JSON.stringify(next));}};
-  const deps={core,compileMarkdown,parseYaml:JSON.parse,previewFile:async node=>previews.push(node.path)};
+  const deps={core,compileMarkdown,collectMediaDependencies,parseYaml:JSON.parse,previewFile:async node=>previews.push(node.path)};
   return {nodes,writes,reads,opened,previews,vault,plugin,deps,file,folder,trigger,listenerCount:()=>listeners.size,
     service:createService(plugin,deps),getStored:()=>stored,
     rename(oldPath,newPath){const node=nodes.get(oldPath);assert(node);nodes.delete(oldPath);node.parent.children=node.parent.children.filter(n=>n!==node);node.path=newPath;node.name=newPath.split('/').pop();node.basename=node.name.replace(/\.md$/,'');node.parent=folder(newPath.slice(0,newPath.lastIndexOf('/')));node.parent.children.push(node);nodes.set(newPath,node);trigger('rename',node,oldPath);},
@@ -275,6 +275,51 @@ test('virtual preview path never reads or overwrites an existing note and preser
   const saved=await f.service.exportMarkdown(f.plan,f.index);
   assert.notEqual(saved,path);assert.match(f.nodes.get(saved).content,/完整知识正文/);
   assert.equal(f.nodes.get(path).content,'用户自己的文件');
+});
+
+test('archive evidence clones captured sources and plan without re-reading or changing v3',async()=>{
+  const f=await temporaryPreview({}, {'题库/题.md':q('Q1','![图](图.png)\n\n题干 ?{42}。'),'题库/图.png':'binary'});
+  const reads=f.reads.length,writes=f.writes.length;
+  const evidence=f.preview.getEvidence();
+  assert.equal(f.reads.length,reads);assert.equal(f.writes.length,writes);
+  assert.equal(evidence.planSnapshot.schemaVersion,3);
+  assert.deepEqual(evidence.planSnapshot,f.plan);
+  assert.equal(evidence.compiledMarkdown,f.preview.markdown);
+  assert.equal(evidence.compiledPathContext,'Mathsemble/讲义/__preview__.md');
+  assert.deepEqual(evidence.sourceMap,f.preview.sourceMap);
+  assert.deepEqual(evidence.sources.map(Object.keys),[['path','markdown'],['path','markdown']]);
+  assert.deepEqual(evidence.declaredDependencies,[{sourcePath:'题库/题.md',syntax:'markdown-image',
+    rawTarget:'图.png',target:'图.png',status:'declared',reasonCode:''}]);
+  f.nodes.get('题库/题.md').content=q('Q1','后来修改 ![新图](missing.png)');
+  f.plan.title='后来修改方案';
+  evidence.sources[1].markdown='调用方篡改';evidence.sourceMap[0].path='篡改.md';
+  evidence.planSnapshot.entries.length=0;evidence.declaredDependencies[0].target='篡改.png';
+  const again=f.preview.getEvidence();
+  assert.equal(f.reads.length,reads,'getEvidence does not perform a freshness check');
+  assert.equal(again.sources[1].markdown,q('Q1','![图](图.png)\n\n题干 ?{42}。'));
+  assert.equal(again.planSnapshot.title,'集合复习');assert.equal(again.planSnapshot.entries.length,2);
+  assert.equal(again.sourceMap[0].path,'知识/集合.md');assert.equal(again.declaredDependencies[0].target,'图.png');
+  assert(!Object.hasOwn(again.planSnapshot,'declaredDependencies'));
+  await assert.rejects(f.preview.assertCurrent(),/来源/);
+});
+
+test('archive evidence refuses to silently omit declarations when the collector was not injected',async()=>{
+  const f=await prepared();let preview;
+  const service=createService(f.plugin,{...f.deps,collectMediaDependencies:undefined,
+    previewFile:async(_file,options)=>{preview=options.assemblyPreview;}});
+  await service.preview(f.plan,f.index);
+  assert.throws(()=>preview.getEvidence(),/收集器未配置/);
+});
+
+test('nested generated Markdown and archive source copies are excluded from scanning and invalidation',async()=>{
+  const f=await prepared({'题库/Mathsemble/归档/run/sources/original.md':q('Q1'),
+    '知识/Mathsemble/归档/run/compiled.md':k('K1'),'题库/ExamExports/run/source.md':q('Q1')});
+  assert.deepEqual(f.index.items.map(row=>row.id).sort(),['K1','Q1']);
+  assert(!f.reads.some(path=>path.includes('/Mathsemble/')||path.includes('/ExamExports/')));
+  let changed=0;const guard=f.service.beginSourceCheck(roots,()=>changed++);
+  f.trigger('modify',f.nodes.get('题库/Mathsemble/归档/run/sources/original.md'));
+  f.trigger('create',f.nodes.get('知识/Mathsemble/归档/run/compiled.md'));
+  assert.equal(changed,0);assert.equal(guard.isCurrent(),true);guard.dispose();
 });
 
 test('temporary source verification rejects changed, deleted, renamed, replaced and conflicted origins without writes',async t=>{

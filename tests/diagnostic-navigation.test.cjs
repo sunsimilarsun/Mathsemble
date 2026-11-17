@@ -156,8 +156,13 @@ async function browserCases() {
     const contentEl=decorate(document.createElement('section'));contentEl.className='mwb-modal';document.body.append(contentEl);
     const page=contentEl.createDiv({cls:'mwb-page'});
     const rendered=page.createEl('main',{cls:'mwb-typography mwb-print-document'});
+    // No Vault or byte capture in this diagnostic fixture: keep bad image URLs
+    // intact so the real render guard and navigation retain their original job.
+    const mediaSession={read:async url=>url,manifest:()=>({resources:[],omissions:[],warnings:[]}),
+      assertLocalCurrent:async()=>true,recordOmission(){},dispose(){}};
     return Object.assign(Object.create(qa.PreviewModal.prototype),{contentEl,page,rendered,generation:2,sourceRevision:1,mode:'student',
       file:{path:'private/SOURCE_SECRET.md',extension:'md'},markdown,closed:false,renderBusy:false,
+      mediaSession,ownsMediaSession:false,mediaNodes:new WeakMap(),
       diagnosticItems:[],diagnosticTargets:new Map(),diagnosticSequence:0,layout:'default',
       renderWarnings:[],status:contentEl.createDiv(),updateCompactStatus(){},
       diagnosticResourceSummary:contentEl.createDiv(),diagnosticResourceDetails:contentEl.createDiv()});

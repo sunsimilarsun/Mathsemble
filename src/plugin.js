@@ -1236,17 +1236,59 @@ function mwbValidateTypedAnswers(markdown){
 // Reading View retains MathJax DOM, and replaces only visible typed markers.
 // DOM replacement never mutates a source note or the student's exported HTML.
 function mwbDecorateReadingTypedSlots(element,source){
+  source=String(source).replace(/\r\n?/g,'\n');
   const expected=mwbTypedSlots(source);
   if(!expected.length||!element?.ownerDocument||element.closest?.('.mwb-print-document'))return 0;
-  // Obsidian removes Markdown escape backslashes; avoid ambiguous mixed cases.
-  if(/\\[?!]\{/.test(source))return 0;
+  // Section info can contain the whole note. An escaped demonstration elsewhere
+  // must not disable every answer. Match only parsed source tokens, and leave a
+  // particular visible spelling alone when a literal occurrence is ambiguous.
+  const doc=element.ownerDocument;
+  const mathSelector='.math-inline,.math-block,mjx-container,.MathJax,.katex';
+  const protectedSelector='a,code,pre,script,style,textarea';
+  const spelling=raw=>{
+    const text=String(raw)
+      .replace(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:\\.|[^$\\\n])+(?<!\\)\$/g,'\ufffc')
+      .replace(/\\([\\`*{}\[\]()#+\-.!_>?])/g,'$1');
+    // An inert template decodes entities and inline formatting without running
+    // a second Markdown renderer or inserting source-authored HTML into the view.
+    const template=doc.createElement('template');template.innerHTML=text;
+    let value=template.content.textContent;
+    for(let pass=0;pass<4;pass++){
+      const next=value.replace(/(\*\*|__|~~)(?=\S)([\s\S]*?\S)\1/g,'$2')
+        .replace(/(\*|_)(?=\S)([\s\S]*?\S)\1/g,'$2');
+      if(next===value)break;
+      value=next;
+    }
+    return value.replace(/\s+/g,' ');
+  };
+  const key=(kind,raw)=>kind+'\0'+spelling(raw);
+  const allowed=new Set(expected.filter(slot=>!slot.inMath).map(slot=>key(slot.kind,slot.raw)));
+  const literal=new Set();
+  let sourceSlot=0;
+  for(const match of String(source).matchAll(/[?!]\{/g)){
+    const from=match.index;
+    while(sourceSlot<expected.length&&expected[sourceSlot].to<=from)sourceSlot++;
+    if(expected[sourceSlot]&&from>=expected[sourceSlot].from&&from<expected[sourceSlot].to)continue;
+    let depth=1,to=from+2;
+    for(;to<source.length&&source[to]!=='\n';to++){
+      if(source[to]==='\\'){to++;continue;}
+      if(source[to]==='{')depth++;
+      else if(source[to]==='}'&&--depth===0)break;
+    }
+    if(depth===0)literal.add(key(match[0][0]==='?'?'fill':'choice',source.slice(from+2,to)));
+  }
+  const visibleSpelling=node=>{
+    if(node.nodeType===3)return node.data;
+    if(node.nodeType===1&&node.matches(mathSelector))return '\ufffc';
+    return Array.from(node.childNodes||[],visibleSpelling).join('');
+  };
   const selector='p,li,td,th,h1,h2,h3,h4';
   // Postprocessor roots may themselves be a paragraph, list item or heading.
-  const doc=element.ownerDocument,blocks=[...(element.matches?.(selector)?[element]:[]),...element.querySelectorAll(selector)];let count=0;
+  const blocks=[...(element.matches?.(selector)?[element]:[]),...element.querySelectorAll(selector)];let count=0;
   for(const block of blocks){
     const walker=doc.createTreeWalker(block,4),nodes=[];let node;
     while((node=walker.nextNode())){
-      if(node.parentElement?.closest('a,code,pre,script,style,textarea,.math-inline,.math-block,mjx-container,.mwb-hover-answer'))continue;
+      if(node.parentElement?.closest(protectedSelector+','+mathSelector+',.mwb-hover-answer'))continue;
       if(node.parentElement?.closest(selector)!==block)continue;
       nodes.push(node);
     }
@@ -1264,6 +1306,10 @@ function mwbDecorateReadingTypedSlots(element,source){
       const a=positions[c.start],b=positions[c.end-1];if(!a||!b)continue;
       try{
         const range=doc.createRange();range.setStart(a.n,a.i);range.setEnd(b.n,b.i+1);
+        const preview=range.cloneContents();
+        if(preview.querySelector(protectedSelector))continue;
+        const candidate=c.kind+'\0'+visibleSpelling(preview).slice(2,-1).replace(/\s+/g,' ');
+        if(!allowed.has(candidate)||literal.has(candidate))continue;
         const fragment=range.extractContents(),walk=doc.createTreeWalker(fragment,4),texts=[];let t;
         while((t=walk.nextNode()))texts.push(t);
         if(!texts.length)continue;
@@ -3620,7 +3666,7 @@ function createExportResources(options = {}) {
       if (!entry.pending) remove(key);
     }
   };
-  const read = async (url, relativeBase = base) => {
+  const read = async (url, relativeBase = base, extra = {}) => {
     check();
     if (/^data:/i.test(url)) return url;
     // Preserve query/fragment semantics; relative paths from different source
@@ -3638,7 +3684,7 @@ function createExportResources(options = {}) {
     const entry = {pending:true, chars:0, promise:null};
     entry.promise = Promise.resolve().then(() => {
       check();
-      return reader(resolved, relativeBase, {signal:options.signal,
+      return reader(resolved, relativeBase, {...extra, signal:options.signal,
         timeoutMs:Math.max(1, Math.min(perResourceMs, totalMs - (performance.now() - started)))});
     }).then(value => {
       check();
@@ -3811,11 +3857,13 @@ async function exportHtml(bodyNode, title, typographyCss, doc = bodyNode.ownerDo
   const requestedLayout = options.layout || bodyNode.getAttribute?.('data-mwb-layout');
   const layout = ['two-column', 'trial'].includes(requestedLayout) ? requestedLayout : 'default';
   if (layout === 'trial') clone.prepend(mwbCreateTrialHeader(doc, options.trialDetails));
-  const resources = createExportResources({...options, base:doc.baseURI});
+  const resources = createExportResources({...options, base:doc.baseURI,
+    ...(options.resourceSession ? {reader:(url, base, readOptions) => options.resourceSession.read(url,base,readOptions)} : {})});
   try {
     resources.check();
     await inlineImages(clone, resources.read, options.allowIncompleteImages === true, options.signal);
-    const mathCss = await inlineFontCss(extractMathCss(doc, bodyNode), resources.read, options.signal);
+    const mathCss = await inlineFontCss(extractMathCss(doc, bodyNode),
+      (url,base) => resources.read(url,base,{kind:'font'}), options.signal);
     resources.check();
     const html=assembleHtml(clone.innerHTML, title, typographyCss, mathCss);
     options.onResourceReport?.(resources.snapshot());
@@ -3826,6 +3874,8 @@ async function exportHtml(bodyNode, title, typographyCss, doc = bodyNode.ownerDo
   } finally { resources.dispose(); }
 }
 
+exportHtml.toDataUrl = toDataUrl;
+exportHtml.mimeFor = mimeFor;
 module.exports = { sanitizeClone, mimeFor, toDataUrl, createExportResources, inlineImages, extractMathCss, inlineFontCss, assembleHtml, exportHtml };
 
 return module.exports; })();
@@ -5212,6 +5262,77 @@ const list = value => [...new Set((Array.isArray(value) ? value : typeof value =
 const normalizeRole = value => Object.hasOwn(ROLES,fold(value)) ? ROLES[fold(value)] : text(value);
 const basename = path => path.split('/').pop().replace(/\.md$/i, '');
 
+function normalizeFamilyMetadata(metadata = {}) {
+  // Identity uses the same trim-only, case-sensitive spelling as question IDs.
+  // Missing values never create a shared synthetic family or a parent link.
+  const field = value => {
+    if (value == null || typeof value === 'string' && !value.trim()) return {value:null,state:'empty'};
+    if (typeof value !== 'string' || value.length > 512 || /[\x00-\x1f\x7f]/.test(value)) return {value:null,state:'invalid'};
+    return {value:value.trim(),state:'valid'};
+  };
+  const family=field(metadata?.family_id),parent=field(metadata?.parent_id);
+  return {familyId:family.value,familyState:family.state==='empty'?'unclassified':family.state==='valid'?'classified':'invalid',
+    familyValid:family.state!=='invalid',parentId:parent.value,parentState:parent.state==='empty'?'none':parent.state==='valid'?'declared':'invalid',
+    parentValid:parent.state!=='invalid'};
+}
+
+function diagnoseParents(items,ids,issues) {
+  const next=new Map();
+  for (const item of items) {
+    item.parentRef={status:'none'};
+    if (item.kind!=='question') continue;
+    const issue=(code,message,extra={})=>issues.push({code,message,path:item.path,...extra});
+    if (!item.familyValid) issue('family-invalid','题族字段无效；应为非空文字或 null');
+    if (!item.parentValid) {item.parentRef={status:'invalid'};issue('parent-invalid','显式母题 ID 无效；应为非空文字或 null');continue;}
+    if (!item.parentId) continue;
+    const matches=ids.get(item.parentId) || [];
+    item.parentRef={id:item.parentId,status:'missing'};
+    if (item.id && item.id===item.parentId) {item.parentRef.status='self';issue('parent-self','母题 ID 指向题目自身',{parentId:item.parentId});continue;}
+    if (!matches.length) {issue('parent-missing','当前素材范围未找到显式母题 ID',{parentId:item.parentId});continue;}
+    if (matches.length>1 || matches[0].identityConflict) {
+      item.parentRef.status='ambiguous';issue('parent-ambiguous','显式母题 ID 对应多个文件',{parentId:item.parentId,paths:matches.map(parent=>parent.path)});continue;
+    }
+    const parent=matches[0];
+    if (parent.kind!=='question') {item.parentRef.status='non-question';issue('parent-non-question','显式母题 ID 指向知识笔记',{parentId:item.parentId,parentPath:parent.path});continue;}
+    item.parentRef={id:item.parentId,status:'resolved',parentKey:parent.key};next.set(item,parent);
+    if (item.familyId && parent.familyId && item.familyId!==parent.familyId)
+      issue('parent-cross-family','显式母题与本题声明了不同题族，请核对原文',{parentId:item.parentId,parentPath:parent.path});
+  }
+  // Each explicit relation has at most one target; iterative walks avoid a
+  // recursion limit on a long imported parent chain. A cycle is reported once.
+  const finished=new Set();
+  for (const start of next.keys()) {
+    if (finished.has(start)) continue;
+    const chain=[],positions=new Map();let current=start;
+    while (current && !finished.has(current) && !positions.has(current)) {
+      positions.set(current,chain.length);chain.push(current);current=next.get(current);
+    }
+    if (current && positions.has(current)) {
+      const cycle=chain.slice(positions.get(current));
+      for (const item of cycle) item.parentRef.status='cycle';
+      issues.push({code:'parent-cycle',message:'显式母题关系形成循环，请核对原文',paths:cycle.map(item=>item.path).sort()});
+    }
+    for (const item of chain) finished.add(item);
+  }
+}
+
+function familyGroups(index) {
+  const groups=new Map();let unclassifiedCount=0,invalidCount=0;
+  for (const item of index?.items || []) {
+    if (item.kind!=='question') continue;
+    const family=normalizeFamilyMetadata(item.metadata);
+    if (!family.familyValid) {invalidCount++;continue;}
+    if (!family.familyId) {unclassifiedCount++;continue;}
+    if (!groups.has(family.familyId)) groups.set(family.familyId,{familyId:family.familyId,count:0,memberKeys:[],tiers:{},roles:{},questionTypes:{}});
+    const group=groups.get(family.familyId);group.count++;group.memberKeys.push(item.key);
+    const count=(values,key)=>{if(key)Object.defineProperty(values,key,{value:(Object.hasOwn(values,key)?values[key]:0)+1,enumerable:true,writable:true,configurable:true});};
+    for (const tier of item.tiers || []) count(group.tiers,tier);
+    count(group.roles,item.role);count(group.questionTypes,item.questionType);
+  }
+  return {groups:[...groups.values()].sort((a,b)=>a.familyId<b.familyId?-1:a.familyId>b.familyId?1:0)
+    .map(group=>({...group,memberKeys:group.memberKeys.sort()})),unclassifiedCount,invalidCount};
+}
+
 function normalizePath(path) {
   const parts = [];
   for (const part of String(path).replace(/\\/g, '/').split('/')) {
@@ -5296,7 +5417,7 @@ function buildIndex(records) {
     const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
       ? {...record.metadata} : {};
     const id = text(metadata.id), tiers = normalizeTiers(metadata,record.kind);
-    const item = {key:'path:' + path, id, path, kind:record.kind,
+    const item = {key:'path:' + path, id, path, kind:record.kind,...normalizeFamilyMetadata(metadata),
       title:text(metadata.title) || basename(path), markdown:record.markdown, metadata,
       aliases:labels(metadata.aliases), knowledgeNodes:labels(metadata.knowledge_nodes),
       subject:text(metadata.subject), questionType:text(metadata.question_type || metadata.type),
@@ -5315,6 +5436,7 @@ function buildIndex(records) {
       issues.push({code:'duplicate-id',message:`ID ${id} 对应多个文件，请先处理冲突`,id,paths:matches.map(item => item.path)});
     }
   }
+  diagnoseParents(items,ids,issues);
   const nodes = items.filter(item => item.kind === 'knowledge');
   for (const item of items) {
     item.knowledgeRefs = item.knowledgeNodes.map(raw => {
@@ -5337,7 +5459,12 @@ function filterItems(index, filters = {}) {
   const nodes = items.filter(item => item.kind === 'knowledge');
   const options = value => (Array.isArray(value) ? value : [value]).filter(value => value !== null && value !== undefined && String(value).trim() !== '' && value !== 'all');
   const match = (filter, values) => !options(filter).length || options(filter).some(want => values.some(value => fold(value) === fold(want)));
+  const familyIds=(Array.isArray(filters.familyId)?filters.familyId:[filters.familyId]).filter(value=>value!=null&&!(typeof value==='string'&&!value.trim()));
+  const familyStates=options(filters.familyState);
   return items.filter(item => {
+    if (familyIds.length && (item.kind!=='question' || item.familyState!=='classified' ||
+      !familyIds.some(value=>typeof value==='string'&&value.trim()===item.familyId))) return false;
+    if (familyStates.length && (item.kind!=='question' || !familyStates.includes(item.familyState))) return false;
     if (!match(filters.kind,[item.kind]) || !match(filters.subject,[item.subject]) ||
       !match(filters.questionType,[item.questionType]) || !match(filters.difficulty,[item.difficulty]) ||
       !match(filters.tier,item.tiers) || !match(filters.role,[item.role]) ||
@@ -5609,7 +5736,7 @@ function resolvePlan(plan,index) {
 
 module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,getSections,moveSection,updateEntry,
   resolvePlan,validatePlan,defaultCourse,defaultOutputSettings,validateCourse,validateOutputSettings,
-  normalizeRole,parseKnowledgeRef,fingerprint};
+  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint};
 
 return module.exports; })();
 const mwbAssemblyMarkdown = (() => { const module = {exports:{}};
@@ -5634,6 +5761,28 @@ function escapedAt(text, index) {
   while (index > 0 && text[--index] === '\\') n++;
   return n % 2 === 1;
 }
+function markdownLinkBounds(text, opening) {
+  let end = opening+1, depth = 1;
+  for (;end<text.length;end++) {
+    if (escapedAt(text,end)) continue;
+    if (text[end] === '[') depth++;
+    else if (text[end] === ']' && --depth === 0) break;
+  }
+  if (text[end+1] !== '(') return null;
+  const start = end+2;
+  let close = start, nesting = 1, angle = false, quote = '';
+  for (;close<text.length;close++) {
+    if (escapedAt(text,close)) continue;
+    const c = text[close];
+    if (quote) { if (c === quote) quote = ''; continue; }
+    if (c === '<' && !text.slice(start,close).trim()) angle = true;
+    else if (c === '>' && angle) angle = false;
+    else if (!angle && /["']/.test(c) && /\s/.test(text[close-1]||'')) quote = c;
+    else if (!angle && c === '(') nesting++;
+    else if (!angle && c === ')' && --nesting === 0) break;
+  }
+  return close < text.length ? {end,start,close} : null;
+}
 function makeProtector(source) {
   let marker = 'MWBPROTECTEDTOKEN';
   while (source.includes(marker)) marker += 'X';
@@ -5654,7 +5803,7 @@ function makeProtector(source) {
 
 // Code and math are literal throughout link and heading rewriting. Keep quoted
 // code fences too: answer Callouts commonly contain fenced examples.
-function protectLiterals(source, protector) {
+function protectLiterals(source, protector, options = {}) {
   const lines = source.split('\n');
   const result = [];
   let listContext = false;
@@ -5678,8 +5827,27 @@ function protectLiterals(source, protector) {
     } else result.push(lines[i]);
   }
   const text = result.join('\n');
+  const destinations = new Map();
+  if (options.protectLinkDestinations) {
+    for (const match of text.matchAll(/^((?: {0,3}>[ \t]?)* {0,3}\[[^\]\n]+\]:[ \t]*)([^\n]+)/gm))
+      destinations.set(match.index+match[1].length,match.index+match[0].length);
+  }
   let out = '', i = 0;
   while (i < text.length) {
+    if (destinations.has(i)) {
+      const end = destinations.get(i);
+      out += protector.save(text.slice(i,end)); i = end; continue;
+    }
+    if (options.protectLinkDestinations && text[i] === '[' && !escapedAt(text,i) && text[i+1] !== '[') {
+      const link = markdownLinkBounds(text,i);
+      if (link && link.start < link.close) destinations.set(link.start,link.close);
+    }
+    if (options.protectLinkDestinations && text.startsWith('[[',i) && !escapedAt(text,i)) {
+      const end = text.indexOf(']]',i+2);
+      if (end >= 0 && !text.slice(i,end).includes('\n')) {
+        out += '[['+protector.save(text.slice(i+2,end))+']]';i = end+2;continue;
+      }
+    }
     let end = -1;
     if (text.startsWith('<!--', i)) {
       const close = text.indexOf('-->', i + 4);
@@ -5693,6 +5861,13 @@ function protectLiterals(source, protector) {
         const match = close.exec(text);
         if (!match) throw new Error('源笔记 HTML 字面块未闭合');
         end = match.index + match[0].length;
+      } else if (options.protectHtmlTags) {
+        const tag = /^<\/?[A-Za-z][\w:-]*(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>/.exec(text.slice(i));
+        if (tag) {
+          const token = protector.save(tag[0]);
+          options.onHtmlTag?.(token,tag[0]);
+          out += token; i += tag[0].length; continue;
+        }
       }
     } else if (text[i] === '`' && !escapedAt(text, i)) {
       const ticks = /^`+/.exec(text.slice(i))[0];
@@ -5719,6 +5894,130 @@ function protectLiterals(source, protector) {
     else out += text[i++];
   }
   return out;
+}
+
+// Collect declarations from a captured note, without resolving files, reading
+// the vault, fetching URLs, or requiring the note to be an assembly input.
+function collectMediaDependencies(markdown, sourcePath = '') {
+  const dependencies = [], issues = [];
+  const htmlEntities = value => String(value).replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (all, entity) => {
+    if (entity[0] !== '#') return {amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'}[entity.toLowerCase()];
+    const n = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2),16) : Number(entity.slice(1));
+    return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '\ufffd';
+  });
+  const add = (rawTarget, syntax, options = {}) => {
+    const raw = String(rawTarget || '');
+    let target = syntax === 'html-image' || syntax === 'html-embed' ? htmlEntities(raw) : raw;
+    target = target.trim();
+    if (syntax !== 'wiki-embed') target = target.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~ ])/g,'$1');
+    if (syntax !== 'wiki-embed' && !isExternal(target)) {
+      const parts = splitTarget(target);
+      try { parts.path = decodeURIComponent(parts.path); } catch (_) { /* Literal percent. */ }
+      target = parts.path + parts.suffix;
+    }
+    let status = options.status || 'declared', reasonCode = options.reasonCode || '';
+    if (!target && !reasonCode) { status = 'unresolved'; reasonCode = 'empty-target'; }
+    if (syntax === 'wiki-embed' && !reasonCode) {
+      const ext = /\.([^.\/]+)$/.exec(splitTarget(target).path)?.[1].toLowerCase();
+      if (!ext) { status = 'unresolved'; reasonCode = 'wiki-target-needs-resolution'; }
+      else if (!/^(?:png|jpe?g|gif|webp|svg|bmp|avif|ico)$/.test(ext)) {
+        status = 'unsupported'; reasonCode = 'unsupported-wiki-embed';
+      }
+    }
+    const row = {sourcePath:String(sourcePath || ''),syntax,rawTarget:raw,target,status,reasonCode};
+    dependencies.push(row);
+    if (status !== 'declared') issues.push({...row});
+  };
+  let text, protector;
+  const tags = new Map();
+  try {
+    const source = stripFrontmatter(markdown);
+    protector = makeProtector(source);
+    text = protectLiterals(source,protector,{protectHtmlTags:true,protectLinkDestinations:true,
+      onHtmlTag:(token,tag)=>tags.set(token,tag)});
+  } catch (_) {
+    add('', 'markdown', {status:'unsupported',reasonCode:'unparsed-markdown'});
+    return {dependencies,issues};
+  }
+  const definitions = new Map();
+  text = text.replace(/^(?: {0,3}>[ \t]?)* {0,3}\[([^\]\n]+)\]:[ \t]*([^\n]*)$/gm, (all,label,body) => {
+    const destination = /^(?:<([^>\n]*)>|((?:\\.|[^\s])+))/.exec(protector.restore(body));
+    if (destination && !label.startsWith('^') && !definitions.has(normalizedLabel(label)))
+      definitions.set(normalizedLabel(label),destination[1] ?? destination[2]);
+    return '\n'.repeat((all.match(/\n/g)||[]).length);
+  });
+  const reference = (label, syntax = 'reference-image') => {
+    const target = definitions.get(normalizedLabel(label));
+    if (target !== undefined) add(target,syntax);
+    else add('',syntax,{status:'unresolved',reasonCode:'missing-image-reference'});
+  };
+  const scan = input => {
+    let retained = '', cursor = 0;
+    for (let i = 0; i < input.length; i++) {
+      if (input[i] !== '[' || escapedAt(input,i)) continue;
+      const image = input[i-1] === '!' && !escapedAt(input,i-1);
+      const opening = image ? i-1 : i;
+      if (input[i+1] === '[') {
+        const end = input.indexOf(']]',i+2);
+        if (end < 0 || input.slice(i,end).includes('\n')) continue;
+        if (image) add(protector.restore(input.slice(i+2,end)).split('|')[0],'wiki-embed');
+        retained += input.slice(cursor,opening); cursor = end+2; i = end+1; continue;
+      }
+      let end = i+1, depth = 1;
+      for (;end<input.length;end++) {
+        if (escapedAt(input,end)) continue;
+        if (input[end] === '[') depth++;
+        else if (input[end] === ']' && --depth === 0) break;
+      }
+      if (end >= input.length) continue;
+      const label = input.slice(i+1,end);
+      if (input[end+1] === '(') {
+        const bounds = markdownLinkBounds(input,i);
+        if (!bounds) continue;
+        const {start,close} = bounds;
+        const inside = protector.restore(input.slice(start,close)).trim();
+        const match = /^(?:<([^>\n]*)>|((?:\\.|[^\s])+))([\s\S]*)$/.exec(inside);
+        if (match && image) add(match[1] ?? match[2],'markdown-image');
+        else if (image && !inside) add('','markdown-image');
+        else if (image) add(inside,'markdown-image',{status:'unresolved',reasonCode:'unparsed-image-destination'});
+        retained += input.slice(cursor,opening) + (image ? '' : scan(label));
+        cursor = close+1; i = close; continue;
+      }
+      if (input[end+1] === '[') {
+        const close = input.indexOf(']',end+2);
+        if (close >= 0 && !input.slice(end+2,close).includes('\n')) {
+          if (image) reference(protector.restore(input.slice(end+2,close) || label));
+          retained += input.slice(cursor,opening) + (image ? '' : scan(label));
+          cursor = close+1; i = close; continue;
+        }
+      }
+      if (definitions.has(normalizedLabel(protector.restore(label)))) {
+        if (image) reference(protector.restore(label));
+        retained += input.slice(cursor,opening) + (image ? '' : scan(label));
+        cursor = end+1; i = end;
+      }
+    }
+    return retained + input.slice(cursor);
+  };
+  const visible = scan(text);
+  for (const [token,tag] of tags) {
+    if (!visible.includes(token) || /^<\//.test(tag)) continue;
+    const name = /^<([\w:-]+)/.exec(tag)[1].toLowerCase();
+    const attributes = new Map();
+    const body = tag.slice(name.length+1,-1);
+    for (const match of body.matchAll(/([^\s=<>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) {
+      const key = match[1].toLowerCase();
+      if (!attributes.has(key)) attributes.set(key,match[2] ?? match[3] ?? match[4] ?? '');
+    }
+    if (name === 'img') {
+      if (attributes.has('src')) add(attributes.get('src'),'html-image');
+      if (attributes.has('srcset')) add(attributes.get('srcset'),'html-image',{status:'unsupported',reasonCode:'unsupported-html-srcset'});
+    } else if (['audio','video','iframe','embed','object','source'].includes(name)) {
+      const raw = attributes.get(name === 'object' ? 'data' : 'src') || attributes.get('srcset');
+      if (raw !== undefined) add(raw,'html-embed',{status:'unsupported',reasonCode:'unsupported-html-embed'});
+    }
+  }
+  return {dependencies,issues};
 }
 function normalizePath(path) {
   const parts = [];
@@ -5930,7 +6229,448 @@ async function compileMarkdown(plan, resolved, options = {}) {
   }
   return markdown;
 }
-module.exports = {compileMarkdown};
+module.exports = {compileMarkdown,collectMediaDependencies};
+
+return module.exports; })();
+const mwbAssemblyBlueprint = (() => { const module = {exports:{}};
+'use strict';
+
+// Pure allocation engine. The host injects core and owns scanning, source SHA
+// verification, persistence, task generations, UUIDs and all user-visible I/O.
+const ALGORITHM = 'blueprint-maxflow-v1';
+const MAX_ENTRIES = 1000, MAX_ROWS = 64;
+const FORBIDDEN = new Set(['__proto__','prototype','constructor']);
+const FILTERS = ['query','subject','questionType','difficulty','tier','role','method','source','knowledge'];
+const compare = (a,b) => a < b ? -1 : a > b ? 1 : 0;
+const error = (code,message,issues) => Object.assign(new Error(message),{code,...(issues ? {issues} : {})});
+const issue = (code,message,extra={}) => ({code,message,...extra});
+
+function jsonData(value,label='数据',depth=0,budget={nodes:0}) {
+  if (++budget.nodes>300000 || depth>24) throw error('BLUEPRINT_INVALID',label+'过大或嵌套过深');
+  if (value===null || typeof value==='boolean' || typeof value==='string') return value;
+  if (typeof value==='number' && Number.isFinite(value)) return value;
+  if (!value || typeof value!=='object') throw error('BLUEPRINT_INVALID',label+'不是 JSON 数据');
+  const array=Array.isArray(value),proto=Object.getPrototypeOf(value);
+  if (proto!==(array ? Array.prototype : Object.prototype) && !(proto===null&&!array))
+    throw error('BLUEPRINT_INVALID',label+'不是普通对象或列表');
+  const descriptors=Object.getOwnPropertyDescriptors(value),keys=Reflect.ownKeys(descriptors);
+  if (keys.some(key=>typeof key!=='string'||FORBIDDEN.has(key)||descriptors[key].get||descriptors[key].set))
+    throw error('BLUEPRINT_INVALID',label+'含不允许的属性');
+  if (array) {
+    if (value.length>100000 || keys.some(key=>key!=='length'&&(!/^(0|[1-9]\d*)$/.test(key)||Number(key)>=value.length)) ||
+        keys.length!==value.length+1) throw error('BLUEPRINT_INVALID',label+'含稀疏或非法列表属性');
+    return Array.from({length:value.length},(_,index)=>jsonData(descriptors[index].value,label,depth+1,budget));
+  }
+  const result={};for(const key of keys)result[key]=jsonData(descriptors[key].value,label,depth+1,budget);return result;
+}
+function fields(raw,required,optional=[],label='数据') {
+  if (!raw || typeof raw!=='object' || Array.isArray(raw)) throw error('BLUEPRINT_INVALID',label+'必须为对象');
+  if (Object.keys(raw).some(key=>!required.includes(key)&&!optional.includes(key)) || required.some(key=>!Object.hasOwn(raw,key)))
+    throw error('BLUEPRINT_INVALID',label+'含未知字段或缺少字段');
+}
+function string(value,label,max=512,empty=false) {
+  if (typeof value!=='string'||value.length>max||/[\u0000-\u001f\u007f]/.test(value)||!empty&&!value.trim())
+    throw error('BLUEPRINT_INVALID',label+'无效');
+  return value;
+}
+function integer(value,label,min,max) {
+  if(!Number.isSafeInteger(value)||value<min||value>max)throw error('BLUEPRINT_INVALID',label+'须为 '+min+' 到 '+max+' 的整数');return value;
+}
+function identifier(value,label) {string(value,label,96);if(!/^[A-Za-z0-9_-]+$/.test(value))throw error('BLUEPRINT_INVALID',label+'仅支持字母、数字、下划线和连字符');return value;}
+function freeze(value) {if(value&&typeof value==='object'){for(const child of Object.values(value))freeze(child);Object.freeze(value);}return value;}
+function normalizeFilters(raw) {
+  fields(raw,[],FILTERS,'筛选条件');const result={query:''};
+  for(const name of FILTERS) {
+    if(name==='query'){if(Object.hasOwn(raw,name))result.query=string(raw.query,'搜索文字',2000,true).trim();continue;}
+    const input=raw[name]===undefined?[]:Array.isArray(raw[name])?raw[name]:[raw[name]];
+    if(input.length>128)throw error('BLUEPRINT_INVALID','同维度筛选最多 128 项');
+    const values=[];
+    for(const value of input) {
+      if(value===null||value===''||value==='all')continue;
+      if(name==='difficulty'){const n=typeof value==='string'&&/^[1-5]$/.test(value)?Number(value):value;values.push(integer(n,'难度',1,5));}
+      else values.push(string(value,'筛选值',4096).trim());
+    }
+    result[name]=[...new Set(values)].sort(name==='difficulty'?(a,b)=>a-b:compare);
+  }
+  return result;
+}
+function validateBlueprint(raw) {
+  raw=jsonData(raw,'蓝图');fields(raw,['schemaVersion','blueprintId','revision','title','rows','constraints'],[],'蓝图');
+  if(raw.schemaVersion!==1)throw error('BLUEPRINT_INVALID','不支持的蓝图版本');
+  identifier(raw.blueprintId,'蓝图 ID');integer(raw.revision,'蓝图修订',1,Number.MAX_SAFE_INTEGER);string(raw.title,'蓝图标题',500);
+  if(!Array.isArray(raw.rows)||raw.rows.length>MAX_ROWS)throw error('BLUEPRINT_INVALID','蓝图最多 '+MAX_ROWS+' 行');
+  const seen=new Set();let total=0;
+  const rows=raw.rows.map(row=>{fields(row,['rowId','label','filters','count'],[],'配额行');identifier(row.rowId,'配额行 ID');
+    if(seen.has(row.rowId))throw error('BLUEPRINT_INVALID','配额行 ID 重复');seen.add(row.rowId);
+    string(row.label,'配额行标签',200,true);integer(row.count,'配额数量',1,MAX_ENTRIES);total+=row.count;
+    return {rowId:row.rowId,label:row.label,filters:normalizeFilters(row.filters),count:row.count};});
+  if(total>MAX_ENTRIES)throw error('BLUEPRINT_INVALID','蓝图配额总数最多 '+MAX_ENTRIES);
+  fields(raw.constraints,['uniqueQuestion','maxPerFamily'],[],'蓝图约束');
+  if(raw.constraints.uniqueQuestion!==true)throw error('BLUEPRINT_INVALID','蓝图必须保持题目唯一');
+  if(raw.constraints.maxPerFamily!==null)integer(raw.constraints.maxPerFamily,'每族上限',1,MAX_ENTRIES);
+  return {schemaVersion:1,blueprintId:raw.blueprintId,revision:raw.revision,title:raw.title,rows,
+    constraints:{uniqueQuestion:true,maxPerFamily:raw.constraints.maxPerFamily}};
+}
+function assignment(raw) {
+  fields(raw,['rowId','slotId','origin','sourceId','sourcePath','sourceFingerprint'],['existingEntryId'],'配额归属');
+  identifier(raw.rowId,'配额行 ID');string(raw.slotId,'槽 ID',128);
+  if(!['plan','candidate'].includes(raw.origin))throw error('BLUEPRINT_INVALID','归属来源无效');
+  string(raw.sourceId,'源 ID',512,true);string(raw.sourcePath,'源路径',4096);string(raw.sourceFingerprint,'源指纹',128);
+  if(raw.sourcePath.startsWith('/')||raw.sourcePath.includes('\\')||raw.sourcePath.includes(':')||
+      raw.sourcePath.split('/').some(part=>!part||part==='.'||part==='..')||!/\.md$/i.test(raw.sourcePath))
+    throw error('BLUEPRINT_INVALID','来源须为库内 Markdown 路径');
+  if(raw.origin==='plan')string(raw.existingEntryId,'已存在的编排项 ID',512);
+  else if(Object.hasOwn(raw,'existingEntryId'))throw error('BLUEPRINT_INVALID','新候选不能含已存在编排项 ID');
+  return {rowId:raw.rowId,slotId:raw.slotId,origin:raw.origin,sourceId:raw.sourceId,sourcePath:raw.sourcePath,
+    sourceFingerprint:raw.sourceFingerprint,...(raw.origin==='plan'?{existingEntryId:raw.existingEntryId}:{})};
+}
+function assignments(raw,label) {
+  if(!Array.isArray(raw)||raw.length>MAX_ENTRIES)throw error('BLUEPRINT_INVALID',label+'须为最多 1000 项的列表');
+  return raw.map(assignment);
+}
+function validateAllocation(raw) {
+  raw=jsonData(raw,'候选');fields(raw,['schemaVersion','algorithmVersion','status','seed','context','locks','assignments','rowStats','familyStats','diagnostics'],[],'候选');
+  if(raw.schemaVersion!==1||raw.algorithmVersion!==ALGORITHM)throw error('BLUEPRINT_INVALID','不支持的候选版本');
+  if(!['complete','infeasible','budget','cancelled'].includes(raw.status))throw error('BLUEPRINT_INVALID','候选状态无效');
+  string(raw.seed,'随机种子',512);string(raw.context,'候选上下文',32*1024*1024);
+  const locks=assignments(raw.locks,'锁定列表'),selected=assignments(raw.assignments,'候选列表');
+  if(raw.status!=='complete'&&selected.length)throw error('BLUEPRINT_INVALID','未完成候选不得含可应用的分配');
+  if(!Array.isArray(raw.rowStats)||raw.rowStats.length>MAX_ROWS||!Array.isArray(raw.familyStats)||!Array.isArray(raw.diagnostics))
+    throw error('BLUEPRINT_INVALID','候选统计无效');
+  for(const row of raw.rowStats){fields(row,['rowId','requested','locked','available','assigned','missing'],[],'行统计');identifier(row.rowId,'统计行 ID');for(const key of ['requested','locked','available','assigned','missing'])integer(row[key],'行统计',0,Number.MAX_SAFE_INTEGER);}
+  return {...raw,locks,assignments:selected};
+}
+function family(item,core) {
+  const {familyId,familyValid}=core.normalizeFamilyMetadata(item.metadata);
+  return {familyId,familyValid};
+}
+const identity = item => item.id?'id:'+item.id:'path:'+item.path;
+const sameSource = (a,b) => a.sourceId===b.sourceId&&a.sourcePath===b.sourcePath&&a.sourceFingerprint===b.sourceFingerprint;
+const sourceOf = item => ({sourceId:item.id||'',sourcePath:item.path,sourceFingerprint:item.fingerprint});
+const asAssignment = (slot,item) => ({rowId:slot.rowId,slotId:slot.slotId,origin:'candidate',...sourceOf(item)});
+function random(seed) {
+  let state=2166136261;for(let i=0;i<seed.length;i++)state=Math.imul(state^seed.charCodeAt(i),16777619);
+  return ()=>{state=(state+0x6D2B79F5)|0;let n=Math.imul(state^(state>>>15),1|state);n^=n+Math.imul(n^(n>>>7),61|n);return ((n^(n>>>14))>>>0)/4294967296;};
+}
+function shuffle(values,rng) {const result=values.slice();for(let i=result.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[result[i],result[j]]=[result[j],result[i]];}return result;}
+
+function createBlueprintEngine({core}={}) {
+  if(!core||['filterItems','validatePlan','resolvePlan','normalizeRole','normalizeFamilyMetadata'].some(name=>typeof core[name]!=='function'))throw new TypeError('蓝图引擎需要现行 assembly core');
+  const problems=new WeakMap();
+  const expose=state=>{const problem=freeze({context:state.context,blueprint:state.blueprint,slots:state.slots,
+    candidates:state.candidates.map(item=>({...sourceOf(item),key:item.key,title:item.title,role:item.role,familyId:item.familyId,rowIds:item.rowIds})),
+    locks:state.locks,...(state.replacement?{replacement:state.replacement}:{})});problems.set(problem,state);return {status:'ready',problem,context:state.context,issues:state.issues};};
+  function prepareAllocation({index,plan,blueprint,locks=[],excludedKeys=[]}) {
+    const current=core.validatePlan(jsonData(plan,'组题方案')),bp=validateBlueprint(blueprint);
+    const fixed=assignments(jsonData(locks,'锁定列表'),'锁定列表').sort((a,b)=>compare(a.slotId,b.slotId));
+    const excluded=jsonData(excludedKeys,'排除列表');if(!Array.isArray(excluded))throw error('BLUEPRINT_INVALID','排除列表须为列表');
+    const excludedList=[...new Set(excluded.map(value=>string(value,'排除标识',4608)))].sort(compare),exclude=new Set(excludedList);
+    if(!Array.isArray(index?.items))throw error('BLUEPRINT_INVALID','来源索引无效');
+    const issues=[],conflicts=[],rows=bp.rows,slots=rows.flatMap(row=>Array.from({length:row.count},(_,i)=>({rowId:row.rowId,slotId:row.rowId+':'+(i+1)})));
+    const slotMap=new Map(slots.map(slot=>[slot.slotId,slot])),usedIds=new Set(current.entries.map(entry=>entry.sourceId).filter(Boolean)),usedPaths=new Set(current.entries.map(entry=>entry.sourcePath).filter(Boolean));
+    const idCounts=new Map(),pathCounts=new Map();
+    for(const item of index.items){pathCounts.set(item.path,(pathCounts.get(item.path)||0)+1);if(item.id)idCounts.set(item.id,(idCounts.get(item.id)||0)+1);}
+    const safe=item=>item.kind==='question'&&!item.identityConflict&&pathCounts.get(item.path)===1&&(!item.id||idCounts.get(item.id)===1);
+    const matches=new Map(index.items.map(item=>[item,new Set()]));
+    for(const row of rows)for(const item of core.filterItems(index,{...row.filters,kind:'question'}))matches.get(item)?.add(row.rowId);
+    const cap=bp.constraints.maxPerFamily,candidates=[];
+    for(const item of index.items) {
+      if(!safe(item)||usedPaths.has(item.path)||item.id&&usedIds.has(item.id)||exclude.has(identity(item))||!matches.get(item)?.size)continue;
+      const fam=family(item,core);
+      if(cap!==null&&!fam.familyValid){issues.push(issue('INVALID_FAMILY','题族字段无效，该题不能参与受限分配',{path:item.path}));continue;}
+      candidates.push({key:identity(item),id:item.id||'',path:item.path,fingerprint:item.fingerprint,title:item.title,role:item.role,
+        ...fam,rowIds:[...matches.get(item)].sort(compare)});
+    }
+    candidates.sort((a,b)=>compare(a.key,b.key)||compare(a.path,b.path));
+    const candidateMap=new Map(candidates.map(item=>[item.key,item])),resolved=core.resolvePlan(current,index),resolvedMap=new Map(resolved.entries.map(value=>[value.entry.entryId,value]));
+    const baseFamilies=new Map(),planItems=new Map();
+    for(const value of resolved.entries)if(value.entry.kind==='question') {
+      if(cap!==null&&value.status!=='ok')conflicts.push(issue('PLAN_SOURCE_UNRESOLVED','开启题族上限前须处理已有题的来源',{entryId:value.entry.entryId,status:value.status}));
+      if(value.status==='ok'&&value.item) {
+        const item={...sourceOf(value.item),key:identity(value.item),...family(value.item,core)};planItems.set(value.entry.entryId,item);
+        if(cap!==null&&!item.familyValid)conflicts.push(issue('PLAN_FAMILY_INVALID','已有题的题族字段无效',{entryId:value.entry.entryId}));
+        if(item.familyValid&&item.familyId)baseFamilies.set(item.familyId,(baseFamilies.get(item.familyId)||0)+1);
+      }
+    }
+    if(cap!==null)for(const [familyId,count]of baseFamilies)if(count>cap)conflicts.push(issue('PLAN_FAMILY_LIMIT','已有方案已超过题族上限',{familyId,count,limit:cap}));
+    const occupiedSlots=new Set(),lockedIds=new Set(),lockedPaths=new Set(),entryIds=new Set();
+    for(const lock of fixed) {
+      const slot=slotMap.get(lock.slotId);let valid=true;
+      const fail=(code,message)=>{conflicts.push(issue(code,message,{rowId:lock.rowId,slotId:lock.slotId}));valid=false;};
+      if(!slot||slot.rowId!==lock.rowId)fail('LOCK_SLOT_INVALID','锁定槽不在当前配额行内');
+      if(occupiedSlots.has(lock.slotId)||lockedPaths.has(lock.sourcePath)||lock.sourceId&&lockedIds.has(lock.sourceId))fail('LOCK_DUPLICATE','同一槽或题不能锁定两次');
+      occupiedSlots.add(lock.slotId);lockedPaths.add(lock.sourcePath);if(lock.sourceId)lockedIds.add(lock.sourceId);
+      if(lock.origin==='plan') {
+        const value=resolvedMap.get(lock.existingEntryId);
+        if(entryIds.has(lock.existingEntryId))fail('LOCK_DUPLICATE','已有编排项只能归属一行');entryIds.add(lock.existingEntryId);
+        if(!value||value.entry.kind!=='question'||value.status!=='ok'||!sameSource(lock,sourceOf(value.item||{})))fail('LOCK_SOURCE_CHANGED','锁定的已有题缺失、冲突或来源已变化');
+        else if(!safe(value.item)||!matches.get(value.item)?.has(lock.rowId)||exclude.has(identity(value.item)))fail('LOCK_FILTER_MISMATCH','锁定的已有题不满足本行条件');
+      } else {
+        const item=candidateMap.get(lock.sourceId?'id:'+lock.sourceId:'path:'+lock.sourcePath);
+        if(!item||!sameSource(lock,sourceOf(item)))fail('LOCK_SOURCE_CHANGED','锁定候选缺失、冲突、已被使用或来源已变化');
+        else if(!item.rowIds.includes(lock.rowId))fail('LOCK_FILTER_MISMATCH','锁定候选不满足本行条件');
+      }
+      if(!valid)continue;
+    }
+    if(!rows.length)conflicts.push(issue('EMPTY_BLUEPRINT','请先添加配额行'));
+    const added=slots.length-fixed.filter(lock=>lock.origin==='plan').length;
+    if(current.entries.length+added>MAX_ENTRIES)conflicts.push(issue('PLAN_CAPACITY_EXCEEDED','完整配额超过方案剩余容量',{current:current.entries.length,added,limit:MAX_ENTRIES}));
+    const fixedFamilies=new Map(baseFamilies);
+    if(cap!==null)for(const lock of fixed.filter(lock=>lock.origin==='candidate')){const item=candidateMap.get(lock.sourceId?'id:'+lock.sourceId:'path:'+lock.sourcePath);if(item?.familyId)fixedFamilies.set(item.familyId,(fixedFamilies.get(item.familyId)||0)+1);}
+    if(cap!==null)for(const [familyId,count]of fixedFamilies)if(count>cap)conflicts.push(issue('LOCK_FAMILY_LIMIT','锁定题与已有方案合计超过题族上限',{familyId,count,limit:cap}));
+    if(conflicts.length)return {status:'conflict',issues:[...conflicts,...issues]};
+    const context=JSON.stringify({algorithmVersion:ALGORITHM,plan:current,blueprint:bp,locks:fixed,excludedKeys:excludedList,
+      candidates,planFamilies:cap===null?[]:[...baseFamilies].sort((a,b)=>compare(a[0],b[0]))});
+    return expose({context,blueprint:bp,plan:current,locks:fixed,excludedKeys:excludedList,slots,candidates,candidateMap,planItems,baseFamilies,issues,fixed});
+  }
+  const getState=problem=>{const state=problems.get(problem);if(!state)throw error('BLUEPRINT_INVALID','请使用本引擎当次准备的分配问题');return state;};
+  function verifyAssignments(state,raw) {
+    const values=assignments(jsonData(raw,'候选分配'),'候选分配');
+    if(values.length!==state.slots.length)throw error('BLUEPRINT_STALE','候选未满足完整配额');
+    const slots=new Map(state.slots.map(slot=>[slot.slotId,slot])),found=new Map(),ids=new Set(),paths=new Set(),families=new Map(state.baseFamilies);
+    const locks=new Map(state.locks.map(lock=>[lock.slotId,lock]));
+    for(const value of values) {
+      const slot=slots.get(value.slotId),lock=locks.get(value.slotId);
+      if(!slot||slot.rowId!==value.rowId||found.has(value.slotId)||paths.has(value.sourcePath)||value.sourceId&&ids.has(value.sourceId))
+        throw error('BLUEPRINT_STALE','候选槽、行归属或题目唯一性无效');
+      found.set(value.slotId,value);paths.add(value.sourcePath);if(value.sourceId)ids.add(value.sourceId);
+      if(lock&&JSON.stringify(lock)!==JSON.stringify(value))throw error('BLUEPRINT_STALE','候选改变了锁定题或行归属');
+      if(value.origin==='plan') {
+        if(!lock||lock.origin!=='plan')throw error('BLUEPRINT_STALE','已有题必须有明确锁定行归属');
+      } else {
+        const item=state.candidateMap.get(value.sourceId?'id:'+value.sourceId:'path:'+value.sourcePath);
+        if(!item||!sameSource(value,sourceOf(item))||!item.rowIds.includes(value.rowId))throw error('BLUEPRINT_STALE','候选来源或行条件已变化');
+        if(item.familyId)families.set(item.familyId,(families.get(item.familyId)||0)+1);
+      }
+    }
+    if(state.blueprint.constraints.maxPerFamily!==null)for(const count of families.values())if(count>state.blueprint.constraints.maxPerFamily)throw error('BLUEPRINT_STALE','候选超过全局题族上限');
+    return state.slots.map(slot=>found.get(slot.slotId));
+  }
+  function allocateQuestions(problem,{seed='0',limits={},signal}={}) {
+    const state=getState(problem);string(seed,'随机种子',512);limits=jsonData(limits,'计算预算');fields(limits,[],['maxEdges','maxOperations'],'计算预算');
+    const maxEdges=integer(limits.maxEdges??250000,'边预算',0,2000000),maxOperations=integer(limits.maxOperations??5000000,'运算预算',0,200000000);
+    let operations=0,edges=0;const tick=()=>{if(signal?.aborted)throw error('CANCELLED','分配已取消');if(++operations>maxOperations)throw error('BUDGET','分配计算超出预算');};
+    const result=(status,values=[],diagnostics=[],rowCounts=new Map())=>{
+      const selected=status==='complete'?verifyAssignments(state,values):[];
+      const stats=state.blueprint.rows.map(row=>{const assigned=status==='complete'?selected.filter(item=>item.rowId===row.rowId).length:(rowCounts.get(row.rowId)||0);return {rowId:row.rowId,requested:row.count,
+        locked:state.locks.filter(item=>item.rowId===row.rowId).length,available:state.candidates.filter(item=>item.rowIds.includes(row.rowId)).length+state.locks.filter(item=>item.origin==='plan'&&item.rowId===row.rowId).length,assigned,missing:row.count-assigned};});
+      const counts=new Map(state.baseFamilies);for(const value of selected.filter(item=>item.origin==='candidate')){const item=state.candidateMap.get(value.sourceId?'id:'+value.sourceId:'path:'+value.sourcePath);if(item?.familyId)counts.set(item.familyId,(counts.get(item.familyId)||0)+1);}
+      return {schemaVersion:1,algorithmVersion:ALGORITHM,status,seed,context:state.context,locks:jsonData(state.locks),assignments:selected,rowStats:stats,
+        familyStats:[...counts].sort((a,b)=>compare(a[0],b[0])).map(([familyId,count])=>({familyId,count,limit:state.blueprint.constraints.maxPerFamily})),diagnostics:[...state.issues,...diagnostics]};
+    };
+    try {
+      tick();const rng=random(seed),fixed=state.fixed,occupied=new Set(fixed.map(value=>value.slotId)),used=new Set(fixed.filter(value=>value.origin==='candidate').map(value=>value.sourceId?'id:'+value.sourceId:'path:'+value.sourcePath));
+      const free=state.slots.filter(slot=>!occupied.has(slot.slotId)),demand=new Map();for(const slot of free)demand.set(slot.rowId,(demand.get(slot.rowId)||0)+1);
+      const fixedCounts=new Map();for(const value of fixed)fixedCounts.set(value.rowId,(fixedCounts.get(value.rowId)||0)+1);
+      if(!free.length)return result('complete',fixed);
+      const cap=state.blueprint.constraints.maxPerFamily,families=new Map(state.baseFamilies);
+      for(const value of fixed.filter(value=>value.origin==='candidate')){const item=state.candidateMap.get(value.sourceId?'id:'+value.sourceId:'path:'+value.sourcePath);if(item?.familyId)families.set(item.familyId,(families.get(item.familyId)||0)+1);}
+      const available=shuffle(state.candidates.filter(item=>!used.has(item.key)&&(!state.allowedKeys||state.allowedKeys.has(item.key))),rng);
+      const graph=[[],[]],source=0,sink=1,newNode=()=>{graph.push([]);return graph.length-1;};
+      const add=(from,to,capacity)=>{tick();if(++edges>maxEdges)throw error('BUDGET','分配网络超出边预算');const forward={to,reverse:graph[to].length,capacity},reverse={to:from,reverse:graph[from].length,capacity:0};graph[from].push(forward);graph[to].push(reverse);return forward;};
+      const rowNodes=new Map(),familyNodes=new Map(),chosen=[];
+      for(const rowId of [...demand.keys()].sort(compare)){const node=newNode();rowNodes.set(rowId,node);add(node,sink,demand.get(rowId));}
+      for(const item of available) {
+        tick();const matching=shuffle(item.rowIds.filter(row=>demand.has(row)),rng);if(!matching.length)continue;
+        const node=newNode();let parent=source;
+        if(cap!==null&&item.familyId) {
+          if(!familyNodes.has(item.familyId)){const familyNode=newNode();familyNodes.set(item.familyId,familyNode);add(source,familyNode,Math.max(0,cap-(families.get(item.familyId)||0)));}
+          parent=familyNodes.get(item.familyId);
+        }
+        add(parent,node,1);
+        for(const rowId of matching)chosen.push({item,rowId,edge:add(node,rowNodes.get(rowId),1)});
+      }
+      let flow=0;
+      for(;;) {
+        tick();const level=Array(graph.length).fill(-1),queue=[source];level[source]=0;
+        for(let cursor=0;cursor<queue.length;cursor++)for(const edge of graph[queue[cursor]]){tick();if(edge.capacity>0&&level[edge.to]<0){level[edge.to]=level[queue[cursor]]+1;queue.push(edge.to);}}
+        if(level[sink]<0)break;
+        const positions=Array(graph.length).fill(0);
+        const push=(node,amount)=>{tick();if(node===sink)return amount;while(positions[node]<graph[node].length){const edge=graph[node][positions[node]];tick();if(edge.capacity>0&&level[edge.to]===level[node]+1){const sent=push(edge.to,Math.min(amount,edge.capacity));if(sent){edge.capacity-=sent;graph[edge.to][edge.reverse].capacity+=sent;return sent;}}positions[node]++;}return 0;};
+        let sent;while((sent=push(source,free.length-flow))>0){flow+=sent;if(flow===free.length)break;}if(flow===free.length)break;
+      }
+      const selected=fixed.slice(),freeByRow=new Map();for(const slot of free){if(!freeByRow.has(slot.rowId))freeByRow.set(slot.rowId,[]);freeByRow.get(slot.rowId).push(slot);}
+      const assignedCounts=new Map(fixedCounts);
+      for(const value of chosen)if(value.edge.capacity===0){selected.push(asAssignment(freeByRow.get(value.rowId).shift(),value.item));assignedCounts.set(value.rowId,(assignedCounts.get(value.rowId)||0)+1);}
+      if(flow!==free.length)return result('infeasible',[],[issue('GLOBAL_QUOTA_SHORTFALL','完整候选池的最大流不足；约束未放宽',{required:free.length,allocated:flow,deficit:free.length-flow,
+        rows:state.blueprint.rows.filter(row=>(assignedCounts.get(row.rowId)||0)<row.count).map(row=>row.rowId),familyLimit:cap,operations,edges})],assignedCounts);
+      return result('complete',selected);
+    } catch(failure) {
+      if(failure.code==='BUDGET'||failure.code==='CANCELLED')return result(failure.code==='BUDGET'?'budget':'cancelled',[],[issue(failure.code,failure.message,{operations,edges})]);
+      throw failure;
+    }
+  }
+  function prepareReplacement({problem,allocation,targetSlotId,mode='row',candidateKey}) {
+    const state=getState(problem),current=validateAllocation(allocation);
+    if(current.status!=='complete'||current.context!==state.context)throw error('BLUEPRINT_STALE','换题候选已失效');
+    const selected=verifyAssignments(state,current.assignments),target=selected.find(value=>value.slotId===targetSlotId);
+    const conflict=(code,message)=>({status:'conflict',issues:[issue(code,message,{slotId:targetSlotId})]});
+    if(!target)return conflict('REPLACEMENT_SLOT_INVALID','待换槽不存在');
+    if(state.locks.some(value=>value.slotId===targetSlotId))return conflict('REPLACEMENT_LOCKED','请先解锁该槽再换题');
+    if(!['row','same-family'].includes(mode))throw error('BLUEPRINT_INVALID','换题模式无效');
+    const old=state.candidateMap.get(target.sourceId?'id:'+target.sourceId:'path:'+target.sourcePath);
+    if(mode==='same-family'&&(!old?.familyValid||!old.familyId))return conflict('REPLACEMENT_FAMILY_UNKNOWN','未分类或题族字段无效，不能进行同族换题');
+    if(candidateKey!==undefined)string(candidateKey,'指定候选',4608);
+    const allowedKeys=new Set(state.candidates.filter(item=>item.key!==old.key&&item.rowIds.includes(target.rowId)&&
+      (mode!=='same-family'||item.familyValid&&item.familyId===old.familyId)&&(candidateKey===undefined||item.key===candidateKey)).map(item=>item.key));
+    if(candidateKey!==undefined&&!allowedKeys.has(candidateKey))return conflict('REPLACEMENT_FILTER_MISMATCH','指定替代题不符合原行或题族条件');
+    return expose({...state,fixed:selected.filter(value=>value.slotId!==targetSlotId),allowedKeys,replacement:{targetSlotId,mode,previous:target}});
+  }
+  function updateAllocationLocks({index,plan,blueprint,locks,excludedKeys=[],allocation}) {
+    const candidate=validateAllocation(allocation);
+    if(candidate.status!=='complete')throw error('BLUEPRINT_STALE','只有完整候选可以更新锁定');
+    const previous=prepareAllocation({index,plan,blueprint,locks:candidate.locks,excludedKeys});
+    if(previous.status!=='ready'||previous.context!==candidate.context)
+      throw error('BLUEPRINT_STALE','原候选上下文已变化，不能通过锁定更新恢复有效',previous.issues);
+    verifyAssignments(getState(previous.problem),candidate.assignments);
+    const next=prepareAllocation({index,plan,blueprint,locks,excludedKeys});
+    if(next.status!=='ready')throw error('BLUEPRINT_REGENERATE_REQUIRED','锁定设置与完整候选冲突，请重新生成',next.issues);
+    const state=getState(next.problem);
+    try{verifyAssignments(state,candidate.assignments);}
+    catch(failure){throw error('BLUEPRINT_REGENERATE_REQUIRED','锁定归属已改变，请重新生成候选',[issue(failure.code,failure.message)]);}
+    return validateAllocation({...candidate,context:next.context,locks:state.locks,
+      rowStats:candidate.rowStats.map(row=>({...row,locked:state.locks.filter(lock=>lock.rowId===row.rowId).length}))});
+  }
+  function applyAllocation({freshIndex,plan,blueprint,locks=[],excludedKeys=[],allocation,expectedContext,entryIdsBySlot}) {
+    const candidate=validateAllocation(allocation);
+    if(candidate.status!=='complete')throw error('BLUEPRINT_STALE','只有完整候选可以加入编排');
+    const prepared=prepareAllocation({index:freshIndex,plan,blueprint,locks,excludedKeys});
+    if(prepared.status!=='ready')throw error('BLUEPRINT_STALE','蓝图约束或锁定来源已变化',prepared.issues);
+    if(typeof expectedContext!=='string'||prepared.context!==expectedContext||candidate.context!==expectedContext||JSON.stringify(candidate.locks)!==JSON.stringify(problems.get(prepared.problem).locks))
+      throw error('BLUEPRINT_STALE','候选上下文已变化，请重新生成');
+    const state=getState(prepared.problem),selected=verifyAssignments(state,candidate.assignments),ids=jsonData(entryIdsBySlot,'编排项 ID 映射');fields(ids,[],selected.filter(value=>value.origin==='candidate').map(value=>value.slotId),'编排项 ID 映射');
+    const next=core.validatePlan(state.plan),bindings=[];
+    for(const value of selected) {
+      let entryId=value.existingEntryId;
+      if(value.origin==='candidate') {
+        entryId=string(ids[value.slotId],'新编排项 ID',512);const item=state.candidateMap.get(value.sourceId?'id:'+value.sourceId:'path:'+value.sourcePath),role=core.normalizeRole(item.role);
+        next.entries.push({entryId,kind:'question',sourceId:item.id,sourcePath:item.path,sourceFingerprint:item.fingerprint,title:item.title,role:['例题','变式','训练'].includes(role)?role:''});
+      }
+      bindings.push({...value,entryId});
+    }
+    return {plan:core.validatePlan(next),bindings};
+  }
+  return {validateBlueprint,validateAllocation,prepareAllocation,allocateQuestions,prepareReplacement,updateAllocationLocks,applyAllocation,algorithmVersion:ALGORITHM};
+}
+
+module.exports={createBlueprintEngine};
+
+return module.exports; })();
+const mwbAssemblyFamily = (() => { const module = {exports:{}};
+'use strict';
+
+// Pure same-family replacement. Fresh source reads, strong digests, recovered
+// blueprint records and persistence belong to the service, never this module.
+const ALGORITHM='family-replacement-v1';
+const FILTERS=new Set(['kind','query','subject','questionType','difficulty','tier','role','method','source','knowledge','familyId','familyState']);
+const forbidden=new Set(['__proto__','prototype','constructor']);
+const compare=(a,b)=>a<b?-1:a>b?1:0;
+const error=(code,message,issues)=>Object.assign(new Error(message),{code,...(issues?{issues}:{})});
+const issue=(code,message,extra={})=>({code,message,...extra});
+function jsonData(value,label='数据',depth=0,budget={nodes:0}) {
+  if(++budget.nodes>200000||depth>24)throw error('FAMILY_INVALID',label+'过大或嵌套过深');
+  if(value===null||typeof value==='string'||typeof value==='boolean')return value;
+  if(typeof value==='number'&&Number.isFinite(value))return value;
+  if(!value||typeof value!=='object')throw error('FAMILY_INVALID',label+'必须为纯 JSON 数据');
+  const array=Array.isArray(value),proto=Object.getPrototypeOf(value);
+  if(proto!==(array?Array.prototype:Object.prototype)&&!(proto===null&&!array))throw error('FAMILY_INVALID',label+'必须为普通对象或列表');
+  const descriptors=Object.getOwnPropertyDescriptors(value),keys=Reflect.ownKeys(descriptors);
+  if(keys.some(key=>typeof key!=='string'||forbidden.has(key)||descriptors[key].get||descriptors[key].set))throw error('FAMILY_INVALID',label+'含不允许的属性');
+  if(array) {
+    if(value.length>10000||keys.length!==value.length+1||keys.some(key=>key!=='length'&&(!/^(0|[1-9]\d*)$/.test(key)||Number(key)>=value.length)))
+      throw error('FAMILY_INVALID',label+'含非法列表');
+    return Array.from({length:value.length},(_,i)=>jsonData(descriptors[i].value,label,depth+1,budget));
+  }
+  const result={};for(const key of keys.sort(compare))result[key]=jsonData(descriptors[key].value,label,depth+1,budget);return result;
+}
+function filtersOf(value) {
+  const filters=jsonData(value,'换题筛选');
+  if(!filters||typeof filters!=='object'||Array.isArray(filters)||Object.keys(filters).some(key=>!FILTERS.has(key)))
+    throw error('FAMILY_INVALID','换题筛选含未知字段');
+  for(const [key,raw]of Object.entries(filters)) {
+    if(key==='query') {if(typeof raw!=='string'||raw.length>2000)throw error('FAMILY_INVALID','搜索文字无效');continue;}
+    const values=Array.isArray(raw)?raw:[raw];
+    if(values.length>128||values.some(value=>value!==null&&typeof value!=='string'&&!(key==='difficulty'&&Number.isInteger(value)&&value>=1&&value<=5)))
+      throw error('FAMILY_INVALID','换题筛选值无效');
+    if(values.some(value=>typeof value==='string'&&(value.length>4096||/[\x00-\x1f\x7f]/.test(value))))throw error('FAMILY_INVALID','换题筛选值无效');
+  }
+  return filters;
+}
+const identity=item=>item.id?'id:'+item.id:'path:'+item.path;
+const sourceOf=item=>({sourceId:item.id||'',sourcePath:item.path,sourceFingerprint:item.fingerprint});
+
+function createFamilyEngine({core}={}) {
+  if(!core||['validatePlan','resolvePlan','filterItems','normalizeFamilyMetadata','updateEntry'].some(name=>typeof core[name]!=='function'))
+    throw new TypeError('题族换题引擎需要现行 assembly core');
+  function prepareReplacement({index,plan,entryId,filters={},rowFilters={},maxPerFamily=null,locked=false}) {
+    const current=core.validatePlan(jsonData(plan,'组题方案')),currentFilters=filtersOf(filters),requiredFilters=filtersOf(rowFilters);
+    if(typeof entryId!=='string'||!entryId.trim()||entryId.length>512)throw error('FAMILY_INVALID','待换编排项 ID 无效');
+    if(typeof locked!=='boolean'||maxPerFamily!==null&&(!Number.isSafeInteger(maxPerFamily)||maxPerFamily<1||maxPerFamily>1000))
+      throw error('FAMILY_INVALID','锁定或题族上限无效');
+    if(!Array.isArray(index?.items))throw error('FAMILY_INVALID','来源索引无效');
+    const conflict=(code,message,extra={})=>({status:'conflict',candidates:[],issues:[issue(code,message,{entryId,...extra})]});
+    const entry=current.entries.find(value=>value.entryId===entryId);
+    if(!entry||entry.kind!=='question')return conflict('FAMILY_TARGET_INVALID','只能替换当前方案中的题目');
+    if(locked)return conflict('FAMILY_LOCKED','请先显式解除该题的锁定再换题');
+    const resolved=core.resolvePlan(current,index),target=resolved.entries.find(value=>value.entry.entryId===entryId);
+    const ids=new Map(),paths=new Map();
+    for(const item of index.items) {paths.set(item.path,(paths.get(item.path)||0)+1);if(item.id)ids.set(item.id,(ids.get(item.id)||0)+1);}
+    const safe=item=>item?.kind==='question'&&!item.identityConflict&&paths.get(item.path)===1&&(!item.id||ids.get(item.id)===1);
+    if(target.status!=='ok'||!safe(target.item))return conflict('FAMILY_SOURCE_CHANGED','待换题来源缺失、冲突或已变化，请先核对来源',{sourceStatus:target.status});
+    const family=core.normalizeFamilyMetadata(target.item.metadata);
+    if(!family.familyValid||!family.familyId)return conflict('FAMILY_UNKNOWN','待换题未分类或题族字段无效，不能推断同族关系');
+    const usedIds=new Set(),usedPaths=new Set(),counts=new Map(),familySources=[];
+    for(const value of resolved.entries) {
+      if(value.entry.entryId===entryId)continue;
+      if(value.entry.sourceId)usedIds.add(value.entry.sourceId);if(value.entry.sourcePath)usedPaths.add(value.entry.sourcePath);
+      if(value.entry.kind!=='question')continue;
+      if(maxPerFamily!==null&&(value.status!=='ok'||!safe(value.item)))
+        return conflict('FAMILY_PLAN_SOURCE_UNRESOLVED','核对全局题族上限前须处理方案中其他题目的来源',{otherEntryId:value.entry.entryId});
+      if(value.status==='ok') {
+        const other=core.normalizeFamilyMetadata(value.item.metadata);
+        if(maxPerFamily!==null&&!other.familyValid)return conflict('FAMILY_FIELD_INVALID','方案中其他题目的题族字段无效',{otherEntryId:value.entry.entryId});
+        if(other.familyValid&&other.familyId)counts.set(other.familyId,(counts.get(other.familyId)||0)+1);
+        if(maxPerFamily!==null)familySources.push({entryId:value.entry.entryId,...sourceOf(value.item),familyId:other.familyId});
+      }
+    }
+    if(maxPerFamily!==null) {
+      const withTarget=new Map(counts);withTarget.set(family.familyId,(withTarget.get(family.familyId)||0)+1);
+      for(const [familyId,count]of withTarget)if(count>maxPerFamily)
+        return conflict('FAMILY_LIMIT','整个方案已超过题族上限，同族换题不能放宽约束',{familyId,count,limit:maxPerFamily});
+    }
+    // Evaluate both sets against the FULL index: filtering away knowledge notes
+    // first would change resolved/shared-tag semantics. Same fields remain AND.
+    const visible=new Set(core.filterItems(index,currentFilters)),required=new Set(core.filterItems(index,requiredFilters));
+    const candidates=[];
+    for(const item of index.items) {
+      if(!safe(item)||identity(item)===identity(target.item)||usedPaths.has(item.path)||item.id&&usedIds.has(item.id)||
+          !visible.has(item)||!required.has(item))continue;
+      const other=core.normalizeFamilyMetadata(item.metadata);
+      if(!other.familyValid||other.familyId!==family.familyId)continue;
+      candidates.push({key:identity(item),id:item.id||'',path:item.path,fingerprint:item.fingerprint,title:item.title,role:item.role,
+        familyId:other.familyId,subject:item.subject,questionType:item.questionType,difficulty:item.difficulty,tiers:[...(item.tiers||[])]});
+    }
+    candidates.sort((a,b)=>compare(a.key,b.key)||compare(a.path,b.path));
+    const context=JSON.stringify({algorithmVersion:ALGORITHM,plan:current,entryId,target:{...sourceOf(target.item),familyId:family.familyId},
+      filters:currentFilters,rowFilters:requiredFilters,maxPerFamily,locked,candidates,
+      familySources:familySources.sort((a,b)=>compare(a.entryId,b.entryId))});
+    return {status:'ready',candidates,context,issues:candidates.length?[]:[issue('FAMILY_NO_CANDIDATES','没有同时满足当前筛选、原配额行和同族条件的替代题',{entryId,familyId:family.familyId})]};
+  }
+  function applyReplacement({freshIndex,plan,entryId,candidateKey,expectedContext,filters={},rowFilters={},maxPerFamily=null,locked=false}) {
+    if(typeof candidateKey!=='string'||!candidateKey||typeof expectedContext!=='string')throw error('FAMILY_INVALID','换题候选或上下文无效');
+    const prepared=prepareReplacement({index:freshIndex,plan,entryId,filters,rowFilters,maxPerFamily,locked});
+    if(prepared.status!=='ready'||prepared.context!==expectedContext)
+      throw error('FAMILY_STALE','换题来源、方案或约束已变化，请重新选择',prepared.issues);
+    const candidate=prepared.candidates.find(item=>item.key===candidateKey);
+    if(!candidate)throw error('FAMILY_STALE','替代题不在当前受约束的同族候选中');
+    const current=core.validatePlan(plan),entry=current.entries.find(value=>value.entryId===entryId);
+    const previous={sourceId:entry.sourceId,sourcePath:entry.sourcePath,sourceFingerprint:entry.sourceFingerprint},next=sourceOf(candidate);
+    return {plan:core.updateEntry(current,entryId,next),replacement:{entryId,previous,next}};
+  }
+  return {prepareReplacement,applyReplacement,algorithmVersion:ALGORITHM};
+}
+
+module.exports={createFamilyEngine};
 
 return module.exports; })();
 const mwbAssemblyService = (() => { const module = {exports:{}};
@@ -5938,10 +6678,12 @@ const mwbAssemblyService = (() => { const module = {exports:{}};
 
 // Host adapter: source notes are read-only. Only explicit plans and generated
 // handouts are written, under dedicated output folders.
-module.exports = function createAssemblyService(plugin, {core, compileMarkdown, parseYaml, previewFile}) {
+module.exports = function createAssemblyService(plugin, {core, compileMarkdown, collectMediaDependencies, blueprintEngine, familyEngine, parseYaml, previewFile}) {
   const app = plugin.app, vault = app.vault;
   const planFolder = 'Mathsemble/组题方案', outputFolder = 'Mathsemble/讲义';
+  const blueprintFolder = 'Mathsemble/组卷蓝图', runFolder = 'Mathsemble/组卷记录';
   let settings, data, saveQueue = Promise.resolve(), planIO = Promise.resolve();
+  let blueprintIO = Promise.resolve();
   const cleanPath = value => {
     const path = String(value || '').trim().replace(/\\/g, '/').replace(/\/$/, '');
     if (!path || path.startsWith('/') || path.split('/').some(p => !p || p === '.' || p === '..') || /[\x00-\x1f]/.test(path))
@@ -6148,6 +6890,350 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     };
   }
   const {savePlan,loadPlan} = createPlanSession();
+
+  // Sidecars have their own schema and I/O session. Neither loading an old
+  // plan nor using the existing selection/preview routes needs this engine.
+  const engine = () => {
+    if (!blueprintEngine || !['validateBlueprint','prepareAllocation','allocateQuestions','applyAllocation','validateAllocation']
+      .every(key=>typeof blueprintEngine[key] === 'function')) throw new Error('组卷蓝图引擎未配置');
+    return blueprintEngine;
+  };
+  function plainData(value,depth = 0) {
+    if (depth>32) throw new Error('侧车数据嵌套过深');
+    if (value===null || typeof value==='string' || typeof value==='boolean' || typeof value==='number'&&Number.isFinite(value)) return value;
+    if (!value || typeof value!=='object' || Object.getOwnPropertySymbols(value).length ||
+        ![Object.prototype,null,Array.prototype].includes(Object.getPrototypeOf(value))) throw new Error('侧车数据必须是纯 JSON');
+    const descriptors=Object.getOwnPropertyDescriptors(value);
+    for(const [key,entry] of Object.entries(descriptors))
+      if (['__proto__','prototype','constructor'].includes(key) || entry.get || entry.set) throw new Error('侧车数据含不允许的属性');
+    if(Array.isArray(value)) {
+      if(value.length>10000 || Object.keys(value).length!==value.length || Object.keys(value).some(key=>!/^(0|[1-9]\d*)$/.test(key))) throw new Error('侧车列表无效');
+      return value.map(item=>plainData(item,depth+1));
+    }
+    return Object.fromEntries(Object.keys(value).sort().map(key=>[key,plainData(descriptors[key].value,depth+1)]));
+  }
+  const exact = (value,fields,label) => {
+    if (!value || Array.isArray(value) || typeof value!=='object' || Object.keys(value).some(key=>!fields.includes(key)))
+      throw new Error(label+'含未知字段或结构无效');
+  };
+  const boundedText = (value,label,max=4096,empty=false) => {
+    if(typeof value!=='string' || value.length>max || (!empty&&!value.trim()) || /[\x00-\x1f\x7f]/.test(value)) throw new Error(label+'无效');
+    return value;
+  };
+  const strongDigest = value => require('node:crypto').createHash('sha256').update(JSON.stringify(plainData(value))).digest('hex');
+  const newId = () => require('node:crypto').randomUUID();
+  const planDigest = raw => strongDigest(core.validatePlan(raw));
+  const indexDigest = index => strongDigest({items:index.items.map(item=>({path:item.path,kind:item.kind,markdown:item.markdown}))
+    .sort((a,b)=>a.path.localeCompare(b.path)),issues:index.issues});
+  const sidecarPath = (path,folder) => {
+    const clean=cleanPath(path);
+    if(!clean.startsWith(folder+'/') || clean.slice(folder.length+1).includes('/') || !clean.endsWith('.json')) throw new Error('侧车只能保存在 '+folder+' 中');
+    return clean;
+  };
+  const listSidecars = folder => (vault.getAbstractFileByPath(folder)?.children || []).filter(file=>file.extension==='json')
+    .map(file=>({path:file.path,title:file.basename})).sort((a,b)=>a.title.localeCompare(b.title,'zh-CN'));
+  async function listBlueprints() { return listSidecars(blueprintFolder); }
+  async function listBlueprintRuns() { return listSidecars(runFolder); }
+  async function listMatchingBlueprintRuns(rawPlan,options={}) {
+    const plan=core.validatePlan(rawPlan),digest=planDigest(plan),io=readContext(options),matches=[];
+    try {
+      for(const item of listSidecars(runFolder)) {
+        originCheck(options);io.check();
+        const file=vault.getAbstractFileByPath(item.path);
+        try {
+          if(!file || file.extension!=='json') continue;
+          const run=validateBlueprintRun(parseSidecar(await io.run(()=>vault.read(file),'读取组卷记录')));
+          if(file.path!==item.path || vault.getAbstractFileByPath(item.path)!==file || run.resultPlanDigest!==digest) continue;
+          matchRunPlan(run,plan);
+          matches.push({path:item.path,title:run.blueprintSnapshot.title,createdAt:run.createdAt,runId:run.runId});
+        } catch(error) {
+          if(error?.name==='AbortError'||error?.code==='MWB_ASSEMBLY_TIMEOUT') throw error;
+          // Unknown, broken or unrelated sidecars never prevent opening an old plan.
+        }
+      }
+      originCheck(options);io.check();
+      if(planDigest(rawPlan)!==digest) throw new Error('方案已变化，请重新查找配额记录');
+      return matches;
+    } finally {io.close();}
+  }
+  const queueBlueprintIO = action => {
+    const task=blueprintIO.catch(()=>{}).then(action);blueprintIO=task;return task;
+  };
+  const parseSidecar = source => {
+    if(typeof source!=='string' || source.length>8*1024*1024) throw new Error('侧车文件过大或内容无效');
+    return plainData(JSON.parse(source));
+  };
+  function createBlueprintSession() {
+    const known=new Map();
+    return {
+      async loadBlueprint(path) {
+        const target=sidecarPath(path,blueprintFolder),api=engine();
+        return queueBlueprintIO(async()=>{
+          const file=vault.getAbstractFileByPath(target);
+          if(!file || file.extension!=='json') throw new Error('蓝图文件不存在');
+          const text=await vault.read(file),blueprint=api.validateBlueprint(parseSidecar(text));
+          if(file.path!==target || vault.getAbstractFileByPath(target)!==file) throw new Error('读取时蓝图文件已被替换');
+          known.set(target,{file,text});return blueprint;
+        });
+      },
+      async saveBlueprint(raw,path) {
+        const blueprint=engine().validateBlueprint(raw),requested=path?sidecarPath(path,blueprintFolder):null;
+        return queueBlueprintIO(async()=>{
+          await ensureFolder(blueprintFolder);
+          const target=requested || `${blueprintFolder}/${stem(blueprint.title)}_${newId()}.json`;
+          const previous=known.get(target),file=vault.getAbstractFileByPath(target),text=JSON.stringify(blueprint,null,2)+'\n';
+          if(requested && previous && (!file || file!==previous.file)) throw new Error('蓝图文件已被外部删除或替换，请重新打开或另存');
+          if(file) {
+            if(!previous) throw new Error('请先打开该蓝图再保存，或另存为新蓝图');
+            if(await vault.read(file)!==previous.text || file.path!==target || vault.getAbstractFileByPath(target)!==file)
+              throw new Error('蓝图文件已被外部修改，请重新打开后再保存');
+            await vault.modify(file,text);
+          } else await vault.create(target,text);
+          known.set(target,{file:vault.getAbstractFileByPath(target),text});return target;
+        });
+      }
+    };
+  }
+  const {saveBlueprint,loadBlueprint}=createBlueprintSession();
+  function originCheck(options) {
+    if(options.isCurrent && !options.isCurrent()) throw abortError();
+  }
+  const sourcesFromIndex = index => index.items.map(item=>({path:item.path,markdown:item.markdown,live:vault.getAbstractFileByPath(item.path)}));
+  async function generateBlueprintCandidate(input,options={}) {
+    const api=engine(),plan=core.validatePlan(input.plan),blueprint=api.validateBlueprint(input.blueprint);
+    const locks=plainData(input.locks || []),excludedKeys=plainData(input.excludedKeys || []);
+    const io=readContext(options);let guard;
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config);
+      const index=await scan(config,{io}),sourceSnapshotDigest=indexDigest(index),sources=sourcesFromIndex(index);
+      const prepared=api.prepareAllocation({index,plan,blueprint,locks,excludedKeys});
+      const allocation=prepared.status==='ready' ? api.allocateQuestions(prepared.problem,{seed:input.seed,limits:options.limits,signal:options.signal}) : null;
+      await recheckSources(sources,io,guard);originCheck(options);guard.assertCurrent();
+      return {schemaVersion:1,status:allocation?.status || prepared.status,index,blueprint,locks:allocation ? plainData(allocation.locks) : locks,excludedKeys,
+        allocation,context:prepared.context || null,issues:prepared.issues || [],config,
+        basePlanSnapshot:plan,basePlanSnapshotDigest:planDigest(plan),sourceSnapshotDigest};
+    } finally {guard?.dispose();io.close();}
+  }
+  function candidateState(candidate) {
+    if(!candidate || Object.getPrototypeOf(candidate)!==Object.prototype || Reflect.ownKeys(candidate).some(key=>
+      typeof key!=='string' || ['__proto__','prototype','constructor'].includes(key) ||
+      Object.getOwnPropertyDescriptor(candidate,key).get || Object.getOwnPropertyDescriptor(candidate,key).set))
+      throw new Error('蓝图候选结构无效');
+    if(candidate.schemaVersion!==1 || candidate.status!=='complete') throw new Error('配额候选未完整满足，不能加入编排');
+    const api=engine(),plan=core.validatePlan(candidate.basePlanSnapshot),blueprint=api.validateBlueprint(candidate.blueprint);
+    if(planDigest(plan)!==candidate.basePlanSnapshotDigest) throw new Error('候选基准方案已变化');
+    const locks=plainData(candidate.locks),allocation=api.validateAllocation(candidate.allocation);
+    if(candidate.context!==allocation.context || JSON.stringify(plainData(allocation.locks))!==JSON.stringify(locks)) throw new Error('候选锁定上下文已变化');
+    return {api,plan,blueprint,locks,excludedKeys:plainData(candidate.excludedKeys),allocation};
+  }
+  function replaceBlueprintCandidate(candidate,{targetSlotId,mode='row',seed,candidateKey,limits,signal}={}) {
+    const {api,plan,blueprint,locks,excludedKeys,allocation}=candidateState(candidate);
+    const prepared=api.prepareAllocation({index:candidate.index,plan,blueprint,locks,excludedKeys});
+    if(prepared.status!=='ready' || prepared.context!==candidate.context || allocation.context!==candidate.context) throw new Error('换题候选上下文已变化，请重新生成');
+    const replacement=api.prepareReplacement({problem:prepared.problem,allocation,targetSlotId,mode,candidateKey});
+    if(replacement.status!=='ready') return {...candidate,status:replacement.status,issues:replacement.issues || [],allocation:null};
+    const next=api.allocateQuestions(replacement.problem,{seed:seed ?? allocation.seed,limits,signal});
+    return {...candidate,status:next.status,allocation:next,context:next.context,locks:plainData(next.locks),issues:replacement.issues || []};
+  }
+  function updateBlueprintLocks(candidate,newLocks) {
+    const {api,plan,blueprint,excludedKeys,allocation}=candidateState(candidate);
+    if(typeof api.updateAllocationLocks!=='function') throw new Error('蓝图锁定更新接口未配置');
+    const next=api.updateAllocationLocks({index:candidate.index,plan,blueprint,locks:plainData(newLocks),excludedKeys,allocation});
+    return {...candidate,status:next.status,allocation:next,context:next.context,locks:plainData(next.locks)};
+  }
+  async function applyBlueprintCandidate(rawPlan,candidate,options={}) {
+    const state=candidateState(candidate),api=state.api,plan=core.validatePlan(rawPlan),io=readContext(options);let guard;
+    try {
+      // The index is a UI convenience, never an application authority.
+      const {blueprint,locks,excludedKeys,allocation}=state,config=normalizeSettings(candidate.config);
+      if(planDigest(plan)!==candidate.basePlanSnapshotDigest) throw new Error('方案已变化，请重新生成蓝图候选');
+      originCheck(options);io.check();
+      const currentConfig=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      if(JSON.stringify(currentConfig)!==JSON.stringify(config)) throw new Error('素材目录设置已变化，请重新生成蓝图候选');
+      guard=beginSourceCheck(config);
+      const index=await scan(config,{io}),sources=sourcesFromIndex(index);
+      if(indexDigest(index)!==candidate.sourceSnapshotDigest) throw new Error('来源内容或题库身份已变化，请重新生成蓝图候选');
+      const entryIdsBySlot=Object.fromEntries(allocation.assignments.filter(row=>row.origin==='candidate').map(row=>[row.slotId,newId()]));
+      const applied=api.applyAllocation({freshIndex:index,plan,blueprint,locks,excludedKeys,allocation,expectedContext:candidate.context,entryIdsBySlot});
+      await recheckSources(sources,io,guard);originCheck(options);guard.assertCurrent();
+      if(planDigest(rawPlan)!==candidate.basePlanSnapshotDigest) throw new Error('方案已变化，请重新生成蓝图候选');
+      const next=core.validatePlan(applied.plan);
+      const run=validateBlueprintRun({schemaVersion:1,kind:'mathsemble-blueprint-run',runId:newId(),createdAt:new Date().toISOString(),
+        blueprintSnapshot:blueprint,basePlanSnapshotDigest:candidate.basePlanSnapshotDigest,resultPlanDigest:planDigest(next),
+        planPathHint:null,seed:allocation.seed,algorithmVersion:allocation.algorithmVersion,locks,assignments:applied.bindings,
+        sourceSnapshotDigest:candidate.sourceSnapshotDigest});
+      return {plan:next,index,run};
+    } finally {guard?.dispose();io.close();}
+  }
+  function validateBlueprintRun(raw) {
+    const run=plainData(raw);
+    exact(run,['schemaVersion','kind','runId','createdAt','blueprintSnapshot','basePlanSnapshotDigest','resultPlanDigest','planPathHint',
+      'seed','algorithmVersion','locks','assignments','sourceSnapshotDigest'],'组卷记录');
+    if(run.schemaVersion!==1 || run.kind!=='mathsemble-blueprint-run') throw new Error('不支持的组卷记录版本');
+    if(typeof run.runId!=='string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/.test(run.runId)) throw new Error('组卷记录 ID 无效');
+    boundedText(run.createdAt,'组卷时间',80);if(!Number.isFinite(Date.parse(run.createdAt))) throw new Error('组卷时间无效');
+    for(const field of ['basePlanSnapshotDigest','resultPlanDigest','sourceSnapshotDigest'])
+      if(!/^[a-f0-9]{64}$/.test(run[field])) throw new Error('组卷快照摘要无效');
+    run.blueprintSnapshot=engine().validateBlueprint(run.blueprintSnapshot);
+    if(run.planPathHint!==null) run.planPathHint=planPath(run.planPathHint);
+    boundedText(run.seed,'组卷种子',512,true);boundedText(run.algorithmVersion,'组卷算法版本',100);
+    const rows=new Map(run.blueprintSnapshot.rows.map(row=>[row.rowId,row])),slots=new Set(),entries=new Set();
+    const validateBinding=(row,binding)=>{
+      exact(row,['rowId','slotId','origin','sourceId','sourcePath','sourceFingerprint','existingEntryId',...(binding?['entryId']:[])],'配额归属');
+      for(const key of ['rowId','slotId','sourceId','sourcePath','sourceFingerprint']) boundedText(row[key],'配额 '+key,key==='sourcePath'?4096:512,key==='sourceId');
+      if(!['plan','candidate'].includes(row.origin)) throw new Error('配额来源无效');
+      if(row.origin==='plan') boundedText(row.existingEntryId,'既有编排 ID',512);
+      else if(row.existingEntryId!==undefined) throw new Error('新增题不能冒充已有编排');
+      if(binding) boundedText(row.entryId,'编排 ID',512);
+      const config=rows.get(row.rowId),prefix=row.rowId+':',ordinal=row.slotId.startsWith(prefix)?Number(row.slotId.slice(prefix.length)):NaN;
+      if(!config || !Number.isInteger(ordinal) || ordinal<1 || ordinal>config.count || row.slotId!==prefix+ordinal) throw new Error('配额槽与蓝图不匹配');
+      if(cleanPath(row.sourcePath)!==row.sourcePath || !/\.md$/i.test(row.sourcePath)) throw new Error('配额来源路径无效');
+    };
+    if(!Array.isArray(run.assignments)||run.assignments.length>1000||!Array.isArray(run.locks)||run.locks.length>1000) throw new Error('配额归属列表无效');
+    for(const row of run.assignments) {
+      validateBinding(row,true);
+      if(slots.has(row.slotId)||entries.has(row.entryId)) throw new Error('配额槽或编排 ID 重复');
+      if(row.origin==='plan'&&row.entryId!==row.existingEntryId) throw new Error('已有编排身份不一致');
+      slots.add(row.slotId);entries.add(row.entryId);
+    }
+    if(run.assignments.length!==run.blueprintSnapshot.rows.reduce((n,row)=>n+row.count,0)) throw new Error('组卷记录配额不完整');
+    const locked=new Set();
+    for(const lock of run.locks) {
+      validateBinding(lock,false);const bound=run.assignments.find(row=>row.slotId===lock.slotId);
+      if(locked.has(lock.slotId)||!bound||Object.keys(lock).some(key=>lock[key]!==bound[key])) throw new Error('锁定项与配额归属不匹配');
+      locked.add(lock.slotId);
+    }
+    return run;
+  }
+  function matchRunPlan(run,rawPlan) {
+    const plan=core.validatePlan(rawPlan);
+    if(planDigest(plan)!==run.resultPlanDigest) throw new Error('组卷记录与当前方案快照不匹配');
+    for(const binding of run.assignments) {
+      const entry=plan.entries.find(row=>row.entryId===binding.entryId);
+      if(!entry || entry.kind!=='question' || ['sourceId','sourcePath','sourceFingerprint'].some(key=>entry[key]!==binding[key])) throw new Error('组卷记录的来源归属与方案不匹配');
+    }
+    return plan;
+  }
+  async function saveBlueprintRun(raw,{planPath:path}={}) {
+    const run=validateBlueprintRun(raw),targetPlan=planPath(path || run.planPathHint);
+    return queueBlueprintIO(async()=>{
+      const file=vault.getAbstractFileByPath(targetPlan);
+      if(!file || file.extension!=='json') throw new Error('请先保存方案，再保存组卷记录');
+      const saved=await vault.read(file);matchRunPlan(run,JSON.parse(saved));
+      if(file.path!==targetPlan || vault.getAbstractFileByPath(targetPlan)!==file) throw new Error('保存记录时方案文件已被替换');
+      run.planPathHint=targetPlan;await ensureFolder(runFolder);
+      if(file.path!==targetPlan || vault.getAbstractFileByPath(targetPlan)!==file || await vault.read(file)!==saved)
+        throw new Error('保存组卷记录前方案已被修改，请重新核对');
+      // The same run may be retried under a new file name after an uncertain
+      // write; no previous record is ever modified or silently replaced.
+      const target=`${runFolder}/${stem(run.blueprintSnapshot.title)}_${run.runId}_${newId()}.json`;
+      await vault.create(target,JSON.stringify(run,null,2)+'\n');return target;
+    });
+  }
+  async function loadBlueprintRun(path,rawPlan) {
+    engine();const target=sidecarPath(path,runFolder);
+    const file=vault.getAbstractFileByPath(target);
+    if(!file || file.extension!=='json') throw new Error('组卷记录不存在');
+    const content=await vault.read(file),run=validateBlueprintRun(parseSidecar(content));
+    if(file.path!==target || vault.getAbstractFileByPath(target)!==file) throw new Error('读取时组卷记录已被替换');
+    matchRunPlan(run,rawPlan);return run; // Snapshot match is not source freshness.
+  }
+  function verifyRunOnIndex(run,plan,index,options={}) {
+    const api=engine();matchRunPlan(run,plan);
+    const locks=run.assignments.map(({entryId,existingEntryId,origin,...row})=>({...row,origin:'plan',existingEntryId:entryId}));
+    const prepared=api.prepareAllocation({index,plan,blueprint:run.blueprintSnapshot,locks});
+    if(prepared.status!=='ready') throw new Error('组卷记录的来源、锁定或配额已失效');
+    const allocation=api.allocateQuestions(prepared.problem,{seed:run.seed,limits:options.limits,signal:options.signal});
+    if(allocation.status!=='complete') throw new Error('组卷记录无法完整复核：'+allocation.status);
+    api.applyAllocation({freshIndex:index,plan,blueprint:run.blueprintSnapshot,locks,allocation,expectedContext:prepared.context,entryIdsBySlot:{}});
+  }
+  async function verifyBlueprintRun(raw,rawPlan,options={}) {
+    const run=validateBlueprintRun(raw),plan=matchRunPlan(run,rawPlan),io=readContext(options);let guard;
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));guard=beginSourceCheck(config);
+      const index=await scan(config,{io}),sources=sourcesFromIndex(index);
+      verifyRunOnIndex(run,plan,index,options);
+      await recheckSources(sources,io,guard);originCheck(options);guard.assertCurrent();matchRunPlan(run,rawPlan);
+      return {run,index,bindings:plainData(run.assignments)};
+    } finally {guard?.dispose();io.close();}
+  }
+  const familyCandidates=new WeakMap();
+  const familyApi=()=>{
+    if(!familyEngine || typeof familyEngine.prepareReplacement!=='function' || typeof familyEngine.applyReplacement!=='function')
+      throw new Error('同族换题引擎未配置');
+    return familyEngine;
+  };
+  function familyConstraints(run,entryId,unlock) {
+    const binding=run?.assignments.find(row=>row.entryId===entryId),lock=binding&&run.locks.find(row=>row.slotId===binding.slotId);
+    return {rowFilters:binding?run.blueprintSnapshot.rows.find(row=>row.rowId===binding.rowId).filters:{},
+      maxPerFamily:run?.blueprintSnapshot.constraints.maxPerFamily??null,locked:!!lock&&!unlock,
+      targetSlotId:binding?.slotId||null};
+  }
+  async function checkFamilyOrigin(rawPlan,digest,config,options,io,guard) {
+    originCheck(options);io.check();guard.assertCurrent();
+    const current=normalizeSettings(options.config || await io.run(loadSettings,'核对素材目录'));
+    if(JSON.stringify(current)!==JSON.stringify(config)) throw new Error('素材目录设置已变化，请重新查看同族题');
+    if(planDigest(rawPlan)!==digest) throw new Error('方案已变化，请重新查看同族题');
+    originCheck(options);io.check();guard.assertCurrent();
+  }
+  async function prepareFamilyReplacement(input,options={}) {
+    const api=familyApi(),plan=core.validatePlan(input.plan),basePlanSnapshotDigest=planDigest(plan);
+    const entryId=boundedText(input.entryId,'编排 ID',512),filters=plainData(input.filters||{});
+    if(input.unlock!==undefined&&typeof input.unlock!=='boolean') throw new Error('解除锁定选择无效');
+    const unlock=input.unlock===true,run=input.run===undefined?null:validateBlueprintRun(input.run);
+    if(run)matchRunPlan(run,plan);
+    const io=readContext(options);let guard;
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));guard=beginSourceCheck(config);
+      const index=await scan(config,{io}),sources=sourcesFromIndex(index),sourceSnapshotDigest=indexDigest(index);
+      if(run)verifyRunOnIndex(run,plan,index,options);
+      const constraints=familyConstraints(run,entryId,unlock);
+      const prepared=api.prepareReplacement({index,plan,entryId,filters,...constraints});
+      await recheckSources(sources,io,guard);await checkFamilyOrigin(input.plan,basePlanSnapshotDigest,config,options,io,guard);
+      const wrapper={schemaVersion:1,status:prepared.status,candidates:plainData(prepared.candidates||[]),context:prepared.context||null,
+        issues:plainData(prepared.issues||[]),index,entryId,filters:plainData(filters),unlock,run:run?plainData(run):null,
+        config:plainData(config),basePlanSnapshotDigest,sourceSnapshotDigest};
+      // UI fields are display data. Captured constraints cannot be removed or
+      // weakened by clearing a wrapper.run, changing filters or toggling unlock.
+      familyCandidates.set(wrapper,{status:prepared.status,entryId,filters,unlock,run,config,context:prepared.context,
+        basePlanSnapshotDigest,sourceSnapshotDigest,constraints});
+      return wrapper;
+    } finally {guard?.dispose();io.close();}
+  }
+  async function applyFamilyReplacement(rawPlan,candidate,candidateKey,options={}) {
+    const state=familyCandidates.get(candidate);
+    if(!state||state.status!=='ready') throw new Error('同族候选无效，请重新查看同族题');
+    const api=familyApi(),plan=core.validatePlan(rawPlan),io=readContext(options);let guard;
+    try {
+      if(planDigest(plan)!==state.basePlanSnapshotDigest) throw new Error('方案已变化，请重新查看同族题');
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      if(JSON.stringify(config)!==JSON.stringify(state.config)) throw new Error('素材目录设置已变化，请重新查看同族题');
+      guard=beginSourceCheck(config);
+      const index=await scan(config,{io}),sources=sourcesFromIndex(index),sourceSnapshotDigest=indexDigest(index);
+      if(sourceSnapshotDigest!==state.sourceSnapshotDigest) throw new Error('来源内容或题库身份已变化，请重新查看同族题');
+      if(state.run)verifyRunOnIndex(state.run,plan,index,options);
+      const result=api.applyReplacement({freshIndex:index,plan,entryId:state.entryId,candidateKey,expectedContext:state.context,
+        filters:state.filters,...state.constraints});
+      const next=core.validatePlan(result.plan);let run;
+      if(state.run) {
+        const previous=state.run,entry=next.entries.find(row=>row.entryId===state.entryId);
+        const reference={sourceId:entry.sourceId,sourcePath:entry.sourcePath,sourceFingerprint:entry.sourceFingerprint};
+        run=validateBlueprintRun({...previous,runId:newId(),createdAt:new Date().toISOString(),planPathHint:null,
+          basePlanSnapshotDigest:state.basePlanSnapshotDigest,resultPlanDigest:planDigest(next),sourceSnapshotDigest,
+          algorithmVersion:api.algorithmVersion||'family-replacement-v1',
+          assignments:previous.assignments.map(row=>row.entryId===state.entryId?{...row,...reference}:row),
+          locks:previous.locks.filter(lock=>!(state.unlock&&lock.slotId===state.constraints.targetSlotId))});
+        verifyRunOnIndex(run,next,index,options);
+      }
+      await recheckSources(sources,io,guard);await checkFamilyOrigin(rawPlan,state.basePlanSnapshotDigest,config,options,io,guard);
+      return {plan:next,index,...(run?{run}:{})};
+    } finally {guard?.dispose();io.close();}
+  }
   async function readResolvedSources(plan,config,io) {
     const fresh = await scan(config,{io});
     const result = core.resolvePlan(plan,fresh);
@@ -6216,6 +7302,15 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     const file = Object.freeze({path:`${outputFolder}/__preview__.md`,basename:plan.title,extension:'md'});
     const prepared = await compile(plan,index,{...timeouts,config,outputPath:file.path,signal:options.signal});
     const assemblyPreview = Object.freeze({...prepared,
+      getEvidence() {
+        if (typeof collectMediaDependencies !== 'function') throw new Error('媒体依赖收集器未配置，无法生成归档证据');
+        // Evidence is derived only from the captured text. Never re-read a live
+        // note here, and never expose its mutable TFile to archive consumers.
+        const sources = prepared.sources.map(({path,markdown})=>({path,markdown}));
+        return JSON.parse(JSON.stringify({planSnapshot:plan,compiledMarkdown:prepared.markdown,
+          compiledPathContext:file.path,sourceMap:prepared.sourceMap,sources,
+          declaredDependencies:sources.flatMap(source=>collectMediaDependencies(source.markdown,source.path).dependencies)}));
+      },
       async assertCurrent(signal) {
         const io = readContext({...timeouts,signal});
         let guard;
@@ -6247,7 +7342,345 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     if (!file || file.extension !== 'md') throw new Error('源文件不存在');
     await app.workspace.getLeaf('tab').openFile(file);
   }
-  return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource};
+  return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
+    listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
+    replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
+    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement};
+};
+
+return module.exports; })();
+const mwbAssemblyBlueprintUi = (() => { const module = {exports:{}};
+'use strict';
+
+module.exports = function createBlueprintModal({Modal,Component,Notice,core,engine,service,renderMarkdown}) {
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const uid = () => globalThis.crypto?.randomUUID?.() || 'b_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2);
+  const types = {choice:'单选',multiple_choice:'多选',fill_blank:'填空',true_false:'判断',short_answer:'解答',calculation:'计算',proof:'证明',comprehensive:'综合'};
+  const text = error => error?.message || String(error);
+  const body = value => value.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/,'');
+  const row = n => ({rowId:uid(),label:'配额 '+n,count:1,filters:{}});
+  return class BlueprintModal extends Modal {
+    constructor(app,plugin,view) {
+      super(app);this.plugin=plugin;this.view=view;this.blueprintEditor=true;
+      this.blueprint={schemaVersion:1,blueprintId:uid(),revision:1,title:'配额蓝图',rows:[row(1)],constraints:{uniqueQuestion:true,maxPerFamily:null}};
+      this.session=service.createBlueprintSession();this.locks=[];this.candidate=null;this.closed=false;this.busy=false;
+      this.visible=50;this.seed=uid();this.saved=[];this.runs=[];this.blueprintPath=null;this.baseRevision=1;
+    }
+    el(tag,parent,label,cls) {const node=this.contentEl.ownerDocument.createElement(tag);if(label!==undefined)node.textContent=label;if(cls)node.className=cls;parent?.appendChild(node);return node;}
+    button(parent,label,action,cls) {const node=this.el('button',parent,label,cls);node.type='button';node.onclick=()=>{if(!node.disabled)Promise.resolve().then(()=>{if(!this.closed&&node.isConnected&&!node.disabled)return action();}).catch(error=>this.status(text(error),true));};return node;}
+    field(parent,label,tag='input') {const wrap=this.el('label',parent,undefined,'mwb-blueprint-field');this.el('span',wrap,label);const node=this.el(tag,wrap);node.setAttribute('aria-label',label);return node;}
+    status(message,error=false) {if(this.closed)return;this.statusEl.textContent=message;this.statusEl.classList.toggle('is-error',error);}
+    async action(label,fn) {
+      if(this.busy||this.closed)return;
+      this.busy=true;const controller=this.controller=new AbortController();this.status(label+'…');this.updateBusy();
+      try {return await fn({signal:controller.signal,isCurrent:()=>!this.closed&&this.controller===controller&&!controller.signal.aborted,config:clone(this.view.settings)});}
+      catch(error){this.status(text(error),error?.name!=='AbortError');}
+      finally {if(this.controller===controller)this.controller=null;this.busy=false;if(!this.closed)this.updateBusy();}
+    }
+    updateBusy() {
+      for(const node of this.contentEl.querySelectorAll('input,select,button')) {
+        if(node===this.cancelButton){node.disabled=!this.busy;continue;}
+        node.disabled=this.busy||node.dataset.unavailable==='true';
+      }
+    }
+    changed() {
+      this.candidate=null;this.closePreviews();this.results?.replaceChildren();
+      if(this.blueprintPath)this.blueprint.revision=this.baseRevision+1;
+      this.status('条件已更新，请生成候选。');this.updateApply();
+    }
+    async onOpen() {
+      this.lifecycleOwner=new Component();
+      this.lifecycleOwner.register?.(()=>{if(!this.closed)this.close();});
+      this.plugin.addChild?.(this.lifecycleOwner);
+      this.modalEl.classList.add('mwb-blueprint-modal');this.contentEl.classList.add('mwb-blueprint');
+      this.el('h2',this.contentEl,'按配额组卷');
+      this.el('p',this.contentEl,'每行指定条件和题数；同一题只计入一行。未选条件表示不限，同一条件多选表示“或”。锁定后只重抽其余题，完整满足配额后再加入编排。','mwb-assembly-muted');
+      const saved=this.el('div',this.contentEl,undefined,'mwb-blueprint-toolbar');
+      this.savedSelect=this.field(saved,'已保存蓝图','select');
+      this.button(saved,'打开蓝图',()=>this.load());
+      this.button(saved,'新建蓝图',()=>{this.blueprint={schemaVersion:1,blueprintId:uid(),revision:1,title:'配额蓝图',rows:[row(1)],constraints:{uniqueQuestion:true,maxPerFamily:null}};this.blueprintPath=null;this.locks=[];this.changed();this.renderEditor();});
+      this.button(saved,'保存蓝图',()=>this.save(false));this.button(saved,'另存蓝图',()=>this.save(true));
+      this.titleInput=this.field(this.contentEl,'蓝图名称');this.titleInput.onchange=()=>{this.blueprint.title=this.titleInput.value;this.changed();};
+      this.familyLimitInput=this.field(this.contentEl,'每个题族最多题数（空白为不限）');this.familyLimitInput.type='number';this.familyLimitInput.min='1';this.familyLimitInput.max='1000';this.familyLimitInput.step='1';
+      this.familyLimitInput.onchange=()=>{this.blueprint.constraints.maxPerFamily=this.familyLimitInput.value.trim()===''?null:Number(this.familyLimitInput.value);this.changed();};
+      this.rowsEl=this.el('div',this.contentEl,undefined,'mwb-blueprint-rows');
+      this.button(this.contentEl,'添加配额行',()=>{if(this.blueprint.rows.length>=64){this.status('最多 64 行配额。',true);return;}this.blueprint.rows.push(row(this.blueprint.rows.length+1));this.changed();this.renderEditor();});
+      const tools=this.el('div',this.contentEl,undefined,'mwb-blueprint-toolbar');
+      this.button(tools,'生成候选',()=>this.generate(false),'mod-cta');
+      this.button(tools,'重抽未锁定题',()=>this.generate(true));
+      this.applyButton=this.button(tools,'应用完整配额',()=>this.apply(),'mod-cta');
+      this.cancelButton=this.button(tools,'取消计算',()=>this.controller?.abort(Object.assign(new Error('操作已取消'),{name:'AbortError'})));
+      this.statusEl=this.el('div',this.contentEl,'设置配额后生成候选。','mwb-blueprint-status');this.statusEl.setAttribute('role','status');
+      this.results=this.el('div',this.contentEl,undefined,'mwb-blueprint-results');
+      this.records=this.el('details',this.contentEl);this.el('summary',this.records,'查看当前方案的配额记录');
+      const recordTools=this.el('div',this.records,undefined,'mwb-blueprint-toolbar');this.runSelect=this.field(recordTools,'配额记录','select');
+      this.button(recordTools,'核对记录',()=>this.inspectRun());this.runResult=this.el('div',this.records);
+      this.renderEditor();this.updateApply();this.updateBusy();
+      await this.action('读取蓝图列表',async()=>{await this.refreshLists();this.status('可打开已有蓝图，或设置新的配额。');});
+    }
+    async refreshLists() {
+      const [saved,runs]=await Promise.all([service.listBlueprints(),service.listBlueprintRuns()]);
+      if(this.closed)return;this.saved=saved;this.runs=runs;
+      this.savedSelect.replaceChildren();this.el('option',this.savedSelect,'选择蓝图').value='';
+      for(const item of saved)this.el('option',this.savedSelect,item.title||item.path).value=item.path;
+      this.savedSelect.value=this.blueprintPath||'';
+      this.runSelect.replaceChildren();this.el('option',this.runSelect,'选择记录并核对当前方案').value='';
+      for(const item of runs)this.el('option',this.runSelect,[item.title||item.blueprintTitle||item.path,item.createdAt||''].filter(Boolean).join(' · ')).value=item.path;
+    }
+    async load() {
+      const path=this.savedSelect.value;if(!path){this.status('先选择蓝图。',true);return;}
+      await this.action('打开蓝图',async()=>{
+        const value=await this.session.loadBlueprint(path);if(this.closed)return;
+        this.blueprint=engine.validateBlueprint(value);this.baseRevision=this.blueprint.revision;this.blueprintPath=path;
+        this.locks=[];this.candidate=null;this.renderEditor();this.renderCandidate();this.status('蓝图已打开；编排中已有题目仍保留。');
+      });
+    }
+    async save(asNew) {
+      await this.action('保存蓝图',async()=>{
+        let value=engine.validateBlueprint(this.blueprint);
+        if(asNew)value={...value,blueprintId:uid(),revision:1};
+        const path=await this.session.saveBlueprint(value,asNew?undefined:this.blueprintPath||undefined);
+        if(this.closed)return;this.blueprint=value;this.blueprintPath=path;this.baseRevision=value.revision;
+        if(asNew){this.candidate=null;this.renderCandidate();}
+        await this.refreshLists();this.renderEditor();this.status('蓝图已保存：'+path);
+      });
+    }
+    options(name) {
+      const items=(this.view.index?.items||[]).filter(item=>item.kind==='question');
+      const values=items.flatMap(item=>name==='tier'?item.tiers:name==='method'?item.methods:name==='knowledge'?item.knowledgeNodes:[item[name]]).filter(value=>value!==undefined&&value!==null&&value!=='');
+      if(name==='questionType')values.push(...Object.keys(types));
+      if(name==='difficulty')values.push(1,2,3,4,5);
+      return [...new Set(values.map(String))].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}));
+    }
+    filter(parent,row,name,label) {
+      const input=this.field(parent,label,'select');input.multiple=true;input.size=3;input.dataset.filter=name;
+      const selected=Array.isArray(row.filters[name])?row.filters[name]:row.filters[name]?[row.filters[name]]:[];
+      const values=[...new Set([...this.options(name),...selected.map(String)])];
+      for(const value of values){const option=this.el('option',input,name==='questionType'?types[value]||value:value);option.value=value;option.selected=selected.map(String).includes(value);}
+      input.onchange=()=>{row.filters[name]=[...input.selectedOptions].map(option=>name==='difficulty'?Number(option.value):option.value);this.changed();};
+      return input;
+    }
+    renderEditor() {
+      this.titleInput.value=this.blueprint.title;this.familyLimitInput.value=this.blueprint.constraints.maxPerFamily??'';this.rowsEl.replaceChildren();
+      for(const [position,row] of this.blueprint.rows.entries()) {
+        const panel=this.el('section',this.rowsEl,undefined,'mwb-blueprint-row');panel.dataset.rowId=row.rowId;
+        const main=this.el('div',panel,undefined,'mwb-blueprint-row-main');
+        const label=this.field(main,'配额行名称');label.value=row.label;label.onchange=()=>{row.label=label.value;this.changed();};
+        const count=this.field(main,'题数');count.type='number';count.min='1';count.max='1000';count.value=row.count;
+        count.onchange=()=>{row.count=Number(count.value);this.changed();};
+        this.button(main,'上移',()=>{if(!position)return;const rows=this.blueprint.rows;[rows[position-1],rows[position]]=[rows[position],rows[position-1]];this.changed();this.renderEditor();});
+        this.button(main,'移除此行',()=>{if(this.locks.some(lock=>lock.rowId===row.rowId)){this.status('请先解除这一行的锁定。',true);return;}this.blueprint.rows.splice(position,1);this.changed();this.renderEditor();});
+        const filters=this.el('div',panel,undefined,'mwb-blueprint-filter-grid');
+        this.filter(filters,row,'questionType','题型');this.filter(filters,row,'difficulty','难度');this.filter(filters,row,'tier','教学层次');
+        const query=this.field(filters,'题目关键词');query.value=row.filters.query||'';query.onchange=()=>{row.filters.query=query.value;this.changed();};
+        const more=this.el('details',panel);this.el('summary',more,'更多条件（同一条件多选为“或”）');const extra=this.el('div',more,undefined,'mwb-blueprint-filter-grid');
+        for(const [key,name] of [['subject','学科'],['knowledge','知识点'],['method','方法'],['role','教学角色'],['source','来源']])this.filter(extra,row,key,name);
+        const fixed=this.el('div',panel,undefined,'mwb-blueprint-toolbar');
+        const fromPlan=this.field(fixed,'将编排中的题目计入此行','select');this.el('option',fromPlan,'选择已有题目').value='';
+        for(const entry of this.view.plan.entries.filter(entry=>entry.kind==='question'))this.el('option',fromPlan,entry.title||entry.sourcePath).value=entry.entryId;
+        this.button(fixed,'固定到此行',()=>{
+          const entry=this.view.plan.entries.find(entry=>entry.entryId===fromPlan.value);if(!entry){this.status('先选择编排中的题目。',true);return;}
+          const slots=Array.from({length:Math.min(1000,Math.max(0,row.count))},(_,i)=>row.rowId+':'+(i+1));
+          const slotId=slots.find(id=>!this.locks.some(lock=>lock.slotId===id));
+          if(!slotId){this.status('该行已无空余锁定位置。',true);return;}
+          const lock={rowId:row.rowId,slotId,origin:'plan',sourceId:entry.sourceId||'',sourcePath:entry.sourcePath,sourceFingerprint:entry.sourceFingerprint,existingEntryId:entry.entryId};
+          this.locks.push(lock);this.candidate=null;this.renderCandidate();this.renderEditor();this.status('已固定已有题目；生成时会核对行条件与来源。');
+        });
+        const locks=this.el('div',panel,undefined,'mwb-blueprint-locks');
+        for(const lock of this.locks.filter(lock=>lock.rowId===row.rowId)){
+          const badge=this.el('span',locks,lock.sourcePath+' ','mwb-blueprint-lock');
+          this.button(badge,lock.origin==='plan'?'取消计入':'解除锁定',()=>this.toggleLock(lock,false));
+        }
+      }
+      this.updateBusy();
+    }
+    async generate(redraw) {
+      await this.action('按配额生成',async options=>{
+        if(redraw)this.seed=uid();
+        const value=await service.generateBlueprintCandidate({plan:clone(this.view.plan),blueprint:clone(this.blueprint),locks:clone(this.locks),excludedKeys:[],seed:this.seed},options);
+        if(this.closed)return;this.candidate=value;this.blueprint=value.blueprint||this.blueprint;this.visible=50;this.renderCandidate();
+      });
+    }
+    updateApply() {if(this.applyButton){this.applyButton.dataset.unavailable=String(this.candidate?.allocation?.status!=='complete');this.applyButton.disabled=this.busy||this.applyButton.dataset.unavailable==='true';}}
+    async toggleLock(assignment,locked) {
+      if(this.closed||this.busy)return;
+      const next=this.locks.filter(lock=>lock.slotId!==assignment.slotId);if(locked)next.push(clone(assignment));
+      this.locks=next;
+      if(this.candidate?.allocation?.status==='complete') {
+        try {this.candidate=service.updateBlueprintLocks(this.candidate,clone(next));}
+        catch(error){this.candidate=null;this.status(text(error)+'；请重新生成候选。',true);}
+      }
+      this.renderEditor();this.renderCandidate();
+    }
+    async replace(slotId,mode='row') {
+      await this.action('更换题目',async()=>{
+        const value=service.replaceBlueprintCandidate(this.candidate,{targetSlotId:slotId,mode,seed:uid()});
+        if(this.closed)return;
+        if(value.allocation?.status!=='complete'){this.status((value.allocation?.diagnostics||value.issues||[]).map(item=>item.message).join('；')||'没有满足条件的替代题，原候选保留。',true);return;}
+        this.candidate=value;this.renderCandidate();
+      });
+    }
+    renderCandidate() {
+      this.closePreviews();this.results?.replaceChildren();this.updateApply();if(!this.results||!this.candidate)return;
+      const candidate=this.candidate,allocation=candidate.allocation;
+      const issues=allocation?.diagnostics||candidate.issues||[];
+      this.status(allocation?.status==='complete'?'配额已全部满足。核对题目后应用；应用前会重新检查来源。':issues.map(item=>item.message).join('；')||'本次配额未能完整满足。',allocation?.status!=='complete');
+      if(allocation?.rowStats?.length){const table=this.el('table',this.results);const head=this.el('tr',this.el('thead',table));for(const label of ['配额','需要','候选池','锁定','分配'])this.el('th',head,label);const tbody=this.el('tbody',table);
+        for(const stat of allocation.rowStats){const tr=this.el('tr',tbody);for(const value of [this.blueprint.rows.find(row=>row.rowId===stat.rowId)?.label||stat.rowId,stat.requested,stat.available,stat.locked,stat.assigned])this.el('td',tr,String(value));}}
+      if(allocation?.status!=='complete')return;
+      const scope=this.previewScope={controller:new AbortController(),queue:[],active:0,closed:false,owner:new Component()};this.plugin.addChild?.(scope.owner);
+      const rows=this.el('div',this.results,undefined,'mwb-blueprint-candidates');
+      for(const assignment of allocation.assignments.slice(0,this.visible)) {
+        const item=candidate.index.items.find(item=>item.path===assignment.sourcePath&&(!assignment.sourceId||item.id===assignment.sourceId));
+        const card=this.el('article',rows,undefined,'mwb-blueprint-candidate');card.dataset.slotId=assignment.slotId;
+        this.el('strong',card,(this.blueprint.rows.find(row=>row.rowId===assignment.rowId)?.label||'配额')+' · '+(item?.title||assignment.sourcePath));
+        const tools=this.el('div',card,undefined,'mwb-blueprint-toolbar');const label=this.el('label',tools);const lock=this.el('input',label);lock.type='checkbox';lock.checked=this.locks.some(value=>value.slotId===assignment.slotId);lock.setAttribute('aria-label','锁定 '+(item?.title||assignment.sourcePath));this.el('span',label,' 锁定');
+        lock.onchange=()=>void this.toggleLock(assignment,lock.checked);
+        const replace=this.button(tools,'换一道',()=>this.replace(assignment.slotId));replace.dataset.unavailable=String(lock.checked);replace.disabled=lock.checked;
+        const family=this.button(tools,'同族换一道',()=>this.replace(assignment.slotId,'same-family'));family.dataset.unavailable=String(lock.checked||item?.familyState!=='classified');family.disabled=family.dataset.unavailable==='true';
+        const content=this.el('div',card,'正在加载题目…','mwb-typography mwb-blueprint-question');
+        if(item)scope.queue.push({item,content});else content.textContent='来源暂不可用，请重新生成。';
+      }
+      this.pump(scope);
+      if(allocation.assignments.length>this.visible)this.button(this.results,'再显示 50 道',()=>{this.visible+=50;this.renderCandidate();});
+      this.updateBusy();
+    }
+    pump(scope) {
+      while(!scope.closed&&scope.active<2&&scope.queue.length){const {item,content}=scope.queue.shift();scope.active++;content.replaceChildren();
+        Promise.resolve(renderMarkdown(body(item.markdown),content,item.path,scope.owner,scope.controller.signal)).catch(error=>{if(!scope.closed)content.textContent='预览未完成：'+text(error);})
+          .finally(()=>{scope.active--;this.pump(scope);});}
+    }
+    closePreviews() {const scope=this.previewScope;if(!scope)return;scope.closed=true;scope.controller.abort();scope.queue.length=0;this.plugin.removeChild?.(scope.owner);this.previewScope=null;}
+    async apply() {
+      if(this.candidate?.allocation?.status!=='complete')return;
+      await this.action('核对并应用配额',async options=>{
+        if(this.view.closed||this.view.actionBusy||this.view.scanBusy)throw new Error('编排工作区正在处理其他操作，请稍后重试');
+        const beforePlan=JSON.stringify(this.view.plan),beforeSettings=JSON.stringify(this.view.settings),candidate=this.candidate;
+        const isCurrent=()=>options.isCurrent()&&!this.view.closed&&!this.view.actionBusy&&!this.view.scanBusy&&
+          this.candidate===candidate&&JSON.stringify(this.view.plan)===beforePlan&&JSON.stringify(this.view.settings)===beforeSettings;
+        const result=await service.applyBlueprintCandidate(clone(this.view.plan),candidate,{...options,isCurrent});
+        if(!isCurrent())throw new Error('编排或目录设置已变化，旧候选未应用；请重新生成');
+        this.view.index=result.index;this.view.indexState='ready';this.view.populateFilters();this.view.renderTree();this.view.setPlan(result.plan);this.view.pendingBlueprintRun=result.run;
+        this.view.setStatus('已应用完整配额；保存方案时将同时保存配额归属与锁定记录。');this.close();
+      });
+    }
+    async inspectRun() {
+      const path=this.runSelect.value;if(!path){this.status('先选择配额记录。',true);return;}
+      await this.action('核对方案配额',async options=>{
+        const run=await service.loadBlueprintRun(path,clone(this.view.plan));
+        const checked=await service.verifyBlueprintRun(run,clone(this.view.plan),options);if(this.closed)return;
+        this.runResult.replaceChildren();this.el('p',this.runResult,'配额归属与来源已核对：'+checked.run.blueprintSnapshot.title);
+        for(const assignment of checked.run.assignments)this.el('p',this.runResult,(checked.run.blueprintSnapshot.rows.find(row=>row.rowId===assignment.rowId)?.label||assignment.rowId)+' · '+assignment.sourcePath+(checked.run.locks.some(lock=>lock.slotId===assignment.slotId)?'（锁定）':''));
+        this.status('记录匹配当前方案。原题卡与旧方案格式保持不变。');
+      });
+    }
+    onClose() {
+      this.closed=true;this.controller?.abort(Object.assign(new Error('蓝图窗口已关闭'),{name:'AbortError'}));this.controller=null;
+      this.closePreviews();const owner=this.lifecycleOwner;this.lifecycleOwner=null;if(owner)this.plugin.removeChild?.(owner);
+      this.candidate=null;if(this.view.blueprintModal===this)this.view.blueprintModal=null;this.contentEl.replaceChildren();
+    }
+  };
+};
+
+return module.exports; })();
+const mwbAssemblyFamilyUi = (() => { const module = {exports:{}};
+'use strict';
+
+module.exports = function createFamilyModal({Modal,Component,core,service,renderMarkdown}) {
+  const clone=value=>JSON.parse(JSON.stringify(value));
+  const types={choice:'单选',multiple_choice:'多选',fill_blank:'填空',true_false:'判断',short_answer:'解答',calculation:'计算',proof:'证明',comprehensive:'综合'};
+  const body=value=>String(value||'').replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/,'');
+  return class FamilyModal extends Modal {
+    constructor(app,plugin,view,entryId) {
+      super(app);this.plugin=plugin;this.view=view;this.entryId=entryId;this.familyEditor=true;
+      this.closed=false;this.busy=false;this.visible=30;this.candidate=null;this.run=undefined;this.matches=[];
+    }
+    el(tag,parent,text,cls) {const node=this.contentEl.ownerDocument.createElement(tag);if(text!==undefined)node.textContent=String(text);if(cls)node.className=cls;parent?.appendChild(node);return node;}
+    button(parent,label,fn) {const node=this.el('button',parent,label);node.type='button';node.onclick=()=>{if(!this.closed&&!node.disabled&&!this.busy)Promise.resolve().then(()=>{if(!this.closed&&node.isConnected&&!node.disabled&&!this.busy)return fn();}).catch(error=>this.status(error.message,true));};return node;}
+    check(parent,label,checked=false) {const wrap=this.el('label',parent,undefined,'mwb-family-check');const node=this.el('input',wrap);node.type='checkbox';node.checked=checked;node.setAttribute('aria-label',label);this.el('span',wrap,label);return node;}
+    status(message,error=false) {if(this.closed)return;this.statusEl.textContent=message;this.statusEl.classList.toggle('is-error',error);}
+    updateBusy() {for(const node of this.contentEl.querySelectorAll('input,select,button'))node.disabled=this.busy||node.dataset.unavailable==='true';}
+    snapshot() {return {plan:JSON.stringify(this.view.plan),settings:JSON.stringify(this.view.settings),pending:this.view.pendingBlueprintRun,filters:this.useFiltersInput?.checked?JSON.stringify(this.view.filters):null};}
+    current(snapshot) {return !this.closed&&!this.view.closed&&!this.view.actionBusy&&!this.view.scanBusy&&JSON.stringify(this.view.plan)===snapshot.plan&&JSON.stringify(this.view.settings)===snapshot.settings&&this.view.pendingBlueprintRun===snapshot.pending&&(snapshot.filters===null||JSON.stringify(this.view.filters)===snapshot.filters);}
+    async action(label,fn) {
+      if(this.closed||this.busy)return;
+      this.busy=true;const controller=this.controller=new AbortController(),snapshot=this.snapshot();this.updateBusy();this.status(label+'…');
+      const isCurrent=()=>this.controller===controller&&!controller.signal.aborted&&this.current(snapshot);
+      try {if(!isCurrent())throw new Error('编排工作区正在处理其他操作，请稍后重试');return await fn({signal:controller.signal,isCurrent,config:clone(this.view.settings)},snapshot);}
+      catch(error){this.status(error.message||String(error),error.name!=='AbortError');}
+      finally{if(this.controller===controller)this.controller=null;this.busy=false;if(!this.closed)this.updateBusy();}
+    }
+    async onOpen() {
+      this.lifecycleOwner=new Component();this.lifecycleOwner.register?.(()=>{if(!this.closed)this.close();});this.plugin.addChild?.(this.lifecycleOwner);
+      this.modalEl.classList.add('mwb-family-modal');this.contentEl.classList.add('mwb-family');
+      this.el('h2',this.contentEl,'同族换题');this.el('p',this.contentEl,'只列出同一有效题族中的其他题。请核对题意与难度；题族相同不表示数学上等价。替换保留位置、卷内标题和角色。','mwb-assembly-muted');
+      const controls=this.el('div',this.contentEl,undefined,'mwb-family-controls');
+      const label=this.el('label',controls);this.el('span',label,'采用配额记录');this.runSelect=this.el('select',label);this.runSelect.setAttribute('aria-label','采用配额记录');
+      this.useFiltersInput=this.check(controls,'沿用当前素材筛选',true);
+      this.unlockInput=this.check(controls,'解除此题配额锁定后换题');
+      this.runSelect.onchange=()=>{this.run=undefined;this.invalidate();};this.useFiltersInput.onchange=()=>this.invalidate();this.unlockInput.onchange=()=>this.invalidate();
+      this.button(controls,'刷新候选',()=>this.prepare());
+      this.statusEl=this.el('p',this.contentEl,'正在查找方案记录…','mwb-family-status');this.statusEl.setAttribute('role','status');
+      this.results=this.el('div',this.contentEl,undefined,'mwb-family-results');
+      let ready=false;
+      await this.action('读取配额记录',async options=>{
+        if(this.view.pendingBlueprintRun){this.run=this.view.pendingBlueprintRun;this.el('option',this.runSelect,'本次尚未保存的配额记录').value='pending';this.runSelect.dataset.unavailable='true';ready=true;}
+        else{
+          const matches=await service.listMatchingBlueprintRuns(clone(this.view.plan),options);if(!options.isCurrent())throw new Error('编排已变化，请重新打开换题窗口');this.matches=matches;
+          if(!matches.length){this.el('option',this.runSelect,'未找到匹配记录：按当前题族与筛选换题').value='legacy';this.runSelect.dataset.unavailable='true';ready=true;}
+          else{if(matches.length>1)this.el('option',this.runSelect,'请选择本次采用的配额记录').value='';for(const item of matches)this.el('option',this.runSelect,[item.title||item.path,item.createdAt||''].filter(Boolean).join(' · ')).value=item.path;if(matches.length===1){this.runSelect.value=matches[0].path;ready=true;}}
+        }
+        this.status(ready?'记录已确定，正在准备候选。':'有多份记录匹配，请明确选择后刷新候选。');
+      });
+      if(ready&&!this.closed)await this.prepare();
+    }
+    invalidate() {this.candidate=null;this.closePreviews();this.results.replaceChildren();this.status('条件已变化，请刷新候选。');}
+    async prepare() {
+      await this.action('核对同族候选',async(options,snapshot)=>{
+        this.candidate=null;this.closePreviews();this.results.replaceChildren();
+        const selected=this.runSelect.value;if(!selected)throw new Error('请先选择采用的配额记录');
+        let run=this.run;
+        if(selected!=='pending'&&selected!=='legacy')run=await service.loadBlueprintRun(selected,clone(this.view.plan));
+        if(!options.isCurrent())throw new Error('编排已变化，请重新打开换题窗口');
+        const filters=this.useFiltersInput.checked?{...clone(this.view.filters),kind:'question'}:{kind:'question'};
+        const candidate=await service.prepareFamilyReplacement({plan:clone(this.view.plan),entryId:this.entryId,filters,...(run?{run}:{}),unlock:this.unlockInput.checked},options);
+        if(!options.isCurrent())throw new Error('编排已变化，候选未采用');
+        this.run=run;this.candidate=candidate;this.candidateSnapshot=snapshot;this.visible=30;this.renderCandidates();
+      });
+    }
+    metadata(item) {return [types[item?.questionType]||item?.questionType,item?.difficulty!=null?'难度 '+item.difficulty:'',...(item?.tiers||[]),...(item?.methods||[]),...(item?.knowledgeNodes||[])].filter(Boolean).join(' · ')||'未填写';}
+    renderCandidates() {
+      this.closePreviews();this.results.replaceChildren();const wrapper=this.candidate;if(!wrapper)return;
+      const old=core.resolvePlan(this.view.plan,wrapper.index).entries.find(value=>value.entry.entryId===this.entryId)?.item;
+      this.el('p',this.results,'当前：'+(old?.title||'来源待核')+' · '+this.metadata(old));
+      this.el('p',this.results,this.run?'将保留原配额行条件与题族上限；成功替换后，保存方案时写出新的配额记录。':'此方案未找到匹配的配额记录；本次只核对同族、当前筛选及重复题，不推断历史配额。','mwb-assembly-muted');
+      if(wrapper.status!=='ready'){this.status((wrapper.issues||[]).map(value=>value.message).join('；')||'当前条件下不能换题。',true);return;}
+      const candidates=wrapper.candidates||[];this.status(candidates.length?`找到 ${candidates.length} 道同族候选；核对后选用。`:'没有满足全部条件的其他同族题。原编排保持。');
+      const scope=this.previewScope={owner:new Component(),controller:new AbortController(),closed:false,active:0,queue:[]};this.plugin.addChild?.(scope.owner);
+      for(const candidate of candidates.slice(0,this.visible)){
+        const item=wrapper.index.items.find(value=>value.path===candidate.path&&(value.id||'')===(candidate.id||'')&&value.fingerprint===candidate.fingerprint);if(!item)continue;
+        const card=this.el('article',this.results,undefined,'mwb-family-candidate');card.dataset.candidateKey=candidate.key;
+        this.el('h3',card,item.title);this.el('p',card,'替换为：'+this.metadata(item));this.el('p',card,item.path,'mwb-assembly-muted');
+        this.button(card,'选用此题',()=>this.apply(candidate.key));
+        const content=this.el('div',card,'正在加载题目…','mwb-typography mwb-family-question');scope.queue.push({item,content});
+      }
+      this.pump(scope);if(candidates.length>this.visible)this.button(this.results,'再显示 30 道',()=>{this.visible+=30;this.renderCandidates();});this.updateBusy();
+    }
+    pump(scope) {while(!scope.closed&&scope.active<2&&scope.queue.length){const {item,content}=scope.queue.shift();scope.active++;content.replaceChildren();Promise.resolve(renderMarkdown(body(item.markdown),content,item.path,scope.owner,scope.controller.signal)).catch(error=>{if(!scope.closed)content.textContent='预览未完成：'+error.message;}).finally(()=>{scope.active--;this.pump(scope);});}}
+    closePreviews() {const scope=this.previewScope;if(!scope)return;scope.closed=true;scope.controller.abort();scope.queue.length=0;this.plugin.removeChild?.(scope.owner);this.previewScope=null;}
+    async apply(key) {
+      const candidate=this.candidate;if(candidate?.status!=='ready')return;
+      await this.action('核对并替换',async options=>{
+        if(!this.current(this.candidateSnapshot))throw new Error('编排或目录设置已变化，请刷新候选');
+        const isCurrent=()=>options.isCurrent()&&this.candidate===candidate&&this.current(this.candidateSnapshot);
+        const result=await service.applyFamilyReplacement(clone(this.view.plan),candidate,key,{...options,isCurrent});
+        if(!isCurrent())throw new Error('编排已变化，本次替换未应用');
+        this.view.index=result.index;this.view.indexState='ready';this.view.populateFilters();this.view.renderTree();this.view.setPlan(result.plan);this.view.pendingBlueprintRun=result.run||null;
+        this.view.setStatus('已替换同族题，位置、卷内标题和角色保持。'+(result.run?'保存方案时会同时保存新的配额记录。':'请保存方案。'));this.close();
+      });
+    }
+    onClose() {this.closed=true;this.controller?.abort();this.controller=null;this.closePreviews();const owner=this.lifecycleOwner;this.lifecycleOwner=null;if(owner)this.plugin.removeChild?.(owner);this.candidate=null;if(this.view.familyModal===this)this.view.familyModal=null;this.contentEl.replaceChildren();}
+  };
 };
 
 return module.exports; })();
@@ -6256,7 +7689,7 @@ const mwbAssemblyView = (() => { const module = {exports:{}};
 
 // Native Obsidian view. UI state belongs to the workspace; content writes are
 // delegated to explicit service actions. No source Markdown is mutated here.
-module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown}) {
+module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
   const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
@@ -6317,7 +7750,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           this.planPath = typeof state.planPath === 'string' ? state.planPath : null;
           this.dirty = !!state.dirty;
           if (state.filters && typeof state.filters === 'object') {
-            for (const key of ['kind','query','knowledge','subject','questionType','difficulty','tier','role','method','source']) {
+            for (const key of ['kind','query','knowledge','subject','questionType','difficulty','tier','role','method','source','familyId','familyState']) {
               if (typeof state.filters[key] === 'string') this.filters[key] = state.filters[key];
             }
           }
@@ -6666,6 +8099,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async onClose() {
       this.closed = true;
+      this.blueprintModal?.close();
+      this.familyModal?.close();
       this.clearArrangementDrag();
       this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
@@ -6820,7 +8255,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const menuActions=this.el('div',menuBody,'mwb-assembly-menu-actions');
       this.button(menuActions, '新建', () => {
         if (this.actionBusy || !this.confirmDiscard('new','新建')) return;
-        this.plan = core.createPlan(); this.planPath = null; this.dirty = false;
+        this.plan = core.createPlan(); this.planPath = null; this.dirty = false; this.pendingBlueprintRun=null;
         this.render(); this.setStatus('新建方案，可加入知识与题目。');
       });
       this.button(menuActions, '另存方案', () => this.saveCurrentPlan(true));
@@ -6894,7 +8329,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.advancedFilters=this.el('details',filters,'mwb-assembly-advanced-filters');
       this.el('summary',this.advancedFilters,'','更多筛选');
       const advanced=this.el('div',this.advancedFilters,'mwb-assembly-filter-grid');
-      const specs = [['subject','学段学科'],['questionType','题型'],['tier','教学分层'],['knowledge','知识标签'],['difficulty','难度'],['role','题目角色'],['method','方法'],['source','来源']];
+      const specs = [['subject','学段学科'],['questionType','题型'],['tier','教学分层'],['knowledge','知识标签'],['familyId','题族'],['familyState','题族状态'],['difficulty','难度'],['role','题目角色'],['method','方法'],['source','来源']];
       for (const [key,label] of specs) {
         const select = this.field(['difficulty','role','method','source'].includes(key)?advanced:basics,label,'select');
         select.addEventListener('change',()=>{this.filters[key]=select.value;this.limit=100;this.renderResults();});
@@ -6907,9 +8342,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     populateFilters() {
       if (!this.filterSelects) return;
+      const familyCounts=new Map();for(const item of this.index.items)if(item.kind==='question'&&item.familyState==='classified')familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
       for (const [key,select] of Object.entries(this.filterSelects)) {
         const values = new Set();
         for (const item of this.index.items) {
+          if(['familyId','familyState'].includes(key)&&item.kind!=='question')continue;
           const raw = key==='knowledge' ? item.knowledgeNodes : key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
           for (const value of Array.isArray(raw)?raw:[raw]) if (value !== null && value !== undefined && value !== '') values.add(String(value));
         }
@@ -6921,7 +8358,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         select.replaceChildren();this.el('option',select,'','不限').value='';
         for (const value of [...values].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}))) {
           const node = key==='knowledge' ? this.index.items.find(item=>item.kind==='knowledge'&&item.key===value) : null;
-          this.el('option',select,'',node ? node.title : key==='questionType' ? typeNames[value]||value : labelOf(value)).value=value;
+          const familyCount=key==='familyId'?familyCounts.get(value)||0:null;
+          this.el('option',select,'',node ? node.title : key==='familyId'?`${value}（${familyCount} 题）`:key==='familyState'?({classified:'已归族',unclassified:'未归族',invalid:'字段异常'}[value]||value):key==='questionType' ? typeNames[value]||value : labelOf(value)).value=value;
         }
         select.value=current;
       }
@@ -6945,6 +8383,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
             this.clearItemPreview();this.populateFilters();this.updateTabs();this.renderResults();
             this.switchPane('library');this.resultsDisclosure.open=true;this.resultsSummary.focus();
           });related.title='按此知识点筛选题目';
+        }
+      }
+      const issues=this.index.issues||[];
+      if(issues.length){
+        const details=this.el('details',this.tree,'mwb-assembly-index-issues');this.el('summary',details,'',`查看 ${issues.length} 项提示`);
+        for(const issue of issues.slice(0,100)){
+          const row=this.el('div',details,'mwb-assembly-index-issue');this.el('p',row,'',typeof issue==='string'?issue:issue.message||JSON.stringify(issue));
+          const paths=[...new Set([issue?.path,...(Array.isArray(issue?.paths)?issue.paths:[])].filter(path=>typeof path==='string'&&path))];
+          for(const path of paths.slice(0,10))this.button(row,path,()=>service.openSource(path),'mwb-assembly-text-button');
+          if(paths.length>10)this.el('span',row,'mwb-assembly-muted',`另有 ${paths.length-10} 个来源`);
         }
       }
     }
@@ -6973,7 +8421,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderActiveFilters() {
       if(!this.activeFilters)return;this.activeFilters.replaceChildren();
-      const labels={query:'搜索',subject:'学段学科',questionType:'题型',difficulty:'难度',tier:'教学分层',role:'题目角色',knowledge:'知识标签',method:'方法',source:'来源'};
+      const labels={query:'搜索',subject:'学段学科',questionType:'题型',difficulty:'难度',tier:'教学分层',role:'题目角色',knowledge:'知识标签',method:'方法',source:'来源',familyId:'题族',familyState:'题族状态'};
       for(const [key,label] of Object.entries(labels)){
         const value=String(this.filters[key]||'');if(!value)continue;
         const select=this.filterSelects?.[key];
@@ -7006,6 +8454,10 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.results.replaceChildren();
       const items=core.filterItems(this.index,this.filters);
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
+      if(this.filters.familyId&&core.familyGroups){
+        const family=core.familyGroups(this.index).groups.find(value=>value.familyId===this.filters.familyId);
+        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);this.resultsSummary.textContent+=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');}
+      }
       if(!items.length){
         const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再刷新素材。');
         if(Object.entries(this.filters).some(([key,value])=>key!=='kind'&&value))this.button(empty,'清除筛选',()=>{
@@ -7027,6 +8479,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const footer=this.el('div',row,'mwb-assembly-card-footer');
         this.el('div',footer,'mwb-assembly-result-path',item.path).title=item.path;
         this.button(footer,'查看全文',open,'mwb-assembly-card-open');
+        if(item.kind==='question'&&item.familyState==='classified')this.button(footer,'查看题族',()=>{
+          this.filters={kind:'question',query:'',familyId:item.familyId};this.limit=100;if(this.searchInput)this.searchInput.value='';this.populateFilters();this.renderResults();
+        },'mwb-assembly-card-family').title='查看题族 '+item.familyId;
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
@@ -7091,6 +8546,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       });
       const draw=this.button(tools,this.selection?'重新抽取':'生成候选',()=>this.drawSelection());
       draw.disabled=this.actionBusy||this.scanBusy;
+      if(openBlueprint){const blueprint=this.button(tools,'按配额组卷',()=>openBlueprint(this));blueprint.disabled=this.actionBusy||this.scanBusy;}
       this.applySelectionButton=this.button(tools,'加入编排',()=>this.applySelection(),'mod-cta');
       this.applySelectionButton.disabled=this.actionBusy||this.scanBusy||!this.selection?.items.length;
       this.applySelectionButton.hidden=!this.selection;
@@ -7493,6 +8949,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           const source=action(actions,'打开原文','source',()=>{if(row.isConnected)return service.openSource(item?.path||entry.sourcePath);});
           source.setAttribute('aria-label',`打开原文：${item?.path||entry.sourcePath}`);
         }
+        if(entry.kind==='question'&&openFamily){
+          const replace=action(actions,'同族换题','family',()=>{if(row.isConnected)openFamily(this,entry.entryId);});
+          replace.dataset.arrangementMutate='true';
+          replace.title=item?.familyState==='classified'?'选择同族题，保留位置、卷内标题和角色':'需有效 family_id；打开后可查看不能换题的原因';
+        }
         const remove=action(actions,entry.kind==='section'?'移除分区标题':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
         remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');
         if(section)remove.title='只移除分区标题，下方内容保留。';
@@ -7545,10 +9006,6 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
         const issues=index.issues?.length||0;
         this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);
-        if(issues){
-          const details=this.el('details',this.tree,'mwb-assembly-index-issues');this.el('summary',details,'',`查看 ${issues} 项提示`);
-          for(const issue of index.issues.slice(0,100))this.el('p',details,'',typeof issue==='string'?issue:issue.message||JSON.stringify(issue));
-        }
         return true;
       } catch(error){if(!this.closed&&generation===this.scanGeneration){this.indexState='error';this.setStatus(errorText(error),true);}}
       finally{if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}}
@@ -7570,13 +9027,23 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       return this.runAction(asNew ? '另存方案' : '保存方案', async () => {
         const snapshot = core.validatePlan(this.plan);
         const serialized = JSON.stringify(snapshot);
+        const pendingRun=this.pendingBlueprintRun;
         const path = await this.planSession.savePlan(snapshot, asNew ? undefined : this.planPath);
+        let recordPath,recordError;
+        if(pendingRun) {
+          try {
+            recordPath=await service.saveBlueprintRun(pendingRun,{planPath:path});
+            if(this.pendingBlueprintRun===pendingRun)this.pendingBlueprintRun=null;
+          } catch(error) {recordError=error;}
+        }
         if (this.closed) return;
         this.planPath = path;
         if (JSON.stringify(this.plan) === serialized) this.dirty = false;
         this.app.workspace.requestSaveLayout?.();
         await this.refreshPlans();
-        this.setStatus('方案已保存：' + path);
+        if(recordError)this.setStatus('方案已保存：'+path+'；配额记录尚未保存：'+errorText(recordError),true);
+        else if(recordPath)this.setStatus('方案已保存：'+path+'；配额与锁定记录已保存：'+recordPath);
+        else this.setStatus('方案已保存：' + path);
       });
     }
     async refreshPlans() {
@@ -7595,7 +9062,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(!this.confirmDiscard('load:'+path,'打开方案'))return;
       await this.runAction('打开方案',async()=>{
         const plan=core.validatePlan(await this.planSession.loadPlan(path));if(this.closed)return;
-        this.plan=plan;this.planPath=path;this.dirty=false;this.pendingDiscard=null;this.render();
+        this.plan=plan;this.planPath=path;this.dirty=false;this.pendingDiscard=null;this.pendingBlueprintRun=null;this.render();
         this.setStatus('方案已打开；缺失或变化的来源会在编排中标出。');this.app.workspace.requestSaveLayout?.();
       });
     }
@@ -7709,6 +9176,760 @@ function mwbCreateTrialHeader(doc, details = {}) {
   return header;
 }
 
+/* MWB_EXPORT_GENERATED_START */
+const mwbExportResources = (() => { const module = {exports:{}};
+'use strict';
+
+// One preview's immutable resource bytes. Host I/O is injected. In particular,
+// importing this module or constructing an empty session requires no Node API.
+let nodeBuffer, nodeCrypto;
+const BufferType = () => nodeBuffer || (nodeBuffer = require('node:buffer').Buffer);
+const digest = value => (nodeCrypto || (nodeCrypto = require('node:crypto')))
+  .createHash('sha256').update(value).digest('hex');
+const DEFAULT_LIMIT = 64 * 1024 * 1024;
+const KINDS = new Set(['image', 'font', 'other']);
+const PROTOCOLS = new Set(['http:', 'https:', 'app:', 'capacitor:', 'file:', 'blob:', 'data:']);
+
+function failure(code, message, name = 'Error') {
+  return Object.assign(new Error(message), {name, code});
+}
+const cancelled = () => failure('RESOURCE_ABORTED', '资源操作已取消', 'AbortError');
+const disposedError = () => failure('RESOURCE_SESSION_DISPOSED', '媒体会话已结束', 'AbortError');
+function checkSignal(signal) { if (signal?.aborted) throw cancelled(); }
+function kindOf(kind = 'image') {
+  if (!KINDS.has(kind)) throw new TypeError('资源用途必须为 image、font 或 other');
+  return kind;
+}
+function resolveUrl(url, base = 'file:///') {
+  if (typeof url !== 'string' || !url.trim() || /[\x00-\x1f\x7f]/.test(url))
+    throw failure('RESOURCE_URL_INVALID', '资源 URL 无效');
+  let parsed;
+  try { parsed = new URL(url, base); }
+  catch (_) { throw failure('RESOURCE_URL_INVALID', '资源 URL 或基址无效'); }
+  return parsed;
+}
+
+// Never expose a data URI, URL credentials, query, or fragment in evidence.
+function safeResourceUrl(url, base = 'file:///') {
+  let parsed;
+  try { parsed = resolveUrl(url, base); } catch (_) { return '[invalid resource URL]'; }
+  if (parsed.protocol === 'data:') return undefined;
+  if (parsed.protocol === 'blob:') {
+    const inner = safeResourceUrl(parsed.pathname);
+    return inner ? 'blob:' + inner : '[inline resource]';
+  }
+  if (!PROTOCOLS.has(parsed.protocol)) return '[unsupported resource URL]';
+  parsed.username = ''; parsed.password = ''; parsed.search = ''; parsed.hash = '';
+  return parsed.href;
+}
+function localPathOf(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !value || value !== value.trim() ||
+      /[\\:\x00-\x1f\x7f]/.test(value) || value.startsWith('/') ||
+      value.split('/').some(part => !part || part === '.' || part === '..'))
+    throw failure('RESOURCE_LOCAL_PATH_INVALID', '资源路径必须为规范 Vault 相对路径');
+  return value;
+}
+function mediaType(header, allowBase64 = false) {
+  if (typeof header !== 'string' || /[\x00-\x1f\x7f,]/.test(header))
+    throw failure('RESOURCE_DATA_INVALID', '资源媒体类型无效');
+  const parts = header.split(';').map(part => part.trim());
+  const mime = (parts.shift() || 'text/plain').toLowerCase();
+  if (!/^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/.test(mime))
+    throw failure('RESOURCE_DATA_INVALID', '资源 MIME 无效');
+  let base64 = false;
+  const parameters = [];
+  for (const part of parts) {
+    if (allowBase64 && part.toLowerCase() === 'base64' && !base64) { base64 = true; continue; }
+    if (!/^[\w!#$&^.+-]+=(?:[^\s";]+|"[^";]*")$/.test(part))
+      throw failure('RESOURCE_DATA_INVALID', '资源媒体参数无效');
+    parameters.push(part);
+  }
+  return {mime, mediaType: [mime, ...parameters].join(';'), base64};
+}
+function bytesOf(raw) {
+  if (!(raw instanceof Uint8Array))
+    throw failure('RESOURCE_BYTES_INVALID', '资源读取必须返回 Uint8Array');
+  return BufferType().from(raw); // The caller's mutable array is never retained.
+}
+function nonemptyWithinLimit(bytes, limit) {
+  if (!bytes.length) throw failure('RESOURCE_EMPTY', '资源为空');
+  if (bytes.length > limit) throw failure('RESOURCE_BUDGET_EXCEEDED', '媒体冻结字节预算不足');
+}
+function parseDataUri(value, limit) {
+  if (typeof value !== 'string' || !/^data:/i.test(value))
+    throw failure('RESOURCE_DATA_INVALID', '资源读取没有返回 data URI');
+  // A literal # starts the URI fragment; it is not a payload byte. The DOM
+  // adapter retains any SVG fragment selector separately from captured bytes.
+  const fragment = value.indexOf('#'), data = fragment < 0 ? value : value.slice(0, fragment);
+  const comma = data.indexOf(',');
+  if (comma < 5) throw failure('RESOURCE_DATA_INVALID', 'data URI 缺少媒体与内容分隔');
+  const type = mediaType(data.slice(5, comma), true), payload = data.slice(comma + 1);
+  const B = BufferType();
+  let bytes;
+  if (type.base64) {
+    const encoded = payload.replace(/[\t\r\n ]/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 === 1 ||
+        encoded.includes('=') && encoded.length % 4 !== 0)
+      throw failure('RESOURCE_DATA_INVALID', 'data URI 的 base64 编码无效');
+    if (Math.floor(encoded.replace(/=+$/, '').length * 3 / 4) > limit)
+      throw failure('RESOURCE_BUDGET_EXCEEDED', '媒体冻结字节预算不足');
+    bytes = B.from(encoded, 'base64');
+    if (bytes.toString('base64').replace(/=+$/, '') !== encoded.replace(/=+$/, ''))
+      throw failure('RESOURCE_DATA_INVALID', 'data URI 的 base64 编码不完整');
+  } else {
+    // A single bounded buffer avoids one allocation per %-encoded byte.
+    const output = B.alloc(Math.min(B.byteLength(payload, 'utf8'), limit + 1));
+    let cursor = 0, length = 0;
+    const pushText = text => {
+      const size = B.byteLength(text, 'utf8');
+      if (length + size > limit) throw failure('RESOURCE_BUDGET_EXCEEDED', '媒体冻结字节预算不足');
+      output.write(text, length, size, 'utf8');length += size;
+    };
+    for (let i = 0; i < payload.length; i++) {
+      if (payload[i] !== '%') continue;
+      if (!/^[a-f\d]{2}$/i.test(payload.slice(i + 1, i + 3)))
+        throw failure('RESOURCE_DATA_INVALID', 'data URI 的百分号编码无效');
+      if (i > cursor) pushText(payload.slice(cursor, i));
+      if (length >= limit) throw failure('RESOURCE_BUDGET_EXCEEDED', '媒体冻结字节预算不足');
+      output[length++] = parseInt(payload.slice(i + 1, i + 3), 16);
+      i += 2; cursor = i + 1;
+    }
+    if (cursor < payload.length) pushText(payload.slice(cursor));
+    bytes = output.subarray(0, length);
+  }
+  nonemptyWithinLimit(bytes, limit);
+  return {bytes, mime:type.mime, mediaType:type.mediaType};
+}
+function svgHasExternalReferences(bytes) {
+  const text = bytes.toString('utf8');
+  const external = raw => {
+    const value = raw.trim();
+    return value !== '' && !value.startsWith('#') && !/^data:/i.test(value);
+  };
+  for (const match of text.matchAll(/\b(?:xlink:)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi))
+    if (external(match[1] ?? match[2] ?? match[3])) return true;
+  for (const match of text.matchAll(/\burl\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi))
+    if (external(match[1] ?? match[2] ?? match[3])) return true;
+  for (const match of text.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi))
+    if (external(match[1] ?? match[2])) return true;
+  return /<!DOCTYPE[\s\S]*?\b(?:SYSTEM|PUBLIC)\s+["']/i.test(text);
+}
+function sanitizedReason(reason, resolvedUrl, localPath) {
+  let text = String(reason ?? '');
+  // Avoid serializing arbitrary data URI payloads embedded in an error message.
+  text = text.replace(/data:[\s\S]*/gi, '[inline resource]');
+  text = text.replace(/(?:[a-z][a-z\d+.-]*:\/\/|blob:)[^\s<>"']+/gi,
+    match => localPath && match === resolvedUrl ? localPath : safeResourceUrl(match) || '[inline resource]');
+  try {
+    const parsed = new URL(resolvedUrl);
+    const secrets = [parsed.username, parsed.password, ...parsed.searchParams.values()];
+    for (const secret of secrets.filter(Boolean)) {
+      for (const spelling of new Set([secret, (() => {try{return decodeURIComponent(secret);}catch(_){return secret;}})()]))
+        text = text.split(spelling).join('[redacted]');
+    }
+  } catch (_) {}
+  text = text.replace(/\b(?:password|passwd|token|api[_-]?key|secret|authorization)\s*[:=]\s*[^\s,;]+/gi, '[redacted]');
+  return text.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 400);
+}
+
+function createResourceSession(options = {}) {
+  const {reader, resolveLocal = () => null, readLocal, mimeForLocal = () => 'application/octet-stream',
+    maxBytes = DEFAULT_LIMIT} = options;
+  if (reader !== undefined && typeof reader !== 'function' || typeof resolveLocal !== 'function' ||
+      readLocal !== undefined && typeof readLocal !== 'function' || typeof mimeForLocal !== 'function')
+    throw new TypeError('资源会话读取适配器无效');
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new TypeError('媒体字节预算必须为非负安全整数');
+  const resources = new Map(), blobs = new Map(), inflight = new Map(), localInflight = new Map();
+  const localSources = new Map(), omissions = new Map(), warnings = new Map();
+  let bytesUsed = 0, disposed = false, localRevision = 0, controller;
+  const check = signal => { if (disposed) throw disposedError(); checkSignal(signal); };
+  const sessionSignal = () => {
+    if (!controller) controller = new AbortController();
+    return controller.signal;
+  };
+  const identity = (url, base) => {
+    const parsed = resolveUrl(url, base);
+    if (!PROTOCOLS.has(parsed.protocol)) throw failure('RESOURCE_PROTOCOL_UNSUPPORTED', '不支持的资源协议');
+    return parsed.href;
+  };
+  const resolvePath = url => localPathOf(resolveLocal(url));
+  const publicIdentity = (url, localPath) => ({urlSha256:digest(url),
+    ...(localPath ? {localPath} : (() => {const displayUrl = safeResourceUrl(url);return displayUrl ? {displayUrl} : {};})())});
+  const warn = (code, resource) => warnings.set(code + ':' + resource.urlSha256, {code, urlSha256:resource.urlSha256});
+  const clearReadOmissions = url => {
+    for (const [id, omission] of omissions) if (omission.url === url && omission.value.stage === 'read') omissions.delete(id);
+  };
+  function join(promise, signal) {
+    check(signal);
+    const life = sessionSignal();
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const finish = (error, value) => {
+        if (done) return; done = true;
+        signal?.removeEventListener('abort', onAbort); life.removeEventListener('abort', onDispose);
+        error ? reject(error) : resolve(value);
+      };
+      const onAbort = () => finish(cancelled()), onDispose = () => finish(disposedError());
+      signal?.addEventListener('abort', onAbort, {once:true}); life.addEventListener('abort', onDispose, {once:true});
+      if (signal?.aborted) onAbort(); else if (life.aborted) onDispose();
+      Promise.resolve(promise).then(value => {
+        try {check(signal);finish(null,value);} catch (error) {finish(error);}
+      }, error => finish(error));
+    });
+  }
+  function commit(url, candidate, kind) {
+    check();
+    const hash = digest(candidate.bytes), previous = resources.get(url);
+    if (previous) {
+      if (previous.value.sha256 !== hash || previous.mediaType !== candidate.mediaType)
+        throw failure('RESOURCE_CAPTURE_CONFLICT', '同一资源 URL 已冻结为不同内容');
+      previous.kinds.add(kind);clearReadOmissions(url);return previous;
+    }
+    const original = candidate.localPath && localSources.get(candidate.localPath);
+    if (original && (original.blobId !== hash || original.mediaType !== candidate.mediaType))
+      throw failure('RESOURCE_CAPTURE_CONFLICT', '同一本地资源已冻结为不同内容');
+    nonemptyWithinLimit(candidate.bytes, maxBytes);
+    if (!blobs.has(hash) && bytesUsed + candidate.bytes.length > maxBytes)
+      throw failure('RESOURCE_BUDGET_EXCEEDED', '媒体冻结字节预算不足');
+    const value = {...publicIdentity(url,candidate.localPath), blobId:hash, sha256:hash,
+      mime:candidate.mime, ...(candidate.mediaType !== candidate.mime ? {mediaType:candidate.mediaType} : {}),
+      bytes:candidate.bytes.length, representation:candidate.representation};
+    const dataURI = 'data:' + candidate.mediaType + ';base64,' + candidate.bytes.toString('base64');
+    const entry = {value, mediaType:candidate.mediaType, dataURI, kinds:new Set([kind])};
+    if (!blobs.has(hash)) {blobs.set(hash, BufferType().from(candidate.bytes));bytesUsed += candidate.bytes.length;}
+    resources.set(url, entry);
+    if (candidate.localPath && !original) {
+      localSources.set(candidate.localPath,{blobId:hash, mime:candidate.mime, mediaType:candidate.mediaType});
+      localRevision++;
+    }
+    if (candidate.mime === 'image/svg+xml' && svgHasExternalReferences(candidate.bytes)) warn('SVG_EXTERNAL_REFERENCE',value);
+    if (!candidate.localPath && new URL(url).protocol === 'file:') warn('EXTERNAL_FILE_NOT_VERIFIED',value);
+    clearReadOmissions(url);return entry;
+  }
+  async function localCandidate(localPath) {
+    const original = localSources.get(localPath);
+    if (original) return {bytes:blobs.get(original.blobId),mime:original.mime,mediaType:original.mediaType,
+      localPath,representation:'original'};
+    if (!readLocal) throw failure('RESOURCE_READER_MISSING', '缺少本地资源读取器');
+    let pending = localInflight.get(localPath);
+    if (!pending) {
+      pending = Promise.resolve().then(async () => {
+        check();
+        const raw = await readLocal(localPath, {signal:sessionSignal()});check();
+        if (!(raw instanceof Uint8Array)) throw failure('RESOURCE_BYTES_INVALID', '资源读取必须返回 Uint8Array');
+        nonemptyWithinLimit(raw,maxBytes);
+        const bytes = bytesOf(raw);
+        const type = mediaType(mimeForLocal(localPath));
+        return {bytes,mime:type.mime,mediaType:type.mediaType,localPath,representation:'original'};
+      });
+      localInflight.set(localPath,pending);
+      const release = () => {if(localInflight.get(localPath)===pending)localInflight.delete(localPath);};
+      pending.then(release,release);
+    }
+    return pending;
+  }
+  async function captureUrl(url, kind) {
+    check();
+    if (new URL(url).protocol === 'data:') return commit(url,{...parseDataUri(url,maxBytes),representation:'original'},kind);
+    const localPath = resolvePath(url);
+    if (localPath) return commit(url,await localCandidate(localPath),kind);
+    if (!reader) throw failure('RESOURCE_READER_MISSING', '缺少资源读取器');
+    const data = await reader(url, 'file:///', {signal:sessionSignal()});check();
+    return commit(url,{...parseDataUri(data,maxBytes),representation:'captured-response'},kind);
+  }
+  async function read(url, base = 'file:///', {signal, kind = 'image'} = {}) {
+    check(signal);kind = kindOf(kind);const key = identity(url,base);
+    const existing = resources.get(key);
+    if (existing) {existing.kinds.add(kind);clearReadOmissions(key);return existing.dataURI;}
+    let pending = inflight.get(key);
+    if (!pending) {
+      pending = Promise.resolve().then(() => captureUrl(key,kind));inflight.set(key,pending);
+      const release = () => {if(inflight.get(key)===pending)inflight.delete(key);};
+      pending.then(release,release);
+    }
+    const entry = await join(pending,signal);check(signal);entry.kinds.add(kind);return entry.dataURI;
+  }
+  async function record(dataURI, url, {base = 'file:///', signal, kind = 'image'} = {}) {
+    check(signal);kind = kindOf(kind);const key = identity(url,base),candidate = parseDataUri(dataURI,maxBytes);
+    const localPath = new URL(key).protocol === 'data:' ? null : resolvePath(key);
+    if (localPath) await read(key, 'file:///', {signal,kind});
+    else if (inflight.has(key)) {
+      try {await join(inflight.get(key),signal);} catch (error) {check(signal);}
+    }
+    check(signal);
+    return commit(key,{...candidate,localPath,representation:localPath || new URL(key).protocol==='data:' ? 'original' : 'captured-response'},kind).dataURI;
+  }
+  function recordOmission({url, base = 'file:///', kind = 'image', stage = 'render',
+    reasonCode = 'RESOURCE_UNAVAILABLE', reason = ''} = {}) {
+    check();kind = kindOf(kind);
+    if (!['read','render'].includes(stage) || typeof reasonCode !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/.test(reasonCode))
+      throw new TypeError('资源遗漏阶段或原因代码无效');
+    // Unsupported schemes can still be reported safely as rejected resources.
+    const key = resolveUrl(url,base).href;
+    const localPath = PROTOCOLS.has(new URL(key).protocol) && new URL(key).protocol!=='data:' ? resolvePath(key) : null;
+    const omissionId = digest(key+'\0'+kind+'\0'+stage+'\0'+reasonCode);
+    omissions.set(omissionId,{url:key,value:{omissionId,...publicIdentity(key,localPath),kind,stage,reasonCode,
+      reason:sanitizedReason(reason,key,localPath)}});
+    return omissionId;
+  }
+  function manifest() {
+    check();
+    return {schemaVersion:1,bytesUsed,maxBytes,
+      resources:[...resources.values()].map(entry=>({...entry.value,kinds:[...entry.kinds].sort()})).sort((a,b)=>a.urlSha256.localeCompare(b.urlSha256)),
+      omissions:[...omissions.values()].map(entry=>({...entry.value})).sort((a,b)=>a.omissionId.localeCompare(b.omissionId)),
+      warnings:[...warnings.values()].map(value=>({...value})).sort((a,b)=>(a.urlSha256+a.code).localeCompare(b.urlSha256+b.code))};
+  }
+  function readBlob(blobId) {
+    check();const bytes = blobs.get(blobId);
+    if (!bytes) throw failure('RESOURCE_BLOB_MISSING', '媒体字节不存在');
+    return new Uint8Array(bytes);
+  }
+  async function assertLocalCurrent(signal) {
+    check(signal);const revision = localRevision;
+    for (const [localPath, original] of [...localSources]) {
+      check(signal);
+      const bytes = await join(Promise.resolve().then(()=>readLocal(localPath,{signal:sessionSignal()})),signal);
+      check(signal);
+      if (digest(bytesOf(bytes)) !== original.blobId)
+        throw failure('RESOURCE_LOCAL_CHANGED', '本地媒体内容已变化：'+localPath);
+    }
+    check(signal);
+    if (revision !== localRevision) throw failure('RESOURCE_SET_CHANGED', '复核期间媒体集合已变化，请重试');
+    return true;
+  }
+  function snapshot() {
+    check();return {manifest:manifest(),blobs:[...blobs.keys()].sort().map(blobId=>({blobId,bytes:readBlob(blobId)}))};
+  }
+  function dispose() {
+    if (disposed) return;disposed = true;controller?.abort(disposedError());
+    resources.clear();blobs.clear();inflight.clear();localInflight.clear();localSources.clear();omissions.clear();warnings.clear();bytesUsed=0;
+  }
+  return Object.freeze({read,record,capture:record,recordOmission,manifest,readBlob,assertLocalCurrent,snapshot,dispose});
+}
+
+module.exports = {createResourceSession, safeResourceUrl};
+
+return module.exports; })();
+const mwbExportArchive = (() => { const module = {exports:{}};
+'use strict';
+
+// An export observer, not an output writer: existing PDF/HTML saves remain in
+// the host. This service only writes new, run-scoped evidence and archives.
+let nodeCrypto, nodeBuffer;
+const crypto = () => nodeCrypto || (nodeCrypto = require('node:crypto'));
+const BufferType = () => nodeBuffer || (nodeBuffer = require('node:buffer').Buffer);
+const digest = value => crypto().createHash('sha256').update(value).digest('hex');
+const STATES = new Set(['prepared','saving','saved','unverified','failed','cancelled','not-run']);
+const EDITIONS = new Set(['student','teacher','document']);
+const ORIGINS = new Set(['question','document','folder','assembly']);
+const KINDS = new Set(['pdf','html','markdown']);
+const own = (value, key) => Object.prototype.hasOwnProperty.call(value,key);
+function failure(code,message) { return Object.assign(new Error(message),{code}); }
+function plain(value,label = '数据',seen = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (!value || typeof value !== 'object' || seen.has(value) ||
+      !Array.isArray(value) && ![Object.prototype,null].includes(Object.getPrototypeOf(value)))
+    throw failure('ARCHIVE_DATA_INVALID',label+'必须为无循环的纯 JSON 数据');
+  seen.add(value);
+  const result = Array.isArray(value) ? value.map(item=>plain(item,label,seen)) : {};
+  if (!Array.isArray(value)) for (const key of Object.keys(value)) {
+    const descriptor=Object.getOwnPropertyDescriptor(value,key);
+    if (!descriptor || !own(descriptor,'value')) throw failure('ARCHIVE_DATA_INVALID',label+'不能含访问器');
+    Object.defineProperty(result,key,{value:plain(descriptor.value,label,seen),enumerable:true,writable:true,configurable:true});
+  }
+  seen.delete(value);return result;
+}
+function text(value,label) {
+  if (typeof value !== 'string' || !value.trim() || /[\x00-\x1f\x7f]/.test(value))
+    throw failure('ARCHIVE_DATA_INVALID',label+'必须为非空单行文字');
+  return value;
+}
+function rootPath(value) {
+  const path=text(value,'归档目录');
+  if (path !== path.trim() || /[\\:]/.test(path) || path.startsWith('/') ||
+      path.split('/').some(part=>!part || part==='.' || part==='..'))
+    throw failure('ARCHIVE_PATH_INVALID','归档目录必须为规范库内相对路径');
+  return path;
+}
+function bytesOf(value) {
+  const B=BufferType();
+  if (typeof value === 'string') return B.from(value,'utf8');
+  if (value instanceof Uint8Array) return B.from(value);
+  if (value instanceof ArrayBuffer) return B.from(new Uint8Array(value));
+  throw failure('ARCHIVE_BYTES_INVALID','产物字节必须为文字、Uint8Array 或 ArrayBuffer');
+}
+function safeErrorMessage(value) {
+  return String(value).replace(/data:[^\s<>"']*/gi,'[inline resource]')
+    .replace(/(?:[a-z][a-z\d+.-]*:\/\/|blob:)[^\s<>"']+/gi,value=>{
+      try {const url=new URL(value);url.username='';url.password='';url.search='';url.hash='';
+        return url.protocol==='blob:' ? '[blob resource]' : url.href;}
+      catch (_) {return '[resource URL]';}
+    })
+    .replace(/\b(?:password|passwd|token|api[_-]?key|secret|authorization)\s*[:=]\s*[^\s,;]+/gi,'[redacted]')
+    .replace(/[\x00-\x1f\x7f]/g,' ').slice(0,1000);
+}
+function errorInfo(error) {
+  if (error == null) return undefined;
+  return {name:safeErrorMessage(error.name || 'Error').slice(0,80),
+    ...(error.code && /^[A-Za-z0-9_-]{1,100}$/.test(error.code) ? {code:String(error.code)} : {}),
+    message:safeErrorMessage(error.message ?? error)};
+}
+function json(value) { return JSON.stringify(value,null,2)+'\n'; }
+function descriptor(value) {
+  const bytes=bytesOf(value);return {bytes:bytes.length,sha256:digest(bytes)};
+}
+
+function createExportArchiveService({vault,validatePlan,now = ()=>new Date(),
+  newId = ()=>crypto().randomUUID(),recordsRoot = 'Mathsemble/导出记录',archivesRoot = 'Mathsemble/材料归档'} = {}) {
+  if (!vault || typeof vault.getAbstractFileByPath !== 'function' || typeof vault.create !== 'function' ||
+      typeof vault.createFolder !== 'function' || typeof vault.createBinary !== 'function')
+    throw failure('ARCHIVE_ADAPTER_INVALID','缺少 Vault 写入适配器');
+  if (typeof now !== 'function' || typeof newId !== 'function' || validatePlan !== undefined && typeof validatePlan !== 'function')
+    throw failure('ARCHIVE_ADAPTER_INVALID','归档时钟、标识或方案校验适配器无效');
+  recordsRoot=rootPath(recordsRoot);archivesRoot=rootPath(archivesRoot);
+  const ids=new Set();
+  const timestamp=()=>{const date=new Date(now());if (!Number.isFinite(date.getTime()))
+    throw failure('ARCHIVE_DATA_INVALID','归档时间无效');return date.toISOString();};
+  async function ensureFolder(path) {
+    let current='';
+    for (const part of path.split('/')) {
+      current=current ? current+'/'+part : part;
+      let node=vault.getAbstractFileByPath(current);
+      if (!node) {
+        try {await vault.createFolder(current);}
+        catch (error) {node=vault.getAbstractFileByPath(current);if (!Array.isArray(node?.children)) throw error;}
+        node=vault.getAbstractFileByPath(current);
+      }
+      if (!Array.isArray(node?.children)) throw failure('ARCHIVE_PATH_CONFLICT','输出目录被文件占用：'+current);
+    }
+  }
+  async function createFile(path,content,binary = false) {
+    if (vault.getAbstractFileByPath(path)) throw failure('ARCHIVE_PATH_CONFLICT','导出证据已存在，未覆盖：'+path);
+    // Vault.create/createBinary are create-only operations. Never modify a file
+    // found after this check or retry a rejected write at the same path.
+    return binary ? vault.createBinary(path,content.buffer.slice(content.byteOffset,content.byteOffset+content.byteLength)) : vault.create(path,content);
+  }
+  function beginRun(input,{archive = false} = {}) {
+    if (typeof archive !== 'boolean') throw failure('ARCHIVE_DATA_INVALID','archive 必须为布尔值');
+    const captured=plain(input,'导出输入');
+    if (!captured || !ORIGINS.has(captured.origin) || !Array.isArray(captured.sources))
+      throw failure('ARCHIVE_DATA_INVALID','来源类型或来源列表无效');
+    for (const source of captured.sources) {
+      if (!source || Array.isArray(source) || typeof source.markdown !== 'string')
+        throw failure('ARCHIVE_DATA_INVALID','每个来源必须含 Markdown 原文');
+      text(source.path,'来源路径');if (source.sourceId !== undefined) text(source.sourceId,'来源标识');
+    }
+    for (const key of ['compiledMarkdown','compiledPathContext']) if (captured[key] !== undefined && typeof captured[key] !== 'string')
+      throw failure('ARCHIVE_DATA_INVALID',key+'必须为文字');
+    for (const key of ['settings','options','runtime']) if (captured[key] !== undefined &&
+      (!captured[key] || Array.isArray(captured[key]) || typeof captured[key] !== 'object'))
+      throw failure('ARCHIVE_DATA_INVALID',key+'必须为纯对象');
+    if (captured.planSnapshot != null) {
+      if (!validatePlan) throw failure('ARCHIVE_PLAN_INVALID','归档方案需要现行校验器');
+      captured.planSnapshot=plain(validatePlan(captured.planSnapshot),'方案快照');
+      if (captured.planSnapshot?.schemaVersion !== 3)
+        throw failure('ARCHIVE_PLAN_INVALID','材料归档仅接收校验后的 v3 方案');
+    }
+    const id=newId();
+    if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/.test(id) || ids.has(id))
+      throw failure('ARCHIVE_ID_INVALID','导出记录标识无效或重复');
+    ids.add(id);
+    const startedAt=timestamp(),origin=captured.origin,artifacts=new Map(),artifactBytes=new Map();
+    const inputSummary={sources:captured.sources.map(source=>{
+      const {bytes,sha256}=descriptor(source.markdown);
+      return {path:source.path,...(source.sourceId !== undefined ? {sourceId:source.sourceId} : {}),bytes,textUtf8Sha256:sha256};
+    })};
+    if (captured.compiledMarkdown !== undefined) {
+      const {bytes,sha256}=descriptor(captured.compiledMarkdown);
+      inputSummary.compiledMarkdown={bytes,textUtf8Sha256:sha256};
+    }
+    if (captured.compiledPathContext !== undefined) inputSummary.compiledPathContext=captured.compiledPathContext;
+    for (const key of ['planSnapshot','sourceMap']) if (captured[key] != null)
+      inputSummary[key]={...descriptor(json(captured[key])),...(key==='planSnapshot' ? {schemaVersion:3} : {})};
+    const configuration={};
+    for (const key of ['settings','options','runtime']) if (captured[key] !== undefined) configuration[key]=captured[key];
+    const archiveInput=archive ? captured : null;
+    let resources=null,readBlob=null,finalPromise=null,finalizing=false;
+    const mutable=()=>{if (finalizing) throw failure('ARCHIVE_FINALIZED','导出记录已经封存');};
+    function recordArtifact(update) {
+      mutable();
+      if (!update || typeof update !== 'object') throw failure('ARCHIVE_DATA_INVALID','产物记录无效');
+      const {bytes,error,...metadata}=update,next=plain(metadata,'产物记录');
+      const fields=new Set(['artifactId','kind','edition','state','path','pages','printReport']);
+      if (Object.keys(next).some(key=>!fields.has(key))) throw failure('ARCHIVE_DATA_INVALID','产物记录含未知字段');
+      if (error != null) next.error=errorInfo(error);
+      text(next.artifactId,'产物标识');
+      if (!KINDS.has(next.kind) || !EDITIONS.has(next.edition) || !STATES.has(next.state))
+        throw failure('ARCHIVE_DATA_INVALID','产物格式、版别或状态无效');
+      if (next.path !== undefined) text(next.path,'产物保存路径');
+      if (next.state==='saved' && !next.path) throw failure('ARCHIVE_DATA_INVALID','saved 必须提供实际保存路径');
+      if (next.pages !== undefined && (!Number.isSafeInteger(next.pages) || next.pages<0))
+        throw failure('ARCHIVE_DATA_INVALID','产物页数无效');
+      const previous=artifacts.get(next.artifactId);
+      if (previous && (previous.kind!==next.kind || previous.edition!==next.edition ||
+          previous.state==='saved' && (next.state!=='saved' || previous.path!==next.path)))
+        throw failure('ARCHIVE_STATE_INVALID','不能改写产物身份或已经保存的事实');
+      let copy;
+      if (bytes !== undefined) {
+        copy=bytesOf(bytes);const hash=digest(copy);
+        if (previous?.state==='saved' && previous.sha256 && previous.sha256!==hash)
+          throw failure('ARCHIVE_STATE_INVALID','不能替换已经保存的产物字节');
+        next.bytes=copy.length;next.sha256=hash;
+      }
+      const at=timestamp(),history=[...(previous?.history || []),{at,state:next.state,...(next.error ? {error:next.error} : {})}];
+      const record={...previous,...next,history};
+      if (!next.error) delete record.error;
+      artifacts.set(next.artifactId,record);
+      if (archive && copy) artifactBytes.set(next.artifactId,copy);
+      return plain(record);
+    }
+    function setResources(value) {
+      mutable();
+      if (!value || value.readBlob !== undefined && typeof value.readBlob !== 'function')
+        throw failure('ARCHIVE_DATA_INVALID','媒体归档适配器无效');
+      const manifest=plain(value.manifest,'媒体清单');
+      if (!manifest || !Array.isArray(manifest.resources) ||
+          manifest.omissions !== undefined && !Array.isArray(manifest.omissions) ||
+          manifest.warnings !== undefined && !Array.isArray(manifest.warnings))
+        throw failure('ARCHIVE_DATA_INVALID','媒体清单结构无效');
+      resources=manifest;readBlob=value.readBlob || null;
+    }
+    function finalize({outcome = 'unknown',error} = {}) {
+      if (finalPromise) return finalPromise;
+      text(outcome,'导出结果');const finishedAt=timestamp(),runError=errorInfo(error);
+      finalizing=true;
+      finalPromise=(async()=>{
+        const warnings=[],result={runId:id,record:{state:'not-run',path:recordsRoot+'/'+id+'.json'},
+          archive:{state:archive ? 'not-run' : 'not-requested',...(archive ? {path:archivesRoot+'/'+id} : {})},warnings};
+        const warn=(code,detail={})=>warnings.push({code,...detail});
+        if (!resources) warn('RESOURCES_NOT_CAPTURED');
+        for (const item of resources?.omissions || []) warn('RESOURCE_OMISSION',{omission:item});
+        for (const item of resources?.warnings || []) warn('RESOURCE_SCOPE_LIMITED',{warning:item});
+        const runRecord={schemaVersion:1,kind:'mathsemble-export-record',runId:id,startedAt,finishedAt,
+          origin,outcome,...(runError ? {error:runError} : {}),inputs:inputSummary,...configuration,
+          artifacts:[...artifacts.values()],resources:resources || null};
+        if (archive) {
+          const folder=result.archive.path,files=[];
+          let writing=false;
+          try {
+            await ensureFolder(archivesRoot);
+            if (vault.getAbstractFileByPath(folder)) throw failure('ARCHIVE_PATH_CONFLICT','材料归档已存在，未覆盖：'+folder);
+            await vault.createFolder(folder); // Exclusive run directory; never resume an unknown partial archive.
+            const write=async(relative,content,binary=false)=>{
+              const path=folder+'/'+relative;
+              if (relative.includes('/')) await ensureFolder(path.slice(0,path.lastIndexOf('/')));
+              writing=true;await createFile(path,content,binary);writing=false;
+              files.push({path:relative,...descriptor(content)});
+            };
+            for (let index=0;index<archiveInput.sources.length;index++) {
+              const archivePath='sources/'+String(index+1).padStart(4,'0')+'.md';
+              await write(archivePath,archiveInput.sources[index].markdown);
+              inputSummary.sources[index].archivePath=archivePath;
+            }
+            if (archiveInput.compiledMarkdown !== undefined) await write('compiled.md',archiveInput.compiledMarkdown);
+            for (const key of ['planSnapshot','sourceMap']) if (archiveInput[key] != null)
+              await write(key==='planSnapshot' ? 'plan.v3.json' : 'source-map.json',json(archiveInput[key]));
+            await write('input.json',json({...inputSummary,...configuration,origin}));
+            const blobs=new Map(),writtenHashes=new Set();
+            for (const resource of resources?.resources || []) {
+              if (!resource || typeof resource.blobId !== 'string' || !/^[a-f0-9]{64}$/.test(resource.sha256 || '') ||
+                  !Number.isSafeInteger(resource.bytes) || resource.bytes<0) {
+                warn('RESOURCE_BYTES_UNAVAILABLE');continue;
+              }
+              const prior=blobs.get(resource.blobId);
+              if (prior && (prior.sha256!==resource.sha256 || prior.bytes!==resource.bytes)) {
+                warn('RESOURCE_BLOB_CONFLICT',{blobId:resource.blobId});continue;
+              }
+              if (prior) {
+                if (writtenHashes.has(resource.sha256)) resource.archivePath='media/'+resource.sha256+'.bin';
+                continue;
+              }
+              blobs.set(resource.blobId,{sha256:resource.sha256,bytes:resource.bytes});
+              let bytes;
+              try {
+                if (!readBlob) throw failure('ARCHIVE_BLOB_UNAVAILABLE','未提供冻结媒体读取器');
+                bytes=bytesOf(await readBlob(resource.blobId));
+                if (bytes.length!==resource.bytes || digest(bytes)!==resource.sha256)
+                  throw failure('ARCHIVE_BLOB_MISMATCH','冻结媒体摘要不一致');
+              } catch (blobError) {warn('RESOURCE_BYTES_UNAVAILABLE',{blobId:resource.blobId,error:errorInfo(blobError)});continue;}
+              if (!writtenHashes.has(resource.sha256)) {
+                await write('media/'+resource.sha256+'.bin',bytes,true);writtenHashes.add(resource.sha256);
+              }
+              resource.archivePath='media/'+resource.sha256+'.bin';
+            }
+            let index=0;
+            for (const artifact of artifacts.values()) {
+              index++;const bytes=artifactBytes.get(artifact.artifactId);
+              if (!bytes) {
+                if (['prepared','saving','saved','unverified'].includes(artifact.state))
+                  warn('ARTIFACT_BYTES_UNAVAILABLE',{artifactId:artifact.artifactId});
+                continue;
+              }
+              const archivePath='artifacts/'+String(index).padStart(4,'0')+'.'+(artifact.kind==='markdown' ? 'md' : artifact.kind);
+              await write(archivePath,bytes,true);artifact.archivePath=archivePath;
+            }
+            const state=warnings.length ? 'partial' : 'complete';
+            const manifest={...runRecord,kind:'mathsemble-material-archive',state,
+              scope:'captured-inputs-and-observed-resources',files,warnings};
+            // Completion is only committed by the last, create-only manifest write.
+            writing=true;await createFile(folder+'/manifest.json',json(manifest));writing=false;
+            result.archive={state,path:folder,manifestPath:folder+'/manifest.json'};
+          } catch (archiveError) {
+            result.archive={state:writing ? 'unverified' : 'failed',path:folder,error:errorInfo(archiveError)};
+            warn('ARCHIVE_WRITE_FAILED',{error:errorInfo(archiveError)});
+          }
+        }
+        try {
+          await ensureFolder(recordsRoot);
+          if (vault.getAbstractFileByPath(result.record.path)) throw failure('ARCHIVE_PATH_CONFLICT','导出记录已存在，未覆盖');
+          try {await createFile(result.record.path,json({...runRecord,archive:result.archive,warnings}));}
+          catch (writeError) {result.record.state='unverified';throw writeError;}
+          result.record.state='saved';
+        } catch (recordError) {
+          if (result.record.state!=='unverified') result.record.state='failed';
+          result.record.error=errorInfo(recordError);
+          warn('RECORD_WRITE_FAILED',{error:errorInfo(recordError)});
+        }
+        artifactBytes.clear();readBlob=null;
+        return plain(result);
+      })();
+      return finalPromise;
+    }
+    return Object.freeze({id,recordArtifact,setResources,finalize});
+  }
+  return Object.freeze({beginRun});
+}
+
+module.exports = {createExportArchiveService};
+
+return module.exports; })();
+const mwbExportHost = (() => { const module = {exports:{}};
+'use strict';
+
+// Host adapters keep Vault I/O and DOM ownership out of the immutable resource
+// store. Original Markdown is never read here: callers supply captured sources.
+function createMediaSession({vault, reader, mimeFor, createResourceSession, timeoutMs = 15000}) {
+  const root = vault.adapter?.basePath || vault.adapter?.getBasePath?.();
+  let canonicalRoot;
+  const resolveLocal = address => {
+    if (!root || !/^(?:app|file|capacitor):/i.test(address)) return null;
+    try {
+      const fs = require('fs'), path = require('path'), url = new URL(address);
+      const decoded = url.protocol === 'file:' ? require('url').fileURLToPath(url)
+        : decodeURIComponent(url.pathname).replace(/^\/(?=[A-Za-z]:\/)/, '');
+      canonicalRoot ||= fs.realpathSync(root);
+      const resolved = fs.realpathSync(decoded);
+      const relative = path.relative(canonicalRoot,resolved);
+      if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith('..'+path.sep)) return null;
+      return relative.replace(/\\/g,'/');
+    } catch (_) { return null; }
+  };
+  const readLocal = async (path,{signal}={}) => {
+    if (signal?.aborted) throw signal.reason || new Error('资源读取已取消');
+    const file = vault.getAbstractFileByPath(path);
+    if (!file || file.extension === undefined) throw new Error('本地资源不存在：'+path);
+    const bytes = await new Promise((resolve,reject) => {
+      const aborted = () => done(signal.reason || new Error('资源读取已取消'));
+      const done = (error,value) => { clearTimeout(timer); signal?.removeEventListener('abort',aborted); error ? reject(error) : resolve(value); };
+      const timer = setTimeout(()=>{const error=new Error('本地资源读取超时');error.name='TimeoutError';error.code='RESOURCE_TIMEOUT';done(error);},timeoutMs);
+      signal?.addEventListener('abort',aborted,{once:true});
+      if (signal?.aborted) { aborted(); return; }
+      Promise.resolve().then(()=>vault.readBinary(file)).then(value=>done(null,value),done);
+    });
+    if (signal?.aborted) throw signal.reason || new Error('资源读取已取消');
+    return new Uint8Array(bytes);
+  };
+  return createResourceSession({reader,resolveLocal,readLocal,mimeForLocal:mimeFor});
+}
+
+async function freezeMediaDom(session, root, {signal, nodes = new WeakMap()} = {}) {
+  const warnings = [];
+  let changed = false;
+  for (const node of root.querySelectorAll('img[src],svg image[href],svg image[xlink\\:href]')) {
+    if (signal?.aborted) throw signal.reason || new Error('资源读取已取消');
+    const attr = node.hasAttribute('src') ? 'src' : node.hasAttribute('href') ? 'href' : 'xlink:href';
+    const raw = node.getAttribute(attr);
+    if (!raw || raw[0] === '#' || nodes.get(node)?.value === raw) continue;
+    const url = attr === 'src' && node.currentSrc ? node.currentSrc : raw;
+    try {
+      let value = await session.read(url, root.ownerDocument.baseURI, {signal,kind:'image'});
+      // A fragment selects an SVG view; it is not part of the captured bytes.
+      if (!/^data:/i.test(url) && /^data:image\/svg\+xml[;,]/i.test(value))
+        value += new URL(url,root.ownerDocument.baseURI).hash;
+      node.setAttribute(attr,value);
+      if (attr === 'src') node.removeAttribute('srcset');
+      nodes.set(node,{value}); changed = true;
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError' || /BUDGET|DISPOSED/.test(error?.code || '')) throw error;
+      // Existing partial-export consent remains necessary. A loaded but
+      // uncaptured image must not silently claim a reproducible export.
+      warnings.push('图片资源未能固定，输出可能不完整：'+String(node.getAttribute('alt') || '图片').slice(0,80));
+      session.recordOmission({url,base:root.ownerDocument.baseURI,kind:'image',stage:'read',reasonCode:'RESOURCE_UNAVAILABLE'});
+    }
+  }
+  return {changed,warnings:[...new Set(warnings)]};
+}
+
+function previewEvidence(preview, collectMediaDependencies) {
+  if (preview.assemblyPreview?.getEvidence) return preview.assemblyPreview.getEvidence();
+  const records = preview.sourceSnapshot?.entries?.map(entry=>entry.record)
+    || (preview.exam ? preview.exam.items : [{file:preview.file,markdown:preview.markdown}]);
+  const sources = records.map(record=>({path:record.file.path,markdown:record.markdown,
+    ...(typeof record.metadata?.id === 'string' && record.metadata.id ? {sourceId:record.metadata.id} : {})}));
+  const declaredDependencies = sources.flatMap(source => {
+    const result = collectMediaDependencies(source.markdown,source.path);
+    return result.dependencies;
+  });
+  return {sources,declaredDependencies};
+}
+
+async function captureDeclaredMedia(session, declarations, app, signal) {
+  for (const item of declarations || []) {
+    if (signal?.aborted) throw signal.reason || new Error('资源归档已取消');
+    const target = item.target || item.rawTarget;
+    const sourcePath = item.sourcePath || '';
+    let url = target;
+    try {
+      if (item.status === 'unsupported') throw new Error('嵌入资源类型不受支持');
+      if (typeof target !== 'string' || !target) throw new Error('媒体目标为空');
+      if (!/^(?:https?:|data:|app:|file:|blob:|capacitor:)/i.test(target)) {
+        const link = target.split('#')[0];
+        const file = app.metadataCache.getFirstLinkpathDest(link,sourcePath);
+        if (!file || !/^(?:png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i.test(file.extension || ''))
+          throw new Error('嵌入目标缺失或不是支持的图片');
+        url = app.vault.getResourcePath(file);
+      }
+      await session.read(url, 'file:///', {signal,kind:'image'});
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError' || /BUDGET|DISPOSED/.test(error?.code || '')) throw error;
+      let address = String(url || sourcePath);
+      try { address = new URL(address,'file:///').href; }
+      catch (_) { address = 'data:text/plain,'+encodeURIComponent(address); }
+      session.recordOmission({url:address,base:'file:///',kind:'image',stage:'render',
+        reasonCode:'DECLARED_MEDIA_UNAVAILABLE',reason:'原文中的嵌入资源未能归档'});
+    }
+  }
+}
+
+function runtimeEvidence(app,plugin) {
+  const result = {pluginVersion:plugin.manifest?.version || 'unknown'};
+  try {
+    result.obsidianApiVersion = require('obsidian').apiVersion;
+    if (typeof process !== 'undefined') { result.platform = process.platform; result.versions = {...process.versions}; }
+    const base = app.vault.adapter.basePath || app.vault.adapter.getBasePath();
+    const bytes = require('fs').readFileSync(require('path').join(base,plugin.manifest.dir,'main.js'));
+    result.bundleSha256 = require('crypto').createHash('sha256').update(bytes).digest('hex');
+  } catch (_) { /* API-only hosts may not expose installation files. */ }
+  return JSON.parse(JSON.stringify(result));
+}
+
+module.exports = {createMediaSession,freezeMediaDom,previewEvidence,captureDeclaredMedia,runtimeEvidence};
+
+return module.exports; })();
+/* MWB_EXPORT_GENERATED_END */
+
 class PreviewModal extends Modal {
   static uiId = 0;
   constructor(app, plugin, file, markdown, exam = null, opts = {}) {
@@ -7727,7 +9948,7 @@ class PreviewModal extends Modal {
       this.assemblyPreview = Object.freeze({markdown:preview.markdown,
         sources:Object.freeze(preview.sources.map(source => Object.freeze({path:source.path,live:source.live,markdown:source.markdown}))),
         sourceMap:Object.freeze(preview.sourceMap.map(range => Object.freeze({...range}))),
-        assertCurrent:preview.assertCurrent,watch:preview.watch});
+        assertCurrent:preview.assertCurrent,watch:preview.watch,getEvidence:preview.getEvidence});
     }
     const current = mwbSourceRecord(file, markdown);
     this.file = current.file;
@@ -7750,6 +9971,11 @@ class PreviewModal extends Modal {
     this.sourceRevision = 0;
     this.sourceReadJob = null;
     this.sourceWatchStop = null;
+    this.mediaSession = opts.mediaSession || null;
+    this.ownsMediaSession = !opts.mediaSession;
+    this.mediaNodes = new WeakMap();
+    this.mediaWatchStop = null;
+    this.archiveRequested = false;
     this.documentMode = !!opts.documentMode;
     this.generatedHandout = !!opts.generatedHandout;
     this.metaSelections = {student:[...MODE_DEFAULTS.student], teacher:[...MODE_DEFAULTS.teacher]};
@@ -7823,6 +10049,7 @@ class PreviewModal extends Modal {
           this.cancelSourceRead('Mathsemble 已停用');
           this.cancelPreview('Mathsemble 已停用');
           this.cancelExport('Mathsemble 已停用');
+          this.resetMediaSession();
           this.ready = false;
           this.updateSourceStatus('Mathsemble 已停用，请关闭预览窗口。');
           this.closed = true;
@@ -7952,6 +10179,7 @@ class PreviewModal extends Modal {
       const record = exam ? exam.items[0] : snapshot.entries[0]?.record;
       if (!record) throw new Error('源文件为空，快照未替换');
       this.sourceSnapshot = snapshot;
+      this.resetMediaSession();
       this.sourceScope.path = snapshot.path;
       this.file = record.file;
       this.sourceMetadata = record.metadata;
@@ -7986,19 +10214,21 @@ class PreviewModal extends Modal {
   }
 
   async assertSourceCurrent(signal) {
-    if (!this.sourceSnapshot) return; // Isolated host fixtures have no Vault.
+    if (!this.sourceSnapshot) { await this.mediaSession?.assertLocalCurrent(signal); return; }
     if (this.sourceDirty || this.sourceReadJob)
       throw mwbSourceError(`当前预览不是最新源文，请先点击“${this.sourceReadLabel()}”`);
     const snapshot = this.sourceSnapshot, revision = this.sourceRevision;
     try {
       if (this.assemblyPreview) {
         await this.assemblyPreview.assertCurrent(signal);
+        await this.mediaSession?.assertLocalCurrent(signal);
         mwbThrowIfExportAborted(signal);
         if (this.closed || snapshot !== this.sourceSnapshot || revision !== this.sourceRevision || this.sourceDirty)
           throw mwbSourceError('编排来源已变化，请返回编排更新后重新预览 A4');
         return;
       }
       const current = await mwbReadSourceSnapshot(this.app.vault, this.sourceScope, {signal});
+      await this.mediaSession?.assertLocalCurrent(signal);
       mwbThrowIfExportAborted(signal);
       if (this.closed || snapshot !== this.sourceSnapshot || revision !== this.sourceRevision ||
           this.sourceDirty || !mwbSameSourceSnapshot(snapshot,current))
@@ -8260,6 +10490,11 @@ class PreviewModal extends Modal {
     };
     this.questionBoundaryPanel=diagnosticBlocks.createDiv({cls:'mwb-question-boundary-report'});
     const html = moreControls.createEl('button', { text: '保存 HTML 备用' });
+    const archiveLabel = moreControls.createEl('label');
+    this.archiveCheckbox = archiveLabel.createEl('input',{type:'checkbox'});
+    this.archiveCheckbox.setAttribute('aria-label','同时归档本次教师材料');
+    archiveLabel.appendText(' 同时归档本次教师材料（原题、图片、方案与输出）');
+    this.archiveCheckbox.onchange = () => { this.archiveRequested = this.archiveCheckbox.checked; };
     this.exportButtons = [print, dual, html];
     this.cancelExportButton = primaryControls.createEl('button', {text:'取消导出'});
     this.cancelExportButton.style.display = 'none';
@@ -8269,6 +10504,8 @@ class PreviewModal extends Modal {
     this.dualReportEl = this.contentEl.createDiv({cls:'mwb-dual-report'});
     this.dualReportEl.setAttribute('role', 'status');
     this.dualReportEl.style.display = 'none';
+    this.exportRecordEl = this.contentEl.createDiv({cls:'mwb-dual-report'});
+    this.exportRecordEl.style.display = 'none';
     const errorActions = diagnosticResources.createDiv({ cls: 'mwb-error-actions' });
     const copyErrorButton = errorActions.createEl('button', { text: '复制渲染错误详情' });
     copyErrorButton.style.display = 'none';
@@ -8691,9 +10928,41 @@ class PreviewModal extends Modal {
     return true;
   }
 
+  ensureMediaSession() {
+    if (!this.mediaSession) this.mediaSession = mwbExportHost.createMediaSession({vault:this.app.vault,
+      reader:exportHtml.toDataUrl,mimeFor:exportHtml.mimeFor,createResourceSession:mwbExportResources.createResourceSession});
+    if (this.ownsMediaSession && !this.mediaWatchStop && typeof this.app.vault.on === 'function') {
+      const vault = this.app.vault;
+      const changed = (file,oldPath) => {
+        if (this.closed || !this.mediaSession) return;
+        const paths = new Set(this.mediaSession.manifest().resources.map(item=>item.localPath).filter(Boolean));
+        if (paths.has(file?.path) || paths.has(oldPath)) this.markSourceChanged('图片或字体文件已变化：'+(oldPath || file.path));
+      };
+      const refs = ['modify','delete','rename'].map(event=>vault.on(event,changed));
+      this.mediaWatchStop = () => refs.forEach(ref=>vault.offref(ref));
+    }
+    return this.mediaSession;
+  }
+
+  resetMediaSession() {
+    this.mediaWatchStop?.(); this.mediaWatchStop = null;
+    if (this.ownsMediaSession && this.mediaSession && this.mediaSession !== this.exportJob?.mediaSession) this.mediaSession.dispose();
+    this.mediaSession = null;
+    this.mediaNodes = new WeakMap();
+  }
+
   async collectRenderWarnings(stage, root, source, signal) {
     let warnings;
-    try { warnings = await waitForStableRender(root, source, undefined, undefined, signal); }
+    try {
+      const session = this.ensureMediaSession();
+      const first = await mwbExportHost.freezeMediaDom(session,root,{signal,nodes:this.mediaNodes});
+      warnings = await waitForStableRender(root, source, undefined, undefined, signal);
+      // Async renderers can attach images during settling. Freeze those before
+      // measuring teacher heights, then wait for the frozen image to settle.
+      const later = await mwbExportHost.freezeMediaDom(session,root,{signal,nodes:this.mediaNodes});
+      if (later.changed) warnings = await waitForStableRender(root, source, undefined, undefined, signal);
+      warnings = [...warnings,...first.warnings,...later.warnings];
+    }
     catch (error) {
       mwbThrowIfRenderAborted(signal);
       this.recordDiagnosticIssues?.(root,issuesInRenderedNode(root,source));
@@ -9249,6 +11518,7 @@ class PreviewModal extends Modal {
     return await exportHtml(this.rendered, title, typographyCss, this.rendered.ownerDocument || document, {
       layout:this.layout, trialDetails:{...this.trialDetails},
       signal:options.signal, onResourceReport:options.onResourceReport,
+      resourceSession:this.ensureMediaSession(),
       allowIncompleteImages: this.partialExportApproved && this.renderWarnings.some(issue =>
         /未加载或加载失败的图片/.test(issue))
     });
@@ -9288,10 +11558,74 @@ class PreviewModal extends Modal {
       return null;
     }
     const job = {kind, generation:this.generation, mode:this.mode, controller:new AbortController(),
-      savedPath:null, resources:null};
+      savedPath:null, resources:null, mediaSession:this.ensureMediaSession(),archiveRequested:this.archiveRequested};
+    job.artifacts = new Map();
+    try {
+      job.evidence = mwbExportHost.previewEvidence(this,mwbAssemblyMarkdown.collectMediaDependencies);
+      const {declaredDependencies,...inputs} = job.evidence;
+      const service = mwbExportArchive.createExportArchiveService({vault:this.app.vault,validatePlan:mwbAssemblyCore.validatePlan});
+      job.record = service.beginRun({origin:this.assemblyPreview ? 'assembly' : this.documentMode ? 'document' : this.exam ? 'folder' : 'question',
+        ...inputs,settings:this.dualExportSettings(),runtime:this.plugin?.exportRuntime || {pluginVersion:this.plugin?.manifest?.version || 'unknown'}},
+      {archive:!!job.archiveRequested});
+    } catch (error) { job.recordError = error?.message || String(error); }
     this.exportJob = job;
     this.setExportBusy(true);
     return job;
+  }
+
+  async prepareExportEvidence(job) {
+    if (job.archiveRequested && job.evidence)
+      await mwbExportHost.captureDeclaredMedia(job.mediaSession,job.evidence.declaredDependencies,this.app,job.controller.signal);
+    job.evidencePrepared = true;
+  }
+
+  recordExportArtifact(job, artifact) {
+    const value = {...job.artifacts.get(artifact.artifactId),...artifact};
+    job.artifacts.set(artifact.artifactId,value);
+    try {
+      const {bytes,...metadata} = value;
+      const captured = JSON.parse(JSON.stringify(metadata));
+      if (bytes !== undefined) captured.bytes = bytes;
+      job.record?.recordArtifact(captured);
+    }
+    catch (error) { job.recordError = error?.message || String(error); }
+    // Bytes are retained only by the archive service when explicitly selected.
+    delete value.bytes;
+  }
+
+  async finishExportEvidence(job, outcome, error) {
+    try {
+      if (job.archiveRequested && !job.evidencePrepared)
+        job.mediaSession.recordOmission({url:'file:///__mathsemble_unprepared_archive__',stage:'render',
+          reasonCode:'ARCHIVE_CAPTURE_INTERRUPTED',reason:'归档资源准备未完成'});
+      if (job.record) {
+        job.record.setResources({manifest:job.mediaSession.manifest(),readBlob:id=>job.mediaSession.readBlob(id)});
+        job.recordResult = await job.record.finalize({outcome,error:error?.message || error || job.recordError});
+      }
+    } catch (failure) { job.recordError = failure?.message || String(failure); }
+    this.lastExportRecord = job.recordResult || {error:job.recordError};
+    if (!this.closed && this.exportRecordEl) {
+      const panel = this.exportRecordEl; panel.empty(); panel.style.display = '';
+      const result = job.recordResult;
+      for (const [key,label] of [['record','导出记录'],['archive','教师材料归档']]) {
+        const item = result?.[key];
+        if (!item || key === 'archive' && !job.archiveRequested) continue;
+        const row = panel.createDiv();
+        const labels = {saved:'已保存',complete:'已完整归档',partial:'归档不完整',failed:'保存失败',unverified:'写入结果未确认'};
+        row.createEl('span',{text:label+'：'+(labels[item.state] || item.state)+' '+(item.path || item.error?.message || '')});
+        const openPath = item.manifestPath || item.path;
+        if (openPath && this.app.vault.getAbstractFileByPath(openPath)?.extension !== undefined) {
+          const button = row.createEl('button',{text:'打开'+label});
+          button.onclick = () => this.app.workspace.openLinkText(openPath,'',true);
+        }
+      }
+      const warnings = [...(result?.warnings || []),...(job.recordError ? [job.recordError] : [])];
+      const labels = {RESOURCES_NOT_CAPTURED:'资源清单未完成',RESOURCE_OMISSION:'部分资源缺失',RESOURCE_SCOPE_LIMITED:'部分嵌入资源未完整归档',
+        RESOURCE_BYTES_UNAVAILABLE:'部分资源字节不可用',RESOURCE_BLOB_CONFLICT:'资源内容核对不一致',ARTIFACT_BYTES_UNAVAILABLE:'部分输出内容未归档',
+        ARCHIVE_WRITE_FAILED:'材料归档写入失败',RECORD_WRITE_FAILED:'导出记录写入失败'};
+      if (warnings.length) panel.createEl('p',{text:'记录／归档提示：'+[...new Set(warnings.map(value=>typeof value === 'string' ? value : labels[value.code] || value.message || '部分记录未完成'))].join('；')});
+    }
+    if (job.recordError) new Notice('输出文件状态保持不变；导出记录／归档未完整保存：'+job.recordError,10000);
   }
 
   cancelExport(reason = '导出已取消') {
@@ -9317,13 +11651,14 @@ class PreviewModal extends Modal {
   }
 
   finishExport(job) {
+    if (this.ownsMediaSession && job.mediaSession && job.mediaSession !== this.mediaSession) job.mediaSession.dispose();
     if (this.exportJob !== job) return;
     this.exportJob = null;
     if (!this.closed) this.setExportBusy(false);
   }
 
   resourceSummary(job) {
-    return job.resources ? `；资源读取 ${job.resources.reads} 次，缓存复用 ${job.resources.cacheHits} 次` : '';
+    return job.resources ? `；资源准备 ${job.resources.reads} 次，任务内复用 ${job.resources.cacheHits} 次` : '';
   }
 
   exportDiagnosticItems(error) {
@@ -9347,7 +11682,8 @@ class PreviewModal extends Modal {
   reportExportFailure(job, error) {
     if (!this.isCurrentExport(job)) return; // Never overwrite a newer render's status.
     const cancelled = error?.name === 'AbortError';
-    const prefix = job.savedPath ? `已保存：${job.savedPath}；后续操作` : '导出';
+    const uncertain = [...(job.artifacts?.values() || [])].find(item=>item.state === 'saving');
+    const prefix = job.savedPath ? `已保存：${job.savedPath}；后续操作` : uncertain ? `写入结果未确认：${uncertain.path}；导出` : '导出';
     const message = prefix + (cancelled ? '已取消：' : '失败：') + (error?.message || String(error));
     this.status.setText(message);
     if (!cancelled && this.exportDiagnosticItems) {
@@ -9364,6 +11700,7 @@ class PreviewModal extends Modal {
     if (!job) return;
     this.status.setText('正在准备 HTML 图片与字体资源…');
     try {
+      await this.prepareExportEvidence(job);
       const name = `${safeStem(this.exam ? this.examTitle : this.file.basename)}_${job.mode}_${stamp()}.html`;
       let html = await this.preparePrintHtml(name, {signal:job.controller.signal,
         onResourceReport:report => { job.resources = report; }});
@@ -9383,13 +11720,22 @@ class PreviewModal extends Modal {
       this.assertCurrentExport(job);
       // Obsidian Vault.create cannot be aborted after it has started. Keep
       // the export mutex until completion; never delete a saved user file.
+      const artifact = {artifactId:'html-'+job.mode,kind:'html',edition:job.mode,path:`${OUTPUT_DIR}/${name}`,bytes:new TextEncoder().encode(html)};
+      this.recordExportArtifact(job,{...artifact,state:'prepared'});
+      this.recordExportArtifact(job,{...artifact,state:'saving'});
       await this.app.vault.create(`${OUTPUT_DIR}/${name}`, html);
       job.savedPath = `${OUTPUT_DIR}/${name}`;
+      this.recordExportArtifact(job,{...artifact,state:'saved'});
       this.assertCurrentExport(job);
       this.status.setText('HTML 已保存：' + job.savedPath + this.resourceSummary(job));
       new Notice('已保存自包含 HTML：' + job.savedPath);
-    } catch (error) { this.reportExportFailure(job, error); }
-    finally { this.finishExport(job); }
+    } catch (error) { job.failure = error; this.reportExportFailure(job, error); }
+    finally {
+      for (const artifact of job.artifacts.values()) if (artifact.state === 'saving')
+        this.recordExportArtifact(job,{...artifact,state:'unverified'});
+      await this.finishExportEvidence(job,job.savedPath ? 'saved' : job.failure?.name === 'AbortError' ? 'cancelled' : 'failed',job.failure);
+      this.finishExport(job);
+    }
   }
 
   async exportPdf({save=true,printAfter=false} = {}) {
@@ -9397,6 +11743,7 @@ class PreviewModal extends Modal {
     if (!job) return;
     this.status.setText('正在准备 A4 打印页面、核验 PDF…');
     try {
+      await this.prepareExportEvidence(job);
       const name=`${safeStem(this.exam ? this.examTitle : this.file.basename)}_${job.mode}${this.overflowOmissionEnabled ? '_部分内容' : ''}_${stamp()}.pdf`;
       const html=await this.preparePrintHtml(name, {signal:job.controller.signal,
         onResourceReport:report => { job.resources = report; }});
@@ -9419,8 +11766,10 @@ class PreviewModal extends Modal {
           this.assertCurrentExport(job);
           const bytes=buffer.buffer.slice(buffer.byteOffset,buffer.byteOffset+buffer.byteLength);
           const savedPath=`${OUTPUT_DIR}/${name}`;
+          this.recordExportArtifact(job,{artifactId:'pdf-'+job.mode,kind:'pdf',edition:job.mode,state:'saving',path:savedPath,bytes:buffer});
           await this.app.vault.createBinary(savedPath,bytes);
           job.savedPath=savedPath;
+          this.recordExportArtifact(job,{artifactId:'pdf-'+job.mode,state:'saved',bytes:buffer});
           if (this.isCurrentExport(job)) {
             this.lastSavedPdfPath = savedPath;
             if (this.openPdfButton) this.openPdfButton.style.display = '';
@@ -9433,6 +11782,9 @@ class PreviewModal extends Modal {
       const printMessage=!printAfter?'':printOutcome?.success?'；打印任务已提交到系统':
         `；打印取消或失败：${printOutcome?.reason || '未知原因'}`;
       const pagination=pdf.mwbPrintReport;
+      this.recordExportArtifact(job,{artifactId:'pdf-'+job.mode,kind:'pdf',edition:job.mode,state:job.savedPath ? 'saved' : 'prepared',
+        bytes:pdf,pages:pagination?.pages,printReport:{pagination,printOutcome}});
+      job.completed = true;
       const partialLabel = (this.renderWarnings.length ? `；带 ${this.renderWarnings.length} 项局部渲染警告（内容可能不完整）` : '') +
         (pagination?.omittedBlocks?.length ? `；已跳过 ${pagination.omittedBlocks.length} 处超出 A4 的内容（原位已标记）` : '');
       this.status.setText((job.savedPath ? `PDF 已保存：${job.savedPath}` : 'PDF 已生成（未保存）')+printMessage+
@@ -9440,8 +11792,13 @@ class PreviewModal extends Modal {
         (pagination?.relaxedGroupBindings?.length ? `；${pagination.relaxedGroupBindings.length} 处超长题组已续页` : '')+
         partialLabel+this.resourceSummary(job));
       new Notice((job.savedPath?'PDF 已保存':'PDF 已生成')+partialLabel+printMessage,8500);
-    } catch(error) { this.reportExportFailure(job, error); }
-    finally { this.finishExport(job); }
+    } catch(error) { job.failure = error; this.reportExportFailure(job, error); }
+    finally {
+      for (const artifact of job.artifacts.values()) if (artifact.state === 'saving')
+        this.recordExportArtifact(job,{...artifact,state:'unverified'});
+      await this.finishExportEvidence(job,job.savedPath ? 'saved' : job.completed ? 'generated' : job.failure?.name === 'AbortError' ? 'cancelled' : 'failed',job.failure);
+      this.finishExport(job);
+    }
   }
 
 
@@ -9478,7 +11835,8 @@ class PreviewModal extends Modal {
       this.contentEl.appendChild(mount);
       worker = new PreviewModal(this.app, this.plugin, input.file, input.markdown, input.exam,
         {documentMode:input.documentMode, generatedHandout:input.generatedHandout,
-          sourceScope:input.sourceScope, sourceSnapshot:input.sourceSnapshot,assemblyPreview:input.assemblyPreview});
+          sourceScope:input.sourceScope, sourceSnapshot:input.sourceSnapshot,assemblyPreview:input.assemblyPreview,
+          mediaSession:input.mediaSession});
       Object.assign(worker, JSON.parse(input.settingsKey));
       worker.silentRender = true;
       worker.modalEl = mount;
@@ -9571,12 +11929,13 @@ class PreviewModal extends Modal {
       // Strings and frozen source records are shared, while mutable UI options
       // and grouping arrays are copied before the first await.
       job.input = {file:this.file, markdown:this.markdown, documentMode:this.documentMode, generatedHandout:this.generatedHandout,
-        assemblyPreview:this.assemblyPreview,
+        assemblyPreview:this.assemblyPreview,mediaSession:job.mediaSession,
         exam:this.exam ? {...this.exam, items:this.exam.items.map(item => ({...item})),
           sections:this.exam.sections.map(section => ({...section}))} : null,
         sourceScope:{...this.sourceScope}, sourceSnapshot:this.sourceSnapshot,
         sourceRevision:this.sourceRevision, settingsKey:JSON.stringify(this.dualExportSettings())};
       this.showDualExportReport(report);
+      await this.prepareExportEvidence(job);
       await this.assertSourceCurrent(job.controller.signal);
       this.assertDualExport(job);
       const stem = `${safeStem(this.exam ? this.examTitle : this.file.basename)}_${stamp()}`;
@@ -9601,6 +11960,8 @@ class PreviewModal extends Modal {
         item.pages = result.pages;
         item.resources = result.resources;
         item.state = 'prepared';
+        this.recordExportArtifact(job,{artifactId:'pdf-'+item.edition,kind:'pdf',edition:item.edition,state:'prepared',
+          path:paths[index],bytes:result.pdf,pages:result.pages,printReport:result.pdf.mwbPrintReport});
         generated.push({item, pdf:result.pdf, path:paths[index]});
       }
       active = null;
@@ -9616,6 +11977,7 @@ class PreviewModal extends Modal {
         this.assertDualExport(job);
         active.state = 'saving';
         active.attemptedPath = entry.path;
+        this.recordExportArtifact(job,{artifactId:'pdf-'+active.edition,state:'saving',path:entry.path});
         report.summary = '双版导出：正在保存' + active.label + '…';
         this.status.setText(report.summary);
         this.showDualExportReport(report);
@@ -9625,6 +11987,7 @@ class PreviewModal extends Modal {
         await this.app.vault.createBinary(entry.path, bytes);
         active.savedPath = entry.path;
         active.state = 'saved';
+        this.recordExportArtifact(job,{artifactId:'pdf-'+active.edition,state:'saved',bytes:entry.pdf});
         job.savedPath = entry.path;
         if (this.isCurrentExport(job)) {
           this.lastSavedPdfPath = entry.path;
@@ -9659,6 +12022,10 @@ class PreviewModal extends Modal {
     } finally {
       generated.length = 0;
       report.finishedAt = new Date().toISOString();
+      for (const item of report.items) this.recordExportArtifact(job,{artifactId:'pdf-'+item.edition,kind:'pdf',edition:item.edition,
+        state:item.state === 'pending' || item.state === 'rendering' ? 'not-run' : item.state,
+        ...(item.savedPath || item.unverifiedPath ? {path:item.savedPath || item.unverifiedPath} : {}),pages:item.pages});
+      await this.finishExportEvidence(job,report.outcome,report.error);
       this.showDualExportReport(report);
       if (this.isCurrentExport(job)) this.status.setText(report.summary + (report.error ? '\n' + report.error : ''));
       if (!this.closed || report.items.some(item => item.savedPath || item.unverifiedPath)) new Notice(report.summary, 10000);
@@ -9678,6 +12045,7 @@ class PreviewModal extends Modal {
     this.renderController = null;
     this.renderBusy = false;
     this.cancelExport('预览窗口已关闭，导出已取消');
+    this.resetMediaSession();
     ++this.generation;
     this.ready = false;
     this.clearPaginatedPreview();
@@ -9690,6 +12058,7 @@ class PreviewModal extends Modal {
 
 module.exports = class MathsemblePlugin extends Plugin {
   async onload() {
+    this.exportRuntime = mwbExportHost.runtimeEvidence(this.app,this);
     if (this.manifest?.id && this.manifest.id !== 'mathsemble') {
       new Notice('Mathsemble 安装清单与代码不一致：请将同一版本的三个文件安装到 mathsemble 目录，然后重启。', 12000);
       throw new Error('Mathsemble plugin ID mismatch: expected mathsemble');
@@ -9713,8 +12082,11 @@ module.exports = class MathsemblePlugin extends Plugin {
       for (const controller of readingAnswerViews.values()) controller.dispose();
       readingAnswerViews.clear();
     });
-    const assemblyService = mwbAssemblyService(this, {core:mwbAssemblyCore,
-      compileMarkdown:mwbAssemblyMarkdown.compileMarkdown, parseYaml,
+    const blueprintEngine = mwbAssemblyBlueprint.createBlueprintEngine({core:mwbAssemblyCore});
+    const familyEngine = mwbAssemblyFamily.createFamilyEngine({core:mwbAssemblyCore});
+    const assemblyService = mwbAssemblyService(this, {core:mwbAssemblyCore,blueprintEngine,familyEngine,
+      compileMarkdown:mwbAssemblyMarkdown.compileMarkdown,
+      collectMediaDependencies:mwbAssemblyMarkdown.collectMediaDependencies, parseYaml,
       previewFile:async (file, options = {}) => {
         const scope=mwbSourceScope(file);
         const snapshot=options.assemblyPreview ? null : await mwbReadSourceSnapshot(this.app.vault,scope);
@@ -9724,7 +12096,22 @@ module.exports = class MathsemblePlugin extends Plugin {
             assemblyPreview:options.assemblyPreview,onReturnToAssembly:options.onReturnToAssembly,
             planSettings:options.planSettings,onApplyPlanSettings:options.onApplyPlanSettings}).open();
       }});
+    const BlueprintModal = mwbAssemblyBlueprintUi({Modal,Component,Notice,core:mwbAssemblyCore,engine:blueprintEngine,
+      service:assemblyService,renderMarkdown:(markdown,container,path,owner,signal) =>
+        mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
+    const FamilyModal = mwbAssemblyFamilyUi({Modal,Component,core:mwbAssemblyCore,service:assemblyService,
+      renderMarkdown:(markdown,container,path,owner,signal)=>mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
     const AssemblyView = mwbAssemblyView({ItemView,Component,Notice,core:mwbAssemblyCore,
+      openFamily:(view,entryId)=>{
+        if(view.closed||view.actionBusy||view.scanBusy)return;
+        if(view.familyModal&&!view.familyModal.closed)return;
+        view.familyModal=new FamilyModal(this.app,this,view,entryId);view.familyModal.open();
+      },
+      openBlueprint:view=>{
+        if(view.closed||view.actionBusy||view.scanBusy)return;
+        if(view.blueprintModal&&!view.blueprintModal.closed)return;
+        view.blueprintModal=new BlueprintModal(this.app,this,view);view.blueprintModal.open();
+      },
       service:assemblyService,renderMarkdown:(markdown,container,path,owner,signal) =>
         mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
     this.registerView('mathsemble-assembly', leaf => new AssemblyView(leaf,this));

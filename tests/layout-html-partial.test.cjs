@@ -21,7 +21,7 @@ test('saved alternative HTML receives only the acknowledged warning categories',
   const captured = [];
   const obsidian = {Plugin:class {}, Modal:class {}, Notice:class {}, MarkdownRenderer:{}, MarkdownView:class {}};
   const context = {module:{exports:{}}, require:name => name === 'obsidian' ? obsidian : require(name),
-    console, Buffer, captured};
+    console, Buffer, TextEncoder, captured};
   vm.runInNewContext(source + '\n;globalThis.ReviewModal = PreviewModal;' +
     '\nmwbPaginateSavedHtml = async (html, doc, options) => { captured.push(options); return html; };', context);
   for (const [approved, warnings, imageAllowed, mathAllowed] of [
@@ -35,7 +35,11 @@ test('saved alternative HTML receives only the acknowledged warning categories',
       rendered:{ownerDocument:{}}, status:{setText() {}}, app:{vault:{
         getAbstractFileByPath:path => path === 'ExamExports' ? {path,children:[]} : null, create:async () => {},
       }},
-      beginExport:() => ({mode:'student', controller:new AbortController()}),
+      beginExport:() => ({mode:'student', controller:new AbortController(),artifacts:new Map(),
+        record:{recordArtifact(){}},mediaSession:{manifest:()=>({resources:[],omissions:[],warnings:[]})}}),
+      // Pagination consent is the boundary under test; full evidence I/O is
+      // exercised through the real modal in export-evidence-integration tests.
+      prepareExportEvidence:async()=>{},finishExportEvidence:async()=>{},
       preparePrintHtml:async () => '<main>测试讲义</main>', assertCurrentExport() {}, assertSourceCurrent:async () => {},
       resourceSummary:() => '', finishExport() {}, reportExportFailure(job, error) { throw error; },
     });
