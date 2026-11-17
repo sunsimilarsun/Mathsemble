@@ -104,6 +104,10 @@ test('real Chromium: nested mapping, solution measurement isolation, title refre
 });
 async function browserCases(){
  const results=[],a=audit,mount=document.getElementById('mount');
+ // This DOM-only fixture has no Vault. Preserve image URLs so the production
+ // render guard, rather than a mocked byte reader, still diagnoses bad images.
+ const mediaSession=()=>({read:async url=>url,manifest:()=>({resources:[],omissions:[],warnings:[]}),
+  assertLocalCurrent:async()=>true,recordOmission(){},dispose(){}});
  const ok=(v,msg)=>{if(!v)throw Error(msg);};
  const check=async(name,fn)=>{try{mount.replaceChildren();await fn();results.push({name,ok:true});}catch(e){results.push({name,ok:false,error:e.stack||e.message});}};
  const box=(type,text)=>'<div class="callout" data-callout="'+type+'"><div class="callout-title">'+type+'</div><div class="callout-content">'+text+'</div></div>';
@@ -136,7 +140,7 @@ async function browserCases(){
    mockObsidian.MarkdownRenderer.render=render;
    // Use the real modal so staging ownership, measurement creation and render
    // guards remain part of the regression instead of a stale partial mock.
-   const proto=a.PreviewModal.prototype,m=new a.PreviewModal({}, {}, {path:'sample.md',basename:'sample',extension:'md'}, md);
+   const proto=a.PreviewModal.prototype,m=new a.PreviewModal({}, {}, {path:'sample.md',basename:'sample',extension:'md'}, md,null,{mediaSession:mediaSession()});
    Object.assign(m,{page:paper,rendered,generation:1,solutionOptions:{solutionSpaces:enabled,showSolution:false},status:{setText(){}}});
    let value,error;try{value=await proto[route].call(m,...(route==='measureExamSolutions'?[[{file:{path:'sample.md'},markdown:md}]]:route==='measureDocumentSolutions'?[enabled?2:1,1]:[enabled?2:1]));}catch(e){error=e.message;}
    if(enabled)ok(error&&/版心|公式/.test(error),'enabled bad solution should be diagnosed');
@@ -145,7 +149,7 @@ async function browserCases(){
   });
  }
  await check('F07 title change rebuilds the visible A4 clone, not just its hidden source',()=>{
-  const m=new a.PreviewModal({}, {manifest:{version:'test'}},{basename:'sample',path:'sample.md'},'',{title:'旧标题',items:[],sections:[]});
+  const m=new a.PreviewModal({}, {manifest:{version:'test'}},{basename:'sample',path:'sample.md'},'',{title:'旧标题',items:[],sections:[]},{mediaSession:mediaSession()});
   m.modalEl=mount.createDiv();m.contentEl=m.modalEl.createDiv({cls:'modal-content'});
   let renders=0;
   m.renderMode=function(){renders++;this.clearPaginatedPreview();this.rendered.empty();this.titleElement=this.rendered.createEl('h1',{text:this.examTitle});this.rendered.createEl('p',{text:'测试题干'});this.showPaginatedPreview();};

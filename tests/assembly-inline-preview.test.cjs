@@ -110,6 +110,23 @@ async function browserCases(sources,css) {
     ok(f.host.scrollWidth<=f.host.clientWidth+1,'host overflows horizontally');
     ok(f.view.center.scrollWidth<=f.view.center.clientWidth+1,'result panel overflows horizontally');
   };
+  const settleAtBottom=async f=>{
+    const pane=f.view.center,deadline=Date.now()+5000;
+    let previous='',stableSince=Date.now();
+    while(Date.now()<deadline){
+      // Scrolling starts more lazy previews. Each can grow after the previous
+      // bottom was reached, so wait for their queue and the actual geometry.
+      pane.scrollTop=pane.scrollHeight;
+      await pause(30);
+      const geometry=[pane.scrollHeight,pane.clientHeight,pane.scrollTop].join(',');
+      const idle=f.view.inlinePreviewActive===0&&f.view.inlinePreviewQueue.length===0;
+      const atBottom=Math.abs(pane.scrollHeight-pane.clientHeight-pane.scrollTop)<=1;
+      if(!idle||!atBottom||geometry!==previous)stableSince=Date.now();
+      else if(Date.now()-stableSince>=120)return;
+      previous=geometry;
+    }
+    throw Error('automatic previews did not settle at the result-pane bottom');
+  };
 
   await check('visible result cards render intact Markdown with original source paths before any click',async()=>{
     const f=await fixture();
@@ -143,7 +160,7 @@ async function browserCases(sources,css) {
     measurements.narrow={width:420,height:600,columns:new Set(cards().map(card=>Math.round(card.getBoundingClientRect().left))).size,cardHeight:Math.round(a.height),previewHeight:Math.round(snippets(cards()[0])[0].getBoundingClientRect().height)};
     f.view.limit=10;f.view.renderResults();await pause();
     const more=button(f.view.results,'再显示 100 条');ok(more,'paging action missing');
-    f.view.center.scrollTop=f.view.center.scrollHeight;await pause();
+    await settleAtBottom(f);
     const rect=more.getBoundingClientRect(),pane=f.view.center.getBoundingClientRect();
     ok(rect.top>=pane.top&&rect.bottom<=pane.bottom,'paging action cannot be reached in the short pane');
     more.click();await pause();ok(cards().length===records.length,'reachable paging action did not add results');fit(f);

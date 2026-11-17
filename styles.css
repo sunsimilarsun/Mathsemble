@@ -1170,3 +1170,34 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
   .mwb-assembly-arrangement-entry-header > .mwb-assembly-arrangement-role { width:76px; max-width:76px; }
   .mwb-assembly-arrangement-more > summary { top:9px; right:9px; width:26px; }
 }
+/* Quota editing is isolated in its own dialog; the existing library and plan
+   layouts retain their independent scrolling and card geometry. */
+.mwb-blueprint-modal { width: min(1160px, 96vw); max-width: 96vw; }
+.mwb-blueprint { overflow-y: auto; max-height: 85vh; padding: 8px; }
+.mwb-blueprint-toolbar,.mwb-blueprint-row-main { display:flex; flex-wrap:wrap; gap:8px; align-items:end; margin:10px 0; }
+.mwb-blueprint-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.mwb-blueprint-field > span { font-size:var(--font-ui-small); color:var(--text-muted); }
+.mwb-blueprint-field input,.mwb-blueprint-field select { max-width:100%; }
+.mwb-blueprint-filter-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin:10px 0; }
+.mwb-blueprint-filter-grid select { min-height:72px; }
+.mwb-blueprint-row,.mwb-blueprint-candidate { border:1px solid var(--background-modifier-border); border-radius:8px; padding:12px; margin:12px 0; }
+.mwb-blueprint-row { background:var(--background-secondary); }
+.mwb-blueprint-row-main input[type=number] { width:80px; }
+.mwb-blueprint-status { padding:10px; margin:10px 0; background:var(--background-secondary); border-radius:6px; white-space:pre-wrap; }
+.mwb-blueprint-status.is-error { color:var(--text-error); }
+.mwb-blueprint-results table { width:100%; border-collapse:collapse; margin:12px 0; }
+.mwb-blueprint-results th,.mwb-blueprint-results td { padding:6px 10px; border-bottom:1px solid var(--background-modifier-border); text-align:left; }
+.mwb-blueprint-question { overflow-wrap:anywhere; }
+.mwb-blueprint-question img { max-width:100%; height:auto; }
+.mwb-blueprint-locks { display:flex; flex-wrap:wrap; gap:6px; }
+.mwb-blueprint-lock { font-size:var(--font-ui-small); }
+.mwb-family-modal { width: min(1050px, 94vw); }
+.mwb-family { max-height: 85vh; overflow-y: auto; }
+.mwb-family-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.mwb-family-controls > label { display: flex; gap: 6px; align-items: center; }
+.mwb-family-controls select { max-width: 100%; }
+.mwb-family-check { cursor: pointer; }
+.mwb-family-candidate { border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 14px; margin: 12px 0; }
+.mwb-family-question { margin-top: 10px; overflow-wrap: anywhere; }
+.mwb-family-question img { max-width: 100%; height: auto; }
+.mwb-family-status.is-error { color: var(--text-error); }

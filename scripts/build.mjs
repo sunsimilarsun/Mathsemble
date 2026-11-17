@@ -13,10 +13,19 @@ if (!existsSync(input)) {
 if (!existsSync(resolve(root, 'styles.css'))) throw new Error('Missing styles.css; cannot generate printing stylesheet');
 const original = readFileSync(input, 'utf8');
 let source = original.replace(/\r\n?/g, '\n');
+if (source.includes('/* MWB_EXPORT_GENERATED_START */')) {
+  const modules = ['resources','archive','host'].map(name => {
+    const body = readFileSync(resolve(root, `src/export-${name}.cjs`), 'utf8').replace(/\r\n?/g, '\n');
+    return `const mwbExport${name[0].toUpperCase()+name.slice(1)} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();`;
+  }).join('\n');
+  source = source.replace(/\/\* MWB_EXPORT_GENERATED_START \*\/[\s\S]*?\/\* MWB_EXPORT_GENERATED_END \*\//,
+    () => '/* MWB_EXPORT_GENERATED_START */\n' + modules + '\n/* MWB_EXPORT_GENERATED_END */');
+}
 if (source.includes('/* MWB_ASSEMBLY_GENERATED_START */')) {
-  const modules = ['core','markdown','service','view'].map(name => {
+  const modules = ['core','markdown','blueprint','family','service','blueprint-ui','family-ui','view'].map(name => {
     const body = readFileSync(resolve(root, `src/assembly-${name}.cjs`), 'utf8').replace(/\r\n?/g, '\n');
-    return `const mwbAssembly${name[0].toUpperCase()+name.slice(1)} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();`;
+    const label = name.split('-').map(part=>part[0].toUpperCase()+part.slice(1)).join('');
+    return `const mwbAssembly${label} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();`;
   }).join('\n');
   source = source.replace(/\/\* MWB_ASSEMBLY_GENERATED_START \*\/[\s\S]*?\/\* MWB_ASSEMBLY_GENERATED_END \*\//,
     () => '/* MWB_ASSEMBLY_GENERATED_START */\n' + modules + '\n/* MWB_ASSEMBLY_GENERATED_END */');

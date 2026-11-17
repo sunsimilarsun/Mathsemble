@@ -19,6 +19,28 @@ function escapedAt(text, index) {
   while (index > 0 && text[--index] === '\\') n++;
   return n % 2 === 1;
 }
+function markdownLinkBounds(text, opening) {
+  let end = opening+1, depth = 1;
+  for (;end<text.length;end++) {
+    if (escapedAt(text,end)) continue;
+    if (text[end] === '[') depth++;
+    else if (text[end] === ']' && --depth === 0) break;
+  }
+  if (text[end+1] !== '(') return null;
+  const start = end+2;
+  let close = start, nesting = 1, angle = false, quote = '';
+  for (;close<text.length;close++) {
+    if (escapedAt(text,close)) continue;
+    const c = text[close];
+    if (quote) { if (c === quote) quote = ''; continue; }
+    if (c === '<' && !text.slice(start,close).trim()) angle = true;
+    else if (c === '>' && angle) angle = false;
+    else if (!angle && /["']/.test(c) && /\s/.test(text[close-1]||'')) quote = c;
+    else if (!angle && c === '(') nesting++;
+    else if (!angle && c === ')' && --nesting === 0) break;
+  }
+  return close < text.length ? {end,start,close} : null;
+}
 function makeProtector(source) {
   let marker = 'MWBPROTECTEDTOKEN';
   while (source.includes(marker)) marker += 'X';
@@ -39,7 +61,7 @@ function makeProtector(source) {
 
 // Code and math are literal throughout link and heading rewriting. Keep quoted
 // code fences too: answer Callouts commonly contain fenced examples.
-function protectLiterals(source, protector) {
+function protectLiterals(source, protector, options = {}) {
   const lines = source.split('\n');
   const result = [];
   let listContext = false;
@@ -63,8 +85,27 @@ function protectLiterals(source, protector) {
     } else result.push(lines[i]);
   }
   const text = result.join('\n');
+  const destinations = new Map();
+  if (options.protectLinkDestinations) {
+    for (const match of text.matchAll(/^((?: {0,3}>[ \t]?)* {0,3}\[[^\]\n]+\]:[ \t]*)([^\n]+)/gm))
+      destinations.set(match.index+match[1].length,match.index+match[0].length);
+  }
   let out = '', i = 0;
   while (i < text.length) {
+    if (destinations.has(i)) {
+      const end = destinations.get(i);
+      out += protector.save(text.slice(i,end)); i = end; continue;
+    }
+    if (options.protectLinkDestinations && text[i] === '[' && !escapedAt(text,i) && text[i+1] !== '[') {
+      const link = markdownLinkBounds(text,i);
+      if (link && link.start < link.close) destinations.set(link.start,link.close);
+    }
+    if (options.protectLinkDestinations && text.startsWith('[[',i) && !escapedAt(text,i)) {
+      const end = text.indexOf(']]',i+2);
+      if (end >= 0 && !text.slice(i,end).includes('\n')) {
+        out += '[['+protector.save(text.slice(i+2,end))+']]';i = end+2;continue;
+      }
+    }
     let end = -1;
     if (text.startsWith('<!--', i)) {
       const close = text.indexOf('-->', i + 4);
@@ -78,6 +119,13 @@ function protectLiterals(source, protector) {
         const match = close.exec(text);
         if (!match) throw new Error('源笔记 HTML 字面块未闭合');
         end = match.index + match[0].length;
+      } else if (options.protectHtmlTags) {
+        const tag = /^<\/?[A-Za-z][\w:-]*(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>/.exec(text.slice(i));
+        if (tag) {
+          const token = protector.save(tag[0]);
+          options.onHtmlTag?.(token,tag[0]);
+          out += token; i += tag[0].length; continue;
+        }
       }
     } else if (text[i] === '`' && !escapedAt(text, i)) {
       const ticks = /^`+/.exec(text.slice(i))[0];
@@ -104,6 +152,130 @@ function protectLiterals(source, protector) {
     else out += text[i++];
   }
   return out;
+}
+
+// Collect declarations from a captured note, without resolving files, reading
+// the vault, fetching URLs, or requiring the note to be an assembly input.
+function collectMediaDependencies(markdown, sourcePath = '') {
+  const dependencies = [], issues = [];
+  const htmlEntities = value => String(value).replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (all, entity) => {
+    if (entity[0] !== '#') return {amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:'\u00a0'}[entity.toLowerCase()];
+    const n = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2),16) : Number(entity.slice(1));
+    return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '\ufffd';
+  });
+  const add = (rawTarget, syntax, options = {}) => {
+    const raw = String(rawTarget || '');
+    let target = syntax === 'html-image' || syntax === 'html-embed' ? htmlEntities(raw) : raw;
+    target = target.trim();
+    if (syntax !== 'wiki-embed') target = target.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~ ])/g,'$1');
+    if (syntax !== 'wiki-embed' && !isExternal(target)) {
+      const parts = splitTarget(target);
+      try { parts.path = decodeURIComponent(parts.path); } catch (_) { /* Literal percent. */ }
+      target = parts.path + parts.suffix;
+    }
+    let status = options.status || 'declared', reasonCode = options.reasonCode || '';
+    if (!target && !reasonCode) { status = 'unresolved'; reasonCode = 'empty-target'; }
+    if (syntax === 'wiki-embed' && !reasonCode) {
+      const ext = /\.([^.\/]+)$/.exec(splitTarget(target).path)?.[1].toLowerCase();
+      if (!ext) { status = 'unresolved'; reasonCode = 'wiki-target-needs-resolution'; }
+      else if (!/^(?:png|jpe?g|gif|webp|svg|bmp|avif|ico)$/.test(ext)) {
+        status = 'unsupported'; reasonCode = 'unsupported-wiki-embed';
+      }
+    }
+    const row = {sourcePath:String(sourcePath || ''),syntax,rawTarget:raw,target,status,reasonCode};
+    dependencies.push(row);
+    if (status !== 'declared') issues.push({...row});
+  };
+  let text, protector;
+  const tags = new Map();
+  try {
+    const source = stripFrontmatter(markdown);
+    protector = makeProtector(source);
+    text = protectLiterals(source,protector,{protectHtmlTags:true,protectLinkDestinations:true,
+      onHtmlTag:(token,tag)=>tags.set(token,tag)});
+  } catch (_) {
+    add('', 'markdown', {status:'unsupported',reasonCode:'unparsed-markdown'});
+    return {dependencies,issues};
+  }
+  const definitions = new Map();
+  text = text.replace(/^(?: {0,3}>[ \t]?)* {0,3}\[([^\]\n]+)\]:[ \t]*([^\n]*)$/gm, (all,label,body) => {
+    const destination = /^(?:<([^>\n]*)>|((?:\\.|[^\s])+))/.exec(protector.restore(body));
+    if (destination && !label.startsWith('^') && !definitions.has(normalizedLabel(label)))
+      definitions.set(normalizedLabel(label),destination[1] ?? destination[2]);
+    return '\n'.repeat((all.match(/\n/g)||[]).length);
+  });
+  const reference = (label, syntax = 'reference-image') => {
+    const target = definitions.get(normalizedLabel(label));
+    if (target !== undefined) add(target,syntax);
+    else add('',syntax,{status:'unresolved',reasonCode:'missing-image-reference'});
+  };
+  const scan = input => {
+    let retained = '', cursor = 0;
+    for (let i = 0; i < input.length; i++) {
+      if (input[i] !== '[' || escapedAt(input,i)) continue;
+      const image = input[i-1] === '!' && !escapedAt(input,i-1);
+      const opening = image ? i-1 : i;
+      if (input[i+1] === '[') {
+        const end = input.indexOf(']]',i+2);
+        if (end < 0 || input.slice(i,end).includes('\n')) continue;
+        if (image) add(protector.restore(input.slice(i+2,end)).split('|')[0],'wiki-embed');
+        retained += input.slice(cursor,opening); cursor = end+2; i = end+1; continue;
+      }
+      let end = i+1, depth = 1;
+      for (;end<input.length;end++) {
+        if (escapedAt(input,end)) continue;
+        if (input[end] === '[') depth++;
+        else if (input[end] === ']' && --depth === 0) break;
+      }
+      if (end >= input.length) continue;
+      const label = input.slice(i+1,end);
+      if (input[end+1] === '(') {
+        const bounds = markdownLinkBounds(input,i);
+        if (!bounds) continue;
+        const {start,close} = bounds;
+        const inside = protector.restore(input.slice(start,close)).trim();
+        const match = /^(?:<([^>\n]*)>|((?:\\.|[^\s])+))([\s\S]*)$/.exec(inside);
+        if (match && image) add(match[1] ?? match[2],'markdown-image');
+        else if (image && !inside) add('','markdown-image');
+        else if (image) add(inside,'markdown-image',{status:'unresolved',reasonCode:'unparsed-image-destination'});
+        retained += input.slice(cursor,opening) + (image ? '' : scan(label));
+        cursor = close+1; i = close; continue;
+      }
+      if (input[end+1] === '[') {
+        const close = input.indexOf(']',end+2);
+        if (close >= 0 && !input.slice(end+2,close).includes('\n')) {
+          if (image) reference(protector.restore(input.slice(end+2,close) || label));
+          retained += input.slice(cursor,opening) + (image ? '' : scan(label));
+          cursor = close+1; i = close; continue;
+        }
+      }
+      if (definitions.has(normalizedLabel(protector.restore(label)))) {
+        if (image) reference(protector.restore(label));
+        retained += input.slice(cursor,opening) + (image ? '' : scan(label));
+        cursor = end+1; i = end;
+      }
+    }
+    return retained + input.slice(cursor);
+  };
+  const visible = scan(text);
+  for (const [token,tag] of tags) {
+    if (!visible.includes(token) || /^<\//.test(tag)) continue;
+    const name = /^<([\w:-]+)/.exec(tag)[1].toLowerCase();
+    const attributes = new Map();
+    const body = tag.slice(name.length+1,-1);
+    for (const match of body.matchAll(/([^\s=<>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) {
+      const key = match[1].toLowerCase();
+      if (!attributes.has(key)) attributes.set(key,match[2] ?? match[3] ?? match[4] ?? '');
+    }
+    if (name === 'img') {
+      if (attributes.has('src')) add(attributes.get('src'),'html-image');
+      if (attributes.has('srcset')) add(attributes.get('srcset'),'html-image',{status:'unsupported',reasonCode:'unsupported-html-srcset'});
+    } else if (['audio','video','iframe','embed','object','source'].includes(name)) {
+      const raw = attributes.get(name === 'object' ? 'data' : 'src') || attributes.get('srcset');
+      if (raw !== undefined) add(raw,'html-embed',{status:'unsupported',reasonCode:'unsupported-html-embed'});
+    }
+  }
+  return {dependencies,issues};
 }
 function normalizePath(path) {
   const parts = [];
@@ -315,4 +487,4 @@ async function compileMarkdown(plan, resolved, options = {}) {
   }
   return markdown;
 }
-module.exports = {compileMarkdown};
+module.exports = {compileMarkdown,collectMediaDependencies};

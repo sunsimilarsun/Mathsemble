@@ -41,7 +41,7 @@ async function fixture() {
     async read(file){reads.push(file.path);if(file.path===virtualPath)throw new Error('读取了虚拟文件');return file.content;},
     on(event,callback){const ref={event,callback};listeners.add(ref);return ref;},offref:ref=>listeners.delete(ref),
     async createFolder(filePath){writes.push(['folder',filePath]);nodes.set(filePath,{path:filePath,children:[]});},
-    async create(filePath,content){writes.push(['markdown',filePath]);return add(filePath,content);},
+    async create(filePath,content){writes.push([filePath.endsWith('.json')?'record':'markdown',filePath]);return add(filePath,content);},
     async createBinary(filePath,bytes){writes.push(['pdf',filePath]);nodes.set(filePath,{path:filePath,extension:'pdf',bytes});},
   };
   const emit=(event,file,oldPath)=>{for(const ref of [...listeners])if(ref.event===event)ref.callback(file,oldPath);};
@@ -52,6 +52,7 @@ async function fixture() {
     constructor(){this.children=new Set();this.manifest={id:'mathsemble',version:'test'};}
     registerView(type,factory){assert.equal(type,'mathsemble-assembly');registered=factory;throw stopRegistration;}
     addChild(child){this.children.add(child);}removeChild(child){this.children.delete(child);child.unload();}
+    unload(){for(const child of [...this.children])this.removeChild(child);}
     async loadData(){return {assemblySettings:{questionRoots:['题库'],knowledgeRoots:['知识'],recursive:true}};}
   }
   class Modal {
@@ -61,7 +62,7 @@ async function fixture() {
   }
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=document.createElement('section');}}
   const obsidian={Plugin,Component,ItemView,Modal,Notice:class{constructor(message){notices.push(message);}},MarkdownRenderer:{},MarkdownView:class{}};
-  const context=vm.createContext({module:{exports:{}},require:name=>name==='obsidian'?obsidian:require(name),console,Buffer,
+  const context=vm.createContext({module:{exports:{}},require:name=>name==='obsidian'?obsidian:require(name),console,Buffer,Uint8Array,ArrayBuffer,TextEncoder,
     AbortController,setTimeout,clearTimeout,document});
   // Parse fixture JSON frontmatter and the compiler's quoted scalar YAML in
   // the same realm as core.validatePlan (which intentionally checks prototypes).
@@ -175,6 +176,11 @@ test('explicit A4 apply still updates the bound draft without saving a plan or h
 test('dual export captures the temporary adapter and shares original evidence with both real workers',async()=>{
   const f=await fixture();try {
     const modal=f.modal;modal.ready=true;
+    const sourceRefs=new Set(f.listeners),session=modal.ensureMediaSession();
+    const mediaRefs=[...f.listeners].filter(ref=>!sourceRefs.has(ref));
+    assert.deepEqual(mediaRefs.map(ref=>ref.event).sort(),['delete','modify','rename']);
+    const ownerRefs=new Set(f.listeners);
+    assert.equal(modal.ensureMediaSession(),session);assert.equal(f.listeners.size,ownerRefs.size);
     modal.rendered=f.document.createElement('div');
     modal.showDualExportReport=()=>{};
     const workers=[];
@@ -190,17 +196,46 @@ test('dual export captures the temporary adapter and shares original evidence wi
         assert.equal(worker.assemblyPreview.assertCurrent,modal.assemblyPreview.assertCurrent);
         assert.equal(worker.assemblyPreview.sources[1].live,f.originalQuestion);
         assert.equal(worker.markdown,modal.markdown);assert.equal(worker.layout,'trial');
-        worker.startSourceWatch();assert.equal(f.listeners.size,8);
+        assert.equal(worker.mediaSession,session);assert.equal(worker.ownsMediaSession,false);
+        worker.startSourceWatch();
+        const workerRefs=[...f.listeners].filter(ref=>!ownerRefs.has(ref));
+        assert.deepEqual(workerRefs.map(ref=>ref.event).sort(),['create','delete','modify','rename']);
+        assert.equal(worker.ensureMediaSession(),session);assert.equal(f.listeners.size,ownerRefs.size+workerRefs.length);
         await worker.assertSourceCurrent(job.controller.signal);
         return {pdf:Buffer.from('%PDF-fixture-'+edition),pages:1};
-      } finally {context.dispose();assert.equal(f.listeners.size,4);}
+      } finally {
+        context.dispose();assert.deepEqual(new Set(f.listeners),ownerRefs);
+        assert.doesNotThrow(()=>session.manifest(),'a dual worker disposed the owner resource session');
+      }
     };
     const report=await modal.exportBothPdf();
     assert.equal(report.outcome,'complete',report.error);assert.equal(workers.length,2);
     assert(workers.every(worker=>worker.closed));assert.equal(f.plugin.children.size,1);
     assert.equal(f.writes.filter(([kind])=>kind==='pdf').length,2);
     assert(!f.writes.some(([kind])=>kind==='markdown'));assert(!f.reads.includes(virtualPath));
+    assert.equal(f.writes.filter(([kind,path])=>kind==='record'&&path.startsWith('Mathsemble/导出记录/')).length,1);
+    assert.equal(modal.lastExportRecord.record.state,'saved');
+    const record=JSON.parse(f.nodes.get(modal.lastExportRecord.record.path).content);
+    assert.deepEqual(record.artifacts.map(item=>item.state),['saved','saved']);
     assert.equal(f.originalQuestion.content,question);assert.equal(f.originalKnowledge.content,knowledge);
   } finally {f.modal.onClose();}
   assert.equal(f.listeners.size,0);assert.equal(f.plugin.children.size,0);
+});
+
+test('owned media watchers release on preview close and plugin unload without accumulating registrations',async()=>{
+  for(const action of ['close','plugin-unload']) {
+    const f=await fixture(),sourceRefs=new Set(f.listeners),session=f.modal.ensureMediaSession();
+    try {
+      const added=[...f.listeners].filter(ref=>!sourceRefs.has(ref));
+      assert.deepEqual(added.map(ref=>ref.event).sort(),['delete','modify','rename']);
+      const count=f.listeners.size;
+      assert.equal(f.modal.ensureMediaSession(),session);assert.equal(f.listeners.size,count);
+      if(action==='close')f.modal.onClose();else f.plugin.unload();
+      assert.equal(f.listeners.size,0,action+' retained source/media listeners');
+      assert.equal(f.plugin.children.size,0,action+' retained the source owner');
+      assert.equal(f.modal.closed,true);
+      assert.throws(()=>session.manifest(),error=>error.code==='RESOURCE_SESSION_DISPOSED');
+    } finally {f.modal.onClose();}
+    assert.equal(f.listeners.size,0);assert.equal(f.plugin.children.size,0);
+  }
 });

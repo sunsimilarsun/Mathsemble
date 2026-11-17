@@ -215,7 +215,11 @@ async function browserCases(fixtures,math){
   HTMLElement.prototype.empty=function(){this.replaceChildren();};HTMLElement.prototype.setText=function(t){this.textContent=t;};
   const fixture=fixtures.find(f=>f.name==='interleaved-teacher');ok(fixture,'missing rendering fixture');
   host?.remove();host=document.createElement('div');host.className='mwb-modal';document.body.appendChild(host);
-  const modal=new a.PreviewModal({}, {manifest:{version:'test'}},{path:'notes.md',basename:'notes'},fixture.source,null,{documentMode:true});
+  // Scope this fixture to real H5 rendering/geometry, without inventing Vault
+  // I/O. An unchanged URL preserves any bad-image diagnostic from the renderer.
+  const mediaSession={read:async url=>url,manifest:()=>({resources:[],omissions:[],warnings:[]}),
+    assertLocalCurrent:async()=>true,recordOmission(){},dispose(){}};
+  const modal=new a.PreviewModal({}, {manifest:{version:'test'}},{path:'notes.md',basename:'notes'},fixture.source,null,{documentMode:true,mediaSession});
   modal.solutionOptions={studentBlankCallouts:[],teacherVisibleCallouts:['solution']};
   modal.page=host.createDiv({cls:'mwb-page'});modal.rendered=modal.page.createDiv({cls:'mwb-typography mwb-print-document'});
   modal.status=host.createDiv({});modal.questionBoundaryPanel=host.createDiv({});

@@ -36,6 +36,11 @@ function renderedQuestion(brokenImage = false) {
 
 function examModal() {
   const modal = Object.create(context.ReviewModal.prototype);
+  // The assertion stops at cloneNode, before resource I/O. Supply a borrowed
+  // session explicitly so this isolated preflight does not create Vault state.
+  modal.mediaSession = {read:async()=>assert.fail('resource I/O preceded the clone sentinel'),
+    assertLocalCurrent:async()=>true};
+  modal.ownsMediaSession = false;
   const questions = [renderedQuestion(true), renderedQuestion(false)];
   const reachedExport = new Error('Reached HTML export resource preparation');
   let exportAttempts = 0;

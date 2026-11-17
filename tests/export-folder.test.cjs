@@ -53,7 +53,12 @@ test('single and dual PDF export methods both complete when their first mkdir op
   const vault=competingVault(new Error('Folder already exists.')),failures=[];
   const create=(basename)=>({app:{vault},plugin:{manifest:{version:'0.2.4'}},file:{basename},markdown:'题干',
     sourceScope:{path:basename+'.md'},sourceSnapshot:{},sourceRevision:0,exam:null,renderWarnings:[],
-    status:{setText(){}},beginExport(kind){return {kind,mode:'student',controller:new AbortController()};},
+    status:{setText(){}},beginExport(kind){return {kind,mode:'student',controller:new AbortController(),artifacts:new Map(),
+      record:{recordArtifact(){}},mediaSession:{manifest:()=>({resources:[],omissions:[],warnings:[]})}};},
+    // This fixture isolates the competing ExamExports mkdir. Evidence storage
+    // uses independent folders and has its own host-integration coverage.
+    prepareExportEvidence:async()=>{},recordExportArtifact:PreviewModal.prototype.recordExportArtifact,
+    async finishExportEvidence(job){this.recordedArtifacts=[...job.artifacts.values()];},
     assertCurrentExport(){},assertDualExport(){},assertSourceCurrent:async()=>{},isCurrentExport:()=>true,
     preparePrintHtml:async()=>'<p>题干</p>',resourceSummary:()=>'',finishExport(){},showDualExportReport(){},dualExportSettings:()=>({}),
     generateDualEdition:async()=>({pdf:Buffer.from('%PDF-fixture'),pages:1}),
@@ -65,4 +70,6 @@ test('single and dual PDF export methods both complete when their first mkdir op
   assert.deepEqual(failures,[]);assert.equal(vault.arrivals,2);assert.equal(vault.files.size,3);
   assert.ok(single.lastSavedPdfPath);assert.equal(report.outcome,'complete');
   assert.equal(report.items.every(item=>item.state==='saved'),true);
+  assert.deepEqual(single.recordedArtifacts.map(item=>item.state),['saved']);
+  assert.deepEqual(dual.recordedArtifacts.map(item=>item.state),['saved','saved']);
 });
