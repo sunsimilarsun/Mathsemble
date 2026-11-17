@@ -1,0 +1,236 @@
+--- mathsemble/main.js (0.1.20 baseline)
++++ mathsemble/main.js (local overflow fix)
+@@ -1085,7 +1085,7 @@
+ // Every printed page is an explicit A4 sheet. Reject unbreakable over-height
+ // blocks instead of clipping. An additional final blank PDF page is permitted;
+ // do not shorten/remove legitimate student writing space to eliminate it.
+-function paginatePrintDocument(root, allowPartialMath = false, preview = false) {
++function paginatePrintDocument(root, allowPartialMath = false, preview = false, allowOverflowOmission = false) {
+   if (!root || !root.ownerDocument) throw new Error('找不到 PDF 正文容器');
+   const doc = root.ownerDocument;
+   const paper = doc.createElement('style');
+@@ -1113,6 +1113,7 @@
+   const inputNodes = Array.from(root.children);
+   const strictPolicy=root.getAttribute?.('data-mwb-question-policy')==='strict-h5';
+   const strictQuestionPages=[];
++  const omittedBlocks = [];
+   let strictFlow=false;
+   if(strictPolicy) inputNodes.filter(n=>n.classList?.contains('mwb-exam-question') || n.classList?.contains('mwb-handout-question')).forEach((q,i)=>{
+     if(!q.getAttribute('data-mwb-question-id'))q.setAttribute('data-mwb-question-id','mwb-item-'+(i+1));
+@@ -2004,6 +2005,74 @@
+       short,forced,startPage:occupied[0],endPage:occupied[occupied.length-1],pages:occupied});
+   };
+ 
++  // This opt-in pass runs before pagination mutates any content. Only known
++  // atomic media may be omitted, never paragraphs, questions or writing space.
++  // The caller supplies a preview clone or an isolated print document.
++  if (allowOverflowOmission) {
++    const atoms = 'table, .math-block, mjx-container[display="true"], .MathJax_Display, .katex-display, img, svg, .block-language-tikz, .block-language-tikzjax';
++    const protectedNodes = '.mwb-answer-space, .mwb-answer-space-chunk, .mwb-question-index';
++    for (let index = 0; index < inputNodes.length; index++) {
++      const top = inputNodes[index];
++      const candidates = [...(top.matches(atoms) ? [top] : []), ...top.querySelectorAll(atoms)]
++        .filter(node => !node.parentElement?.closest(atoms + ', mjx-container, .MathJax, .katex') &&
++          !node.closest(protectedNodes) && !node.querySelector(protectedNodes));
++      for (const node of candidates) {
++        const trial = doc.createElement('div'); trial.className = 'mwb-paper';
++        const trialBody = doc.createElement('div'); trialBody.className = 'mwb-paper-body';
++        trial.appendChild(trialBody);
++        const probe = node.cloneNode(true);
++        let shell = probe;
++        // Retain nested width constraints and Callout title/padding, without
++        // including unrelated normal paragraphs in the overflow decision.
++        for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
++          const wrapper = ancestor.cloneNode(false);
++          if (ancestor.classList.contains('callout')) {
++            const title = ancestor.querySelector(':scope > .callout-title');
++            if (title) wrapper.appendChild(title.cloneNode(true));
++          }
++          wrapper.appendChild(shell); shell = wrapper;
++        }
++        trialBody.appendChild(shell); root.appendChild(trial);
++        let spills;
++        try {
++          const shellSpills = () => {
++            const region = trialBody.getBoundingClientRect();
++            const margin = parseFloat(doc.defaultView.getComputedStyle(shell).marginBottom) || 0;
++            return shell.getBoundingClientRect().bottom + margin > region.bottom + 1.25 ||
++              contentSpills(shell, trialBody, true);
++          };
++          spills = shellSpills();
++          if (spills && shell !== probe) {
++            // A broken ancestor (e.g. a fixed 1500px-wide container) is not
++            // permission to discard a valid formula. Confirm that replacing
++            // this atom actually resolves the wrapper's overflow as well.
++            const empty = doc.createElement('span');
++            empty.style.cssText = 'display:block;height:1px;max-width:100%;';
++            probe.replaceWith(empty);
++            if (shellSpills()) spills = false;
++          }
++        }
++        finally { trial.remove(); }
++        if (!spills) continue;
++        const type = node.matches('table') ? '表格' :
++          node.matches('.math-block, mjx-container, .MathJax_Display, .katex-display') ? '公式' : '图片';
++        const summary = (node.textContent || node.getAttribute('aria-label') || node.getAttribute('alt') || type)
++          .replace(/\s+/g, ' ').trim().slice(0, 65);
++        const question = node.closest('[data-mwb-question-id]');
++        const omitted = {index:omittedBlocks.length + 1, type, summary,
++          questionId:question?.getAttribute('data-mwb-question-id') || null,
++          source:question?.getAttribute('data-mwb-source-path') || null};
++        const placeholder = doc.createElement('span');
++        placeholder.className = 'mwb-overflow-placeholder';
++        placeholder.setAttribute('data-mwb-omitted-index', String(omitted.index));
++        placeholder.style.cssText = 'display:block;box-sizing:border-box;max-width:100%;white-space:normal;overflow-wrap:anywhere;font-size:10pt;line-height:1.5;color:#6b4900;border:1px dashed #9b7b35;padding:6px;margin:6px 0;';
++        placeholder.textContent = `【已跳过${type} ${omitted.index}：超出 A4 可打印区域；原文保留】`;
++        if (node === top) inputNodes[index] = placeholder;
++        else node.replaceWith(placeholder);
++        omittedBlocks.push(omitted);
++      }
++    }
++  }
+   makePage();
+   const pending = [];
+   const documentHeadings = [];
+@@ -2170,7 +2239,7 @@
+   return {
+     pages: pages.length, blocks: atomicCount, answerSpaceChunks: spaceChunks, splitCallouts, forcedPageBreaks,
+     intactQuestions, splitQuestions, keptPromptOptions, keptPromptSpace,
+-    questionPolicy:strictPolicy?'strict-h5':'legacy',strictQuestionPages,
++    questionPolicy:strictPolicy?'strict-h5':'legacy',strictQuestionPages,omittedBlocks,
+     handoutGroups, intactHandoutGroups, keptPromptAnswer, relaxedGroupBindings,
+     answerSpaceExpectedPx: Number(expectedSpacePx.toFixed(2)),
+     answerSpacePlacedPx: Number(placedSpacePx.toFixed(2)),
+@@ -2264,7 +2333,9 @@
+         throw new Error('当前 Electron 不支持打印前智能分页，已阻止导出');
+       }
+       paginationReport = await stage(() => printWindow.webContents.executeJavaScript(
+-        options.allowPartialMath ? printPaginationPartialScript : printPaginationScript
++        options.allowOverflowOmission
++          ? `(${paginatePrintDocument.toString()})(document.querySelector('.mwb-export-doc'), ${!!options.allowPartialMath}, false, true)`
++          : options.allowPartialMath ? printPaginationPartialScript : printPaginationScript
+       ), 'A4 分页');
+       if (!paginationReport || !Number.isInteger(paginationReport.pages) || paginationReport.pages < 1) {
+         throw new Error('打印前分页失败：没有有效 A4 页面');
+@@ -4838,6 +4909,25 @@
+     };
+     this.partialWarning = partialWarning;
+     this.partialCheckbox = partialCheckbox;
++    this.overflowWarning = this.contentEl.createDiv({cls:'mwb-partial-warning'});
++    this.overflowWarning.style.display = 'none';
++    const overflowLabel = this.overflowWarning.createEl('label');
++    this.overflowCheckbox = overflowLabel.createEl('input', {type:'checkbox'});
++    overflowLabel.appendText(' 仅打印正常内容：跳过超出 A4 的独立公式、表格和图片，并在原位标记（仅当前版 PDF）');
++    this.overflowCheckbox.onchange = () => {
++      this.cancelExport('容错打印设置已变化，导出已取消');
++      this.overflowOmissionEnabled = !!this.overflowCheckbox.checked;
++      try {
++        const report = this.showPaginatedPreview();
++        this.previewPaginationIssue = '';
++        this.status.setText(`A4 预览 ${report.pages} 页；已跳过 ${report.omittedBlocks.length} 处超出页面的内容，原文保留。`);
++      } catch (error) {
++        this.clearPaginatedPreview();
++        this.previewPaginationIssue = String(error?.message || error).slice(0,150);
++        this.status.setText('A4 分页预览失败，当前显示连续内容：' + this.previewPaginationIssue);
++      }
++      this.updateCompactStatus();
++    };
+     const copyMetadata = diagnosticBlocks.createEl('button', {text:'复制元信息检查'});
+     if (this.documentMode) copyMetadata.style.display='none';
+     copyMetadata.title = '列出题卡中缺失的正式字段和字段冲突；不会自动补造事实或修改文件';
+@@ -4937,9 +5027,12 @@
+       const images = root?.querySelectorAll?.('img')?.length || 0;
+       const formulae = root?.querySelectorAll?.('mjx-container')?.length || 0;
+       const warnings = this.renderWarnings || [];
++      const omitted = this.previewPaginationReport?.omittedBlocks || [];
+       this.diagnosticResourceSummary.setText(`图片 ${images} · MathJax 容器 ${formulae} · 渲染警告 ${warnings.length}`);
+-      if (this.diagnosticResourceDetails) this.diagnosticResourceDetails.setText(warnings.length
+-        ? warnings.join('\n') : '未记录局部渲染警告；资源是否完整仍以导出前复检为准。');
++      const details = [...warnings, ...omitted.map(item => `已跳过${item.type} ${item.index}：${item.summary}`)];
++      if (this.previewPaginationIssue) details.push(this.previewPaginationIssue);
++      if (this.diagnosticResourceDetails) this.diagnosticResourceDetails.setText(details.length
++        ? details.join('\n') : '未记录局部渲染警告；资源是否完整仍以导出前复检为准。');
+     }
+   }
+ 
+@@ -4955,6 +5048,8 @@
+     const bounds = this.questionPlan?.warnings?.length || 0;
+     if (bounds) bits.push(`${bounds} 项块边界提示`);
+     const warnings = this.renderWarnings?.length || 0;
++    const omitted = this.previewPaginationReport?.omittedBlocks?.length || 0;
++    if (omitted) bits.push(`已跳过 ${omitted} 处内容`);
+     if (warnings) bits.push(`${warnings} 项渲染警告`);
+     if (this.sourceDirty) bits.unshift('源文已变化');
+     else if (this.sourceReadJob) bits.unshift('正在读取源文');
+@@ -4972,13 +5067,16 @@
+     }
+     if (this.riskBanner && this.riskMessage) {
+       const error = this.lastRenderError && !this.ready;
+-      const danger = !!(error || warnings || this.previewPaginationIssue);
++      const danger = !!(error || warnings || omitted || this.previewPaginationIssue);
+       this.riskBanner.style.display = danger ? '' : 'none';
+       this.riskBanner.setAttribute('data-severity',error || this.previewPaginationIssue ? 'error' : 'warning');
+       this.riskMessage.setText(error ? '渲染失败，已停止导出。' : this.previewPaginationIssue
+-        ? 'A4 分页预览失败；请查看诊断，导出时仍将严格复检。'
++        ? '部分内容超出 A4；可勾选下方“仅打印正常内容”，查看分页结果后保存 PDF。'
++        : omitted ? `当前仅打印正常内容，已跳过 ${omitted} 处；PDF 中将保留跳过提示，请查看诊断。`
+         : `检测到 ${warnings} 项局部渲染警告；导出前必须检查。`);
+     }
++    if (this.overflowWarning) this.overflowWarning.style.display = this.previewPaginationIssue || this.overflowOmissionEnabled ? '' : 'none';
++    if (this.overflowCheckbox) this.overflowCheckbox.disabled = !!(this.renderBusy || this.sourceDirty || this.sourceReadJob);
+     this.updateDiagnostics();
+   }
+ 
+@@ -5026,6 +5124,8 @@
+     if (this.partialWarning) this.partialWarning.style.display = 'none';
+     this.documentRenderSource = null;
+     this.previewPaginationIssue = '';
++    this.overflowOmissionEnabled = false;
++    if (this.overflowCheckbox) this.overflowCheckbox.checked = false;
+     this.status.setText('渲染中：' + (this.documentMode ? (mode === 'document' ? '讲义原文' : mode === 'student' ? '讲义学生版' : '讲义教师版') : mode === 'student' ? '学生卷' : '教师卷'));
+     if (this.metaCheckboxes) {
+       for (const [key,box] of this.metaCheckboxes) box.checked = this.metaSelections[mode]?.includes(key) || false;
+@@ -5216,7 +5316,7 @@
+     expandPrintCallouts(view);
+     this.page.after(view);
+     try {
+-      const report = paginatePreviewDocument(view, false, true);
++      const report = paginatePreviewDocument(view, false, true, !!this.overflowOmissionEnabled);
+       this.previewPages = view;
+       this.previewPaginationReport = report;
+       this.updateQuestionBounds();
+@@ -5492,6 +5592,9 @@
+     if (this.sourceDirty || this.sourceReadJob) { new Notice('源文件已变化或正在读取，请先读取最新内容并完成预览'); return null; }
+     if (this.exportJob) { new Notice('已有导出任务，请完成或取消后再操作'); return null; }
+     if (!this.ready || this.closed) { new Notice('渲染尚未通过，不能输出'); return null; }
++    if (kind === 'dual' && this.overflowOmissionEnabled) {
++      new Notice('仅打印正常内容适用于当前版 PDF；请分别预览、保存所需版本。'); return null;
++    }
+     if (kind !== 'dual' && this.renderWarnings.length && !this.partialExportApproved) {
+       new Notice('存在局部渲染警告：请先检查错误并勾选允许不完整输出，再保存当前版 PDF。', 9000);
+       return null;
+@@ -5572,12 +5675,13 @@
+     if (!job) return;
+     this.status.setText('正在准备 A4 打印页面、核验 PDF…');
+     try {
+-      const name=`${safeStem(this.exam ? this.examTitle : this.file.basename)}_${job.mode}_${stamp()}.pdf`;
++      const name=`${safeStem(this.exam ? this.examTitle : this.file.basename)}_${job.mode}${this.overflowOmissionEnabled ? '_部分内容' : ''}_${stamp()}.pdf`;
+       const html=await this.preparePrintHtml(name, {signal:job.controller.signal,
+         onResourceReport:report => { job.resources = report; }});
+       this.assertCurrentExport(job);
+       const pdf=await this.buildPdfBuffer(html,{
+         signal:job.controller.signal,
++        allowOverflowOmission: !!this.overflowOmissionEnabled,
+         printAfter,
+         beforePrint:async() => { await this.assertSourceCurrent(job.controller.signal); this.assertCurrentExport(job); },
+         // Consent remains category-specific. Cancellation and timeout never
+@@ -5607,7 +5711,8 @@
+       const printMessage=!printAfter?'':printOutcome?.success?'；打印任务已提交到系统':
+         `；打印取消或失败：${printOutcome?.reason || '未知原因'}`;
+       const pagination=pdf.mwbPrintReport;
+-      const partialLabel = this.renderWarnings.length ? `；带 ${this.renderWarnings.length} 项局部渲染警告（内容可能不完整）` : '';
++      const partialLabel = (this.renderWarnings.length ? `；带 ${this.renderWarnings.length} 项局部渲染警告（内容可能不完整）` : '') +
++        (pagination?.omittedBlocks?.length ? `；已跳过 ${pagination.omittedBlocks.length} 处超出 A4 的内容（原位已标记）` : '');
+       this.status.setText((job.savedPath ? `PDF 已保存：${job.savedPath}` : 'PDF 已生成（未保存）')+printMessage+
+         (pagination ? `；${pagination.pages} 页` : '')+
+         (pagination?.relaxedGroupBindings?.length ? `；${pagination.relaxedGroupBindings.length} 处超长题组已续页` : '')+
