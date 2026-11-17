@@ -1,5 +1,7 @@
 'use strict';
 
+const fragments = typeof MWB_ASSEMBLY_FRAGMENTS !== 'undefined' ? MWB_ASSEMBLY_FRAGMENTS : require('./assembly-fragments.cjs');
+
 // Compile selected source snapshots, never mutate the source notes. The result
 // is a normal handout that uses Mathsemble's existing answer/print pipeline.
 function stripFrontmatter(text) {
@@ -455,7 +457,10 @@ async function compileMarkdown(plan, resolved, options = {}) {
     if (entry.kind === 'section') { blocks.push('## ' + plainTitle(entry.title || '分区')); origins.push(null); continue; }
     if (status !== 'ok' || !item) throw new Error(`来源${status === 'changed' ? '已变化，请先接受来源更新' : '缺失或冲突'}：${entry.title || entry.sourcePath || entry.sourceId}`);
     if (!['question','knowledge'].includes(entry.kind)) throw new Error('不支持的编排类型');
-    const source = stripFrontmatter(item.markdown);
+    const fragmentSource={...item,kind:entry.kind};
+    const projected=entry.fragmentRef?fragments.resolveFragment(fragmentSource,entry.fragmentRef):null;
+    const structural=projected?null:fragments.parseFragments(fragmentSource);
+    const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
     const protector = makeProtector(source);
     let body = protectLiterals(source,protector);
     body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
@@ -466,10 +471,17 @@ async function compileMarkdown(plan, resolved, options = {}) {
     else {
       const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
       const role = roles[entry.role || item.role || item.metadata?.role] || '题';
-      blocks.push(`##### ${role}${++questionNumber} ${display}\n\n${body}`);
+      const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
+      if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
+      blocks.push(`##### ${role}${++questionNumber} ${display}${score!=null?'（'+score+' 分）':''}\n\n${body}`);
     }
+    const fragmentReference=projected?Object.freeze({...projected.reference,
+      ids:Object.freeze([...projected.reference.ids]),
+      ...(projected.reference.scores?{scores:Object.freeze({...projected.reference.scores})}:{})}):null;
     origins.push(typeof item.path === 'string' && item.path ?
-      {entryId:entry.entryId,kind:entry.kind,path:item.path} : null);
+      {entryId:entry.entryId,kind:entry.kind,path:item.path,
+        ...(fragmentReference?{fragmentRef:fragmentReference}:{}),
+        ...(Object.hasOwn(entry,'score')?{score:entry.score}:{})} : null);
   }
   const markdown = blocks.join('\n\n') + '\n';
   if (typeof config.onSourceMap === 'function') {

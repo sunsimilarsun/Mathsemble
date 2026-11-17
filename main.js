@@ -5246,8 +5246,197 @@ function mwbSameSourceSnapshot(a, b) {
 // Explicit user action only. Never infer a pedagogical role from filenames,
 // book headings, level or parent links; and never edit notes during export.
 /* MWB_ASSEMBLY_GENERATED_START */
+const mwbAssemblyFragments = (() => { const module = {exports:{}};
+'use strict';
+
+// An opt-in source contract. Positions are diagnostics, never identities.
+const ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const FORBIDDEN = new Set(['__proto__','prototype','constructor']);
+const MAX_FRAGMENTS = 128;
+const fail = (code,message) => Object.assign(new Error(message),{code});
+function plain(raw,label) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) ||
+      ![Object.prototype,null].includes(Object.getPrototypeOf(raw))) throw fail('FRAGMENT_INVALID',label+'必须为普通对象');
+  for (const key of Reflect.ownKeys(raw)) {
+    const d=Object.getOwnPropertyDescriptor(raw,key);
+    if (typeof key!=='string' || FORBIDDEN.has(key) || d.get || d.set) throw fail('FRAGMENT_INVALID',label+'含不允许的属性');
+  }
+}
+function validateScore(raw) {
+  if (typeof raw!=='number' || !Number.isFinite(raw) || raw<0 || raw>1000000 ||
+      Math.abs(raw*100-Math.round(raw*100))>1e-7) throw fail('SCORE_INVALID','分值须为 0 到 1000000 之间、最多两位小数的数字');
+  return Math.round(raw*100)/100;
+}
+function validateFragmentRef(raw,sourceKind) {
+  plain(raw,'片段引用');
+  if (Object.keys(raw).some(key=>!['kind','ids','scores'].includes(key)) ||
+      !['question-part','knowledge-section'].includes(raw.kind) ||
+      sourceKind && raw.kind!==(sourceKind==='question'?'question-part':sourceKind==='knowledge'?'knowledge-section':''))
+    throw fail('FRAGMENT_INVALID','片段类型与来源不符或含未知字段');
+  const ids=raw.ids;
+  if (!Array.isArray(ids) || Object.getPrototypeOf(ids)!==Array.prototype || !ids.length || ids.length>MAX_FRAGMENTS ||
+      Reflect.ownKeys(ids).some(key=>key!=='length' && (typeof key!=='string' || !/^(0|[1-9]\d*)$/.test(key))) ||
+      Object.keys(ids).length!==ids.length || Object.values(Object.getOwnPropertyDescriptors(ids)).some(d=>d.get||d.set))
+    throw fail('FRAGMENT_INVALID','所选片段 ID 列表无效');
+  const seen=new Set();
+  for (const id of ids) {
+    if (typeof id!=='string'||!ID.test(id)||FORBIDDEN.has(id)||seen.has(id)) throw fail('FRAGMENT_INVALID','片段 ID 无效或重复');
+    seen.add(id);
+  }
+  const result={kind:raw.kind,ids:[...ids]};
+  if (Object.hasOwn(raw,'scores')) {
+    if (raw.kind!=='question-part') throw fail('SCORE_INVALID','知识小节不能设置小问分值');
+    plain(raw.scores,'小问分值');
+    if (Object.keys(raw.scores).length!==ids.length || Object.keys(raw.scores).some(id=>!seen.has(id)))
+      throw fail('SCORE_INCOMPLETE','须填写全部已选小问分值，不能把部分小计当作总分');
+    result.scores=Object.fromEntries(ids.map(id=>[id,validateScore(raw.scores[id])]));
+    validateScore(ids.reduce((sum,id)=>sum+Math.round(result.scores[id]*100),0)/100);
+  }
+  return result;
+}
+const totalScore = ref => ref?.scores ? ref.ids.reduce((sum,id)=>sum+Math.round(ref.scores[id]*100),0)/100 : null;
+
+function sourceBody(markdown) {
+  const source=String(markdown).replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n');
+  if (!/^---[ \t]*\n/.test(source)) return {body:source,offset:0};
+  const match=/^---[ \t]*\n[\s\S]*?\n(?:---|\.\.\.)[ \t]*(?:\n|$)/.exec(source);
+  if (!match) throw fail('FRAGMENT_INVALID','源笔记 frontmatter 未闭合');
+  return {body:source.slice(match[0].length),offset:match[0].split('\n').length-1};
+}
+
+// Mask literal contexts before recognizing full-line, unindented markers.
+// Structural comments inside fences, math, comments or HTML never become IDs.
+function markerLines(lines) {
+  const markers=new Map();let fence=null,math=null,code=0,comment=false,html=null;
+  for (let i=0;i<lines.length;i++) {
+    const line=lines[i];
+    if (fence) {const close=/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);if(close&&close[1][0]===fence[0]&&close[1].length>=fence.length)fence=null;continue;}
+    if (html) {if(new RegExp('</'+html+'\\s*>','i').test(line))html=null;continue;}
+    if (!comment&&!math&&!code) {
+      const opening=/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if(opening&&!(opening[1][0]==='`'&&opening[2].includes('`'))){fence=opening[1];continue;}
+      const tag=/^ {0,3}<(pre|code|script|style|textarea|div|table|section|details)\b/i.exec(line);
+      if(tag){if(!new RegExp('</'+tag[1]+'\\s*>','i').test(line.slice(tag[0].length)))html=tag[1];continue;}
+      const marker=/^<!-- mathsemble:(stem|part|section|end)(?: ([A-Za-z][A-Za-z0-9_-]{0,63}))? -->[ \t]*$/.exec(line);
+      if(marker){markers.set(i,{type:marker[1],id:marker[2]||''});continue;}
+      if(/^<!--\s*mathsemble:/.test(line)){markers.set(i,{type:'invalid',id:''});continue;}
+    }
+    if (/^(?: {4}|\t| {0,3}>)/.test(line) && !comment&&!math&&!code) continue;
+    for(let j=0;j<line.length;j++) {
+      if(comment){const end=line.indexOf('-->',j);if(end<0)break;comment=false;j=end+2;continue;}
+      if(code){if(line[j]==='`'){const n=/^`+/.exec(line.slice(j))[0].length;if(n===code)code=0;j+=n-1;}continue;}
+      if(math){if(line.startsWith(math,j)){j+=math.length-1;math=null;}continue;}
+      if(line[j]==='\\'){if(line[j+1]==='['){math='\\]';j++;}else j++;continue;}
+      if(line.startsWith('<!--',j)){comment=true;j+=3;continue;}
+      if(line[j]==='`'){code=/^`+/.exec(line.slice(j))[0].length;j+=code-1;continue;}
+      if(line[j]==='$'){math=line[j+1]==='$'?'$$':'$';j+=math.length-1;}
+    }
+  }
+  return markers;
+}
+function fragmentTitle(markdown,fallback) {
+  const first=markdown.trimStart().split('\n')[0];
+  return /^#{1,6}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(first)?.[1] || fallback;
+}
+function referenceText(markdown) {
+  // This mask is only for dependency closure, never for producing content.
+  const lines=markdown.split('\n');let fence=null;
+  const visible=lines.map(line=>{
+    const opening=/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if(fence){if(opening&&opening[1][0]===fence[0]&&opening[1].length>=fence.length&&!opening[2].trim())fence=null;return '';}
+    if(opening){fence=opening[1];return '';}
+    if(/^(?: {4}|\t)/.test(line))return '';
+    return line;
+  }).join('\n');
+  return visible.replace(/<!--[\s\S]*?(?:-->|$)/g,'').replace(/<(pre|code|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'')
+    .replace(/(`+)([^`]|(?!\1)`)*?\1/g,'').replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]/g,'').replace(/(?<!\\)\$(?:\\.|[^$])*?\$/g,'');
+}
+const normalizedReference=label=>label.trim().replace(/\s+/g,' ').toLowerCase();
+function referenceDefinitions(markdown) {
+  const result=new Set();
+  for(const match of referenceText(markdown).matchAll(/^(?: {0,3}>[ \t]?)* {0,3}\[([^\]\n]+)\]:/gm))result.add(normalizedReference(match[1]));
+  return result;
+}
+function assertReferenceClosure(selected,complete) {
+  const visible=referenceText(selected),available=referenceDefinitions(selected),all=referenceDefinitions(complete),used=new Set();
+  const escaped=(text,index)=>{let count=0;while(index>0&&text[--index]==='\\')count++;return count%2===1;};
+  const withoutDefinitions=visible.replace(/^(?: {0,3}>[ \t]?)* {0,3}\[[^\]\n]+\]:[^\n]*/gm,'');
+  for(const match of withoutDefinitions.matchAll(/!?\[([^\]\n]+)\](?:\[([^\]\n]*)\])?/g)) {
+    if(escaped(withoutDefinitions,match.index))continue;
+    const end=match.index+match[0].length,next=withoutDefinitions[end];
+    if(next==='('||next===']'||withoutDefinitions[match.index-1]==='[')continue;
+    const label=normalizedReference(match[2]||match[1]);
+    if(match[2]!==undefined||match[1].startsWith('^')||all.has(label))used.add(label);
+  }
+  for(const label of used)if(!available.has(label))throw fail('FRAGMENT_DEPENDENCY_MISSING',
+    '所选片段缺少图片、链接或脚注定义：'+label+'；请将共用定义放入 stem，知识小节须自行包含依赖');
+}
+function parseFragments(item) {
+  if(!item||!['question','knowledge'].includes(item.kind)||typeof item.markdown!=='string') throw fail('FRAGMENT_INVALID','片段来源无效');
+  const {body,offset}=sourceBody(item.markdown),lines=body.split('\n'),markers=markerLines(lines);
+  const result={supported:markers.size>0,valid:true,kind:item.kind,fragments:[],sharedMarkdown:'',issues:[],wholeMarkdown:body};
+  if(!markers.size)return result;
+  const issue=(code,message,line)=>{result.valid=false;result.issues.push({code,message,line:line+offset+1});};
+  const used=new Set(),outside=[],whole=[],stems=[];let active=null;
+  for(let i=0;i<lines.length;i++) {
+    const marker=markers.get(i);
+    if(!marker){whole.push(lines[i]);if(active)active.lines.push(lines[i]);else outside.push({line:i,text:lines[i]});continue;}
+    if(marker.type==='invalid'){issue('fragment-marker-invalid','片段注释格式无效',i);continue;}
+    if(marker.type==='end') {
+      if(marker.id||!active){issue('fragment-unmatched-end','片段结束标记无对应开始',i);continue;}
+      const markdown=active.lines.join('\n').trim();
+      if(!markdown)issue('fragment-empty','片段内容不能为空',active.line);
+      const fragment={id:active.id,kind:active.type,title:fragmentTitle(markdown,active.type==='part'?'小问 '+(result.fragments.length+1):'知识小节 '+(result.fragments.length+1)),markdown,startLine:active.line+offset+2,endLine:i+offset};
+      if(active.type==='stem')stems.push(fragment);else result.fragments.push(fragment);
+      active=null;continue;
+    }
+    if(active){issue('fragment-nested','片段不能嵌套；请先结束前一片段',i);continue;}
+    if(marker.type==='stem' ? marker.id||item.kind!=='question' : !marker.id||FORBIDDEN.has(marker.id)||marker.type!==(item.kind==='question'?'part':'section'))
+      issue('fragment-kind-invalid','片段类型或稳定 ID 与来源不符',i);
+    if(marker.type!=='stem'&&used.has(marker.id))issue('fragment-duplicate-id','同一来源存在重复片段 ID：'+marker.id,i);
+    used.add(marker.id);active={...marker,line:i,lines:[]};
+  }
+  if(active)issue('fragment-unclosed','片段缺少结束标记',active.line);
+  if(!result.fragments.length||result.fragments.length>MAX_FRAGMENTS)issue('fragment-count','来源须有 1 到 128 个可选片段',0);
+  if(item.kind==='question'&&stems.length!==1)issue('fragment-stem','含小问的题卡必须有且仅有一个共用 stem 区域',0);
+  // Outside the contract only one document title and blank lines are allowed.
+  let titleSeen=false;
+  for(const row of outside){if(!row.text.trim())continue;if(!titleSeen&&/^# [^#]/.test(row.text)){titleSeen=true;continue;}issue('fragment-unassigned','正文必须归入共用 stem 或明确片段，不能静默丢弃未归属内容',row.line);}
+  result.sharedMarkdown=stems[0]?.markdown||'';result.wholeMarkdown=whole.join('\n');
+  return result;
+}
+function listFragments(item) {
+  const parsed=parseFragments(item);
+  return {supported:parsed.supported,valid:parsed.valid,kind:item.kind,
+    fragments:parsed.fragments.map(({id,title,kind})=>({id,title,kind})),issues:parsed.issues.map(issue=>({...issue}))};
+}
+function resolveFragment(item,raw) {
+  const ref=validateFragmentRef(raw,item.kind),parsed=parseFragments(item);
+  if(!parsed.supported)throw fail('FRAGMENT_MISSING','来源没有稳定片段锚点；请切回整题或恢复原锚点');
+  if(!parsed.valid)throw fail('FRAGMENT_INVALID','来源片段契约无效：'+parsed.issues.map(issue=>issue.message).join('；'));
+  const selected=ref.ids.map(id=>{
+    const found=parsed.fragments.find(part=>part.id===id);
+    if(!found)throw fail('FRAGMENT_MISSING','引用的稳定片段已缺失：'+id+'；不会按标题或序号回退');
+    return {...found};
+  });
+  const blocks=selected.map(part=>{
+    if(!ref.scores)return part.markdown;
+    const body=part.markdown.replace(/^#{1,6}[ \t]+[^\n]+(?:\n|$)/,'').trim();
+    return '## '+part.title+'（'+ref.scores[part.id]+' 分）\n\n'+body;
+  });
+  const markdown=[parsed.sharedMarkdown,...blocks].filter(Boolean).join('\n\n');
+  assertReferenceClosure(markdown,item.markdown);
+  return {reference:ref,markdown,
+    sharedMarkdown:parsed.sharedMarkdown,fragments:selected,score:totalScore(ref)};
+}
+module.exports={validateScore,validateFragmentRef,totalScore,parseFragments,listFragments,resolveFragment};
+
+return module.exports; })();
+const MWB_ASSEMBLY_FRAGMENTS = mwbAssemblyFragments;
 const mwbAssemblyCore = (() => { const module = {exports:{}};
 'use strict';
+
+const fragments = typeof MWB_ASSEMBLY_FRAGMENTS !== 'undefined' ? MWB_ASSEMBLY_FRAGMENTS : require('./assembly-fragments.cjs');
 
 // Pure, host-independent assembly logic. The source notes are never mutated.
 const MAX_ENTRIES = 1000;
@@ -5618,7 +5807,7 @@ function validateOutputSettings(raw) {
 }
 function validatePlan(raw) {
   safeObject(raw,'组题方案');
-  if (![1,2,3].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
+  if (![1,2,3,4].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
   exactFields(raw,raw.schemaVersion === 1 ? ['schemaVersion','title','entries'] :
     ['schemaVersion','title','entries','course','output'],'组题方案');
   const title = boundedString(raw.title,'方案标题',500,false);
@@ -5631,10 +5820,11 @@ function validatePlan(raw) {
     throw new TypeError('编排列表含不允许的属性');
   }
   const entryIds = new Set(), sourceIds = new Set(), sourcePaths = new Set();
-  const fields = new Set(['entryId','kind','sourceId','sourcePath','sourceFingerprint','title','role']);
+  const fields = new Set(['entryId','kind','sourceId','sourcePath','sourceFingerprint','title','role',
+    ...(raw.schemaVersion===4?['score','fragmentRef']:[])]);
   const entries = raw.entries.map(entry => {
     safeObject(entry,'编排项');
-    if (Object.keys(entry).some(key => !fields.has(key))) throw new TypeError('编排项含未知字段');
+    if (Reflect.ownKeys(entry).some(key => !fields.has(key))) throw new TypeError('编排项含未知字段');
     const entryId = boundedString(entry.entryId,'编排项 ID',512,false);
     if (entryIds.has(entryId)) throw new Error('编排项 ID 重复');
     entryIds.add(entryId);
@@ -5644,6 +5834,18 @@ function validatePlan(raw) {
       sourcePath:boundedString(entry.sourcePath,'源路径',4096),
       sourceFingerprint:boundedString(entry.sourceFingerprint,'源指纹',128),
       title:boundedString(entry.title,'显示标题',500),role:boundedString(entry.role,'教学角色',50)};
+    if(Object.hasOwn(entry,'score')) {
+      if(entry.kind!=='question')throw new Error('仅题目编排项可设置分值');
+      result.score=fragments.validateScore(entry.score);
+    }
+    if(Object.hasOwn(entry,'fragmentRef')) {
+      result.fragmentRef=fragments.validateFragmentRef(entry.fragmentRef,entry.kind);
+      const sum=fragments.totalScore(result.fragmentRef);
+      if(sum!==null) {
+        if(Object.hasOwn(result,'score')&&result.score!==sum)throw new Error('整题分值须等于全部已选小问分值之和');
+        result.score=sum;
+      }
+    }
     if (entry.kind === 'section') {
       if (result.sourceId || result.sourcePath || result.sourceFingerprint || result.role || !result.title.trim()) throw new Error('分区字段无效');
     } else {
@@ -5655,7 +5857,7 @@ function validatePlan(raw) {
     }
     return result;
   });
-  return {schemaVersion:3,title,entries,course,output};
+  return {schemaVersion:entries.some(entry=>Object.hasOwn(entry,'score')||entry.fragmentRef)?4:3,title,entries,course,output};
 }
 function createPlan(title = '新讲义') {
   return validatePlan({schemaVersion:3,title,entries:[],course:defaultCourse(),output:defaultOutputSettings()});
@@ -5712,11 +5914,23 @@ function moveSection(plan,entryId,targetIndex) {
 }
 function updateEntry(plan,entryId,patch) {
   const next=validatePlan(plan); safeObject(patch,'编排修改');
-  const allowed=new Set(['title','role','sourceId','sourcePath','sourceFingerprint']);
-  if (Object.keys(patch).some(key => !allowed.has(key))) throw new Error('不允许修改此编排字段');
+  const allowed=new Set(['title','role','sourceId','sourcePath','sourceFingerprint','score','fragmentRef']);
+  if (Reflect.ownKeys(patch).some(key => !allowed.has(key))) throw new Error('不允许修改此编排字段');
   const entry=next.entries.find(entry => entry.entryId === entryId);
   if (!entry) throw new Error('编排项不存在');
-  Object.assign(entry,patch); return validatePlan(next);
+  if(entry.fragmentRef && (Object.hasOwn(patch,'sourceId')&&patch.sourceId!==entry.sourceId ||
+      Object.hasOwn(patch,'sourcePath')&&patch.sourcePath!==entry.sourcePath && !entry.sourceId) && patch.fragmentRef!==null)
+    throw new Error('片段引用不能转移到另一来源，请先切回整题');
+  if(Object.hasOwn(patch,'fragmentRef')) {
+    const ref=patch.fragmentRef===null?null:fragments.validateFragmentRef(patch.fragmentRef,entry.kind);
+    const changed=JSON.stringify(entry.fragmentRef?.ids||null)!==JSON.stringify(ref?.ids||null);
+    if(changed&&!Object.hasOwn(patch,'score'))delete entry.score;
+    if(ref?.scores&&!Object.hasOwn(patch,'score'))entry.score=fragments.totalScore(ref);
+  }
+  for(const [key,value] of Object.entries(patch)) {
+    if((key==='score'||key==='fragmentRef')&&value===null)delete entry[key];else entry[key]=value;
+  }
+  next.schemaVersion=4;return validatePlan(next);
 }
 function resolvePlan(plan,index) {
   const current=validatePlan(plan), items=Array.isArray(index?.items) ? index.items : [], issues=[];
@@ -5727,8 +5941,13 @@ function resolvePlan(plan,index) {
     if (matches.length > 1 || item?.identityConflict || item && (item.kind !== entry.kind || !entry.sourceId && item.id)) status='conflict';
     else if (!item) status='missing';
     else status=item.fingerprint === entry.sourceFingerprint ? 'ok' : 'changed';
+    let fragmentIssue;
+    if(item&&status!=='conflict'&&entry.fragmentRef) {
+      try {fragments.resolveFragment(item,entry.fragmentRef);}
+      catch(error) {status=error.code==='FRAGMENT_MISSING'?'fragment-missing':'fragment-invalid';fragmentIssue=error.message;}
+    }
     if (status !== 'ok') issues.push({code:status,entryId:entry.entryId,path:entry.sourcePath,
-      message:status === 'missing' ? `来源已缺失：${entry.title}` : status === 'conflict' ? `来源身份冲突：${entry.title}` : `来源已更新：${entry.title}`});
+      message:fragmentIssue || (status === 'missing' ? `来源已缺失：${entry.title}` : status === 'conflict' ? `来源身份冲突：${entry.title}` : `来源已更新：${entry.title}`)});
     return {entry,item,status};
   });
   return {entries,issues};
@@ -5736,11 +5955,15 @@ function resolvePlan(plan,index) {
 
 module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,getSections,moveSection,updateEntry,
   resolvePlan,validatePlan,defaultCourse,defaultOutputSettings,validateCourse,validateOutputSettings,
-  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint};
+  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint,
+  validateScore:fragments.validateScore,validateFragmentRef:fragments.validateFragmentRef,
+  listFragments:fragments.listFragments,resolveFragment:fragments.resolveFragment};
 
 return module.exports; })();
 const mwbAssemblyMarkdown = (() => { const module = {exports:{}};
 'use strict';
+
+const fragments = typeof MWB_ASSEMBLY_FRAGMENTS !== 'undefined' ? MWB_ASSEMBLY_FRAGMENTS : require('./assembly-fragments.cjs');
 
 // Compile selected source snapshots, never mutate the source notes. The result
 // is a normal handout that uses Mathsemble's existing answer/print pipeline.
@@ -6197,7 +6420,10 @@ async function compileMarkdown(plan, resolved, options = {}) {
     if (entry.kind === 'section') { blocks.push('## ' + plainTitle(entry.title || '分区')); origins.push(null); continue; }
     if (status !== 'ok' || !item) throw new Error(`来源${status === 'changed' ? '已变化，请先接受来源更新' : '缺失或冲突'}：${entry.title || entry.sourcePath || entry.sourceId}`);
     if (!['question','knowledge'].includes(entry.kind)) throw new Error('不支持的编排类型');
-    const source = stripFrontmatter(item.markdown);
+    const fragmentSource={...item,kind:entry.kind};
+    const projected=entry.fragmentRef?fragments.resolveFragment(fragmentSource,entry.fragmentRef):null;
+    const structural=projected?null:fragments.parseFragments(fragmentSource);
+    const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
     const protector = makeProtector(source);
     let body = protectLiterals(source,protector);
     body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
@@ -6208,10 +6434,14 @@ async function compileMarkdown(plan, resolved, options = {}) {
     else {
       const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
       const role = roles[entry.role || item.role || item.metadata?.role] || '题';
-      blocks.push(`##### ${role}${++questionNumber} ${display}\n\n${body}`);
+      const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
+      if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
+      blocks.push(`##### ${role}${++questionNumber} ${display}${score!=null?'（'+score+' 分）':''}\n\n${body}`);
     }
     origins.push(typeof item.path === 'string' && item.path ?
-      {entryId:entry.entryId,kind:entry.kind,path:item.path} : null);
+      {entryId:entry.entryId,kind:entry.kind,path:item.path,
+        ...(projected?{fragmentRef:JSON.parse(JSON.stringify(projected.reference))}:{}),
+        ...(Object.hasOwn(entry,'score')?{score:entry.score}:{})} : null);
   }
   const markdown = blocks.join('\n\n') + '\n';
   if (typeof config.onSourceMap === 'function') {
@@ -6611,6 +6841,7 @@ function createFamilyEngine({core}={}) {
     const conflict=(code,message,extra={})=>({status:'conflict',candidates:[],issues:[issue(code,message,{entryId,...extra})]});
     const entry=current.entries.find(value=>value.entryId===entryId);
     if(!entry||entry.kind!=='question')return conflict('FAMILY_TARGET_INVALID','只能替换当前方案中的题目');
+    if(entry.fragmentRef)return conflict('FAMILY_FRAGMENT_SELECTED','此项选用了稳定小问；请先切回整题再换题，避免把片段身份套用到另一道题');
     if(locked)return conflict('FAMILY_LOCKED','请先显式解除该题的锁定再换题');
     const resolved=core.resolvePlan(current,index),target=resolved.entries.find(value=>value.entry.entryId===entryId);
     const ids=new Map(),paths=new Map();
@@ -6871,6 +7102,8 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
           if (file) {
             if (!knownPlanContents.has(target)) throw new Error('请先打开该方案再保存，或另存为新方案');
             if (await vault.read(file) !== knownPlanContents.get(target)) throw new Error('方案文件已被外部修改，请重新打开后再保存');
+            if(plan.schemaVersion===4&&JSON.parse(knownPlanContents.get(target)).schemaVersion<4)
+              throw Object.assign(new Error('分值或稳定片段需要方案 v4，请另存为新方案；原方案保留，旧插件不能读取 v4'),{code:'PLAN_V4_SAVE_AS_REQUIRED'});
             await vault.modify(file,text);
           } else await vault.create(target,text);
           knownPlanContents.set(target,text);
@@ -7239,14 +7472,14 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     const result = core.resolvePlan(plan,fresh);
     const invalid = result.entries.filter(row=>row.status !== 'ok');
     if (invalid.length) throw new Error('来源已变化、缺失或存在身份冲突，请刷新素材并在“预览编排”核对，再接受来源更新：' +
-      invalid.map(row=>row.entry.title || row.entry.sourcePath).slice(0,5).join('、'));
+      invalid.map(row=>result.issues.find(issue=>issue.entryId===row.entry.entryId)?.message || row.entry.title || row.entry.sourcePath).slice(0,5).join('、'));
     const sources = Object.freeze(result.entries.filter(row=>row.item).map(({item}) => {
       const live = vault.getAbstractFileByPath(item.path);
       if (!live || live.extension !== 'md') throw new Error('来源已删除或替换：'+item.path);
       // Freeze the evidence, never the host's live TFile instance.
       return Object.freeze({path:item.path,live,markdown:item.markdown});
     }));
-    return {result,sources};
+    return {result,sources,index:fresh};
   }
   async function recheckSources(sources,io,guard) {
     for (const source of sources) {
@@ -7342,11 +7575,758 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     if (!file || file.extension !== 'md') throw new Error('源文件不存在');
     await app.workspace.getLeaf('tab').openFile(file);
   }
+  async function updateEntryContent(rawPlan,entryId,patch,options={}) {
+    // UI edits use the same source-wide guard as preview; never acknowledge a
+    // changed source or publish a partial score/selection update implicitly.
+    const plan=core.validatePlan(rawPlan),baseline=planDigest(plan),next=core.updateEntry(plan,entryId,patch),io=readContext(options);let guard;
+    if(Reflect.ownKeys(patch).some(key=>!['score','fragmentRef'].includes(key))) {io.close();throw new Error('此操作仅修改分值和片段引用');}
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config);
+      const {sources,index}=await readResolvedSources(next,config,io);
+      await recheckSources(sources,io,guard);originCheck(options);
+      if(planDigest(rawPlan)!==baseline)throw new Error('编排已变化，分值或片段修改未应用');
+      return {plan:next,index};
+    } finally {guard?.dispose();io.close();}
+  }
   return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
     listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
     replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
-    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement};
+    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,updateEntryContent};
 };
+
+return module.exports; })();
+const mwbAssemblyUsage = (() => { const module = {exports:{}};
+'use strict';
+
+// Persistent teaching facts. Export runs are deliberately a different domain.
+// An action is one immutable document, so a plan is never partially registered.
+const queues=new WeakMap(),DEFAULT_ROOT='Mathsemble/使用账本',MAX_BYTES=32*1024*1024;
+const bad=(code,message)=>Object.assign(new Error(message),{code});
+const sha=value=>require('node:crypto').createHash('sha256').update(value).digest('hex');
+const size=value=>new TextEncoder().encode(value).length;
+function data(value,depth=0,budget={count:0}) {
+  if(++budget.count>100000||depth>24)throw bad('USAGE_INVALID','使用记录过大或嵌套过深');
+  if(value===null||typeof value==='string'||typeof value==='boolean'||typeof value==='number'&&Number.isFinite(value))return value;
+  if(!value||typeof value!=='object')throw bad('USAGE_INVALID','使用记录必须为纯 JSON 数据');
+  const array=Array.isArray(value),proto=Object.getPrototypeOf(value),descriptors=Object.getOwnPropertyDescriptors(value);
+  if(proto!==(array?Array.prototype:Object.prototype)&&!(proto===null&&!array))throw bad('USAGE_INVALID','使用记录必须为普通对象');
+  const keys=Reflect.ownKeys(descriptors);
+  if(keys.some(key=>typeof key!=='string'||['__proto__','constructor','prototype'].includes(key)||descriptors[key].get||descriptors[key].set))throw bad('USAGE_INVALID','使用记录含非法属性');
+  if(array){if(value.length>10000||keys.length!==value.length+1)throw bad('USAGE_INVALID','使用记录列表无效');return Array.from({length:value.length},(_,i)=>data(descriptors[i]?.value,depth+1,budget));}
+  return Object.fromEntries(keys.sort().map(key=>[key,data(descriptors[key].value,depth+1,budget)]));
+}
+const canonical=value=>JSON.stringify(data(value));
+function exact(value,fields) {if(!value||Array.isArray(value)||Object.keys(value).length!==fields.length||Object.keys(value).some(key=>!fields.includes(key)))throw bad('USAGE_INVALID','使用记录字段不匹配');}
+function text(value,label,limit=512,empty=false) {if(typeof value!=='string'||value.length>limit||/[\x00-\x1f\x7f]/.test(value)||!empty&&!value.trim())throw bad('USAGE_INVALID',label+'无效');return value;}
+function contextOf(raw) {
+  const value=data(raw);exact(value,['classId','courseId']);
+  const result={classId:text(value.classId,'班级代号',200,true).trim(),courseId:text(value.courseId,'课程代号',200,true).trim()};
+  if(!result.classId&&!result.courseId)throw bad('USAGE_CONTEXT_REQUIRED','请至少填写一个班级或课程代号');return result;
+}
+const contextKey=context=>sha(canonical(contextOf(context)));
+function pathOf(value) {text(value,'库内路径',4096);if(value.includes('\\')||value.includes(':')||value.startsWith('/')||value.split('/').some(part=>!part||part==='.'||part==='..'))throw bad('USAGE_INVALID','库内路径无效');return value;}
+function dateOf(value,label='使用时间') {text(value,label,80);if(!/^\d{4}-\d\d-\d\dT/.test(value)||!Number.isFinite(Date.parse(value)))throw bad('USAGE_INVALID',label+'无效');return new Date(value).toISOString();}
+const identity=item=>`${item.kind}:${item.itemId!=null?'id:'+item.itemId:'path:'+item.path}`;
+const itemIdentity=item=>identity({kind:item.kind,itemId:item.id?String(item.id).trim():null,path:item.path});
+function commandOf(event) {
+  const {createdAt,eventId,commandSha256,...command}=event;return command;
+}
+function validateEvent(raw,{expectedContext,expectedEventId,core}={}) {
+  const event=data(raw);
+  if(!['taught','assigned','revoke'].includes(event?.action))throw bad('USAGE_INVALID','不支持的使用事件类型；导出不属于教学记录');
+  const base=['schemaVersion','kind','eventId','actionId','context','contextId','action','occurredAt','createdAt','commandSha256'];
+  exact(event,event.action==='revoke'?[...base,'supersedes','reason']:[...base,'planSnapshotSha256','planTitle','items']);
+  if(event.schemaVersion!==1||event.kind!=='mathsemble-usage-event')throw bad('USAGE_INVALID','不支持的使用记录版本');
+  event.context=contextOf(event.context);text(event.actionId,'动作 ID',200);
+  const key=contextKey(event.context),eventId=sha(key+'\n'+event.actionId);
+  if(event.contextId!==key||event.eventId!==eventId||expectedContext&&key!==contextKey(expectedContext)||expectedEventId&&eventId!==expectedEventId)throw bad('USAGE_INVALID','使用记录身份或班级课程不匹配');
+  if(dateOf(event.occurredAt)!==event.occurredAt||dateOf(event.createdAt)!==event.createdAt)throw bad('USAGE_INVALID','使用时间必须为规范 ISO 时间');
+  if(event.action==='revoke') {
+    if(!/^[a-f0-9]{64}$/.test(event.supersedes)||event.supersedes===eventId)throw bad('USAGE_INVALID','撤销目标无效');text(event.reason,'撤销说明',1000,true);
+  } else {
+    if(!/^[a-f0-9]{64}$/.test(event.planSnapshotSha256))throw bad('USAGE_INVALID','方案快照摘要无效');text(event.planTitle,'方案标题',500);
+    if(!Array.isArray(event.items)||!event.items.length||event.items.length>1000)throw bad('USAGE_INVALID','登记条目数量无效');
+    const entries=new Set(),identities=new Set(),paths=new Set();
+    for(const item of event.items) {
+      exact(item,['entryId','kind','itemId','path','sourceFingerprint','revisionSha256','markdown','title','role','fragmentRef','score']);
+      text(item.entryId,'编排项 ID');if(!['question','knowledge'].includes(item.kind))throw bad('USAGE_INVALID','使用条目类型无效');
+      if(item.itemId!==null&&(text(item.itemId,'材料 ID')!==item.itemId.trim()))throw bad('USAGE_INVALID','材料 ID 无效');
+      pathOf(item.path);if(!/\.md$/i.test(item.path))throw bad('USAGE_INVALID','使用来源必须为 Markdown');
+      text(item.sourceFingerprint,'来源指纹',128);text(item.title,'条目标题',500,true);text(item.role,'条目角色',50,true);
+      if(item.fragmentRef!==null) {
+        if(typeof core?.validateFragmentRef!=='function')throw bad('USAGE_INVALID','部分使用记录需要现行片段校验器');
+        item.fragmentRef=core.validateFragmentRef(item.fragmentRef,item.kind);
+      }
+      if(item.score!==null) {
+        if(item.kind!=='question'||typeof core?.validateScore!=='function')throw bad('USAGE_INVALID','使用记录分值无效');item.score=core.validateScore(item.score);
+      }
+      if(item.fragmentRef?.scores&&item.score!==item.fragmentRef.ids.reduce((sum,id)=>sum+Math.round(item.fragmentRef.scores[id]*100),0)/100)throw bad('USAGE_INVALID','当次分值与所选小问不一致');
+      if(typeof item.markdown!=='string'||size(item.markdown)>MAX_BYTES||item.revisionSha256!==sha(item.markdown))throw bad('USAGE_INVALID','历史正文快照摘要不匹配');
+      const key=identity(item);if(entries.has(item.entryId)||identities.has(key)||paths.has(item.path))throw bad('USAGE_INVALID','同次动作含重复条目');
+      entries.add(item.entryId);identities.add(key);paths.add(item.path);
+    }
+  }
+  if(event.commandSha256!==sha(canonical(commandOf(event))))throw bad('USAGE_INVALID','使用记录内容摘要不匹配');return event;
+}
+function ledgerOf(events,context,core) {
+  const normalized=contextOf(context),all=events.map(event=>validateEvent(event,{expectedContext:normalized,core}));
+  const byId=new Map();for(const event of all){if(byId.has(event.eventId))throw bad('USAGE_CORRUPT','使用记录事件重复');byId.set(event.eventId,event);}
+  const revoked=new Set();for(const event of all)if(event.action==='revoke') {
+    const target=byId.get(event.supersedes);if(!target||target.action==='revoke')throw bad('USAGE_CORRUPT','撤销事件找不到原始登记');revoked.add(event.supersedes);
+  }
+  all.sort((a,b)=>b.occurredAt.localeCompare(a.occurredAt)||a.eventId.localeCompare(b.eventId));
+  return {schemaVersion:1,context:normalized,contextId:contextKey(normalized),events:all,revokedEventIds:[...revoked].sort(),activeEvents:all.filter(event=>event.action!=='revoke'&&!revoked.has(event.eventId))};
+}
+function summarizeUsage(items,ledger,{context,now=new Date().toISOString(),core}={}) {
+  const normalized=contextOf(context),checked=ledgerOf(ledger?.events||[],normalized,core),until=Date.parse(dateOf(now));
+  if(ledger?.contextId!==checked.contextId)throw bad('USAGE_CONTEXT_MISMATCH','使用账本与当前班级课程不匹配');
+  const stats=new Map();
+  for(const event of checked.activeEvents)if(Date.parse(event.occurredAt)<=until)for(const item of event.items) {
+    const key=identity(item);if(!stats.has(key))stats.set(key,{key,count:0,taughtCount:0,assignedCount:0,partialCount:0,lastUsed:null,lastTaught:null,lastAssigned:null,versions:[]});
+    const row=stats.get(key),field=event.action==='taught'?'lastTaught':'lastAssigned';row.count++;row[event.action+'Count']++;
+    if(item.fragmentRef)row.partialCount++;
+    if(!row.lastUsed||event.occurredAt>row.lastUsed)row.lastUsed=event.occurredAt;if(!row[field]||event.occurredAt>row[field])row[field]=event.occurredAt;
+    if(!row.versions.includes(item.revisionSha256))row.versions.push(item.revisionSha256);
+  }
+  return (Array.isArray(items)?items:items?.items||[]).map(item=>({item,...(stats.get(itemIdentity(item))||{key:itemIdentity(item),count:0,taughtCount:0,assignedCount:0,partialCount:0,lastUsed:null,lastTaught:null,lastAssigned:null,versions:[]})}));
+}
+function filterUsage(items,ledger,options={}) {
+  const {mode='all',days=30,now=new Date().toISOString()}=options;
+  if(!['all','unused','taught-not-assigned'].includes(mode)||!Number.isSafeInteger(days)||days<1||days>36500)throw bad('USAGE_INVALID','使用筛选条件无效');
+  const cutoff=Date.parse(dateOf(now))-days*86400000;
+  return summarizeUsage(items,ledger,{...options,now}).filter(row=>mode==='all'||mode==='unused'&&(!row.lastUsed||Date.parse(row.lastUsed)<cutoff)||mode==='taught-not-assigned'&&row.lastTaught&&(!row.lastAssigned||row.lastTaught>row.lastAssigned)).map(row=>row.item);
+}
+
+function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString(),newId=()=>require('node:crypto').randomUUID(),root=DEFAULT_ROOT,timeoutMs=15000}={}) {
+  if(!vault||!core||typeof scanIndex!=='function')throw new TypeError('使用账本需要 Vault、core 和新鲜索引读取器');
+  root=pathOf(root);if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1)throw new TypeError('使用账本超时无效');const candidates=new WeakMap();
+  const check=options=>{if(options?.signal?.aborted)throw Object.assign(bad('USAGE_ABORTED','使用记录操作已取消'),{name:'AbortError'});if(options?.isCurrent&&!options.isCurrent())throw bad('USAGE_STALE','方案、班级课程或窗口已变化，请重新核对');};
+  const io=(fn,options={})=>new Promise((resolve,reject)=>{
+    try{check(options);}catch(error){reject(error);return;}let settled=false;
+    const done=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);options.signal?.removeEventListener('abort',abort);error?reject(error):resolve(value);};
+    const abort=()=>done(Object.assign(bad('USAGE_ABORTED','使用记录操作已取消'),{name:'AbortError'}));
+    const timer=setTimeout(()=>done(bad('USAGE_TIMEOUT','读取使用记录超时')),timeoutMs);options.signal?.addEventListener('abort',abort,{once:true});
+    Promise.resolve().then(fn).then(value=>{try{check(options);done(null,value);}catch(error){done(error);}},error=>done(error));
+  });
+  const serial=fn=>{const previous=queues.get(vault)||Promise.resolve(),task=previous.catch(()=>{}).then(fn);queues.set(vault,task);return task;};
+  const folderFor=context=>root+'/'+contextKey(context);
+  function watch(predicate) {
+    let changed=false;const refs=[];
+    if(vault.on&&vault.offref)for(const event of ['create','modify','delete','rename'])refs.push(vault.on(event,(file,oldPath)=>{if(predicate(file,oldPath))changed=true;}));
+    return {check(){if(changed)throw bad('USAGE_STALE','来源或使用账本在操作期间发生变化，请刷新后重试');},dispose(){for(const ref of refs)vault.offref(ref);}};
+  }
+  async function readEvent(file,context,options={}) {
+    const path=file.path,content=await io(()=>vault.read(file),options);
+    if(file.path!==path||vault.getAbstractFileByPath(path)!==file)throw bad('USAGE_STALE','读取时使用记录已被替换');
+    try {if(typeof content!=='string'||size(content)>MAX_BYTES)throw Error('size');const id=path.split('/').pop().replace(/\.json$/,'');return validateEvent(JSON.parse(content),{expectedContext:context,expectedEventId:id,core});}
+    catch(error){throw bad('USAGE_CORRUPT','使用账本存在损坏或不兼容记录，未覆盖：'+path+'（'+error.message+'）');}
+  }
+  async function loadUsage({context},options={}) {
+    context=contextOf(context);check(options);const path=folderFor(context),folder=vault.getAbstractFileByPath(path);
+    if(!folder)return ledgerOf([],context,core);if(!Array.isArray(folder.children))throw bad('USAGE_CORRUPT','使用账本目录被文件占用');
+    const guard=watch((file,oldPath)=>[file?.path,oldPath].some(value=>value===path||value?.startsWith(path+'/')));
+    try {
+    const files=folder.children.filter(file=>file.extension==='json');if(files.length>20000)throw bad('USAGE_LIMIT','本班课程使用记录超过读取上限');
+    const events=[];for(const file of files){if(!/^[a-f0-9]{64}\.json$/.test(file.name||file.path.split('/').pop()))throw bad('USAGE_CORRUPT','使用账本文件名无效：'+file.path);events.push(await readEvent(file,context,options));}
+    check(options);const current=vault.getAbstractFileByPath(path);if(current!==folder||current.children.filter(file=>file.extension==='json').length!==files.length||files.some(file=>!current.children.includes(file)))throw bad('USAGE_STALE','读取期间使用账本已变化，请刷新');
+    guard.check();return ledgerOf(events,context,core);
+    } finally {guard.dispose();}
+  }
+  async function capture(rawPlan,entryIds,options={}) {
+    const plan=core.validatePlan(data(rawPlan)),planSnapshotSha256=sha(canonical(plan));
+    const selected=entryIds===undefined?plan.entries.filter(entry=>entry.kind!=='section').map(entry=>entry.entryId):data(entryIds);
+    if(!Array.isArray(selected)||!selected.length||new Set(selected).size!==selected.length||selected.some(id=>typeof id!=='string'||!plan.entries.some(entry=>entry.entryId===id&&entry.kind!=='section')))throw bad('USAGE_INVALID','请选择方案中至少一个有效题目或知识条目');
+    let changed=false;const refs=[];
+    const dirty=(file,oldPath)=>{if(/\.md$/i.test(file?.path||'')||/\.md$/i.test(oldPath||'')||Array.isArray(file?.children))changed=true;};
+    try {
+      if(vault.on&&vault.offref)for(const name of ['create','modify','delete','rename'])refs.push(vault.on(name,dirty));
+      const index=await io(()=>scanIndex(options),options);if(index.issues?.some(issue=>issue.code==='read-error'))throw bad('USAGE_SOURCE_INVALID','存在未能读取的来源，无法确认材料身份');
+      const resolved=core.resolvePlan(plan,index),rows=resolved.entries.filter(row=>selected.includes(row.entry.entryId));
+      if(rows.some(row=>row.status!=='ok'||!row.item||row.item.identityConflict))throw bad('USAGE_SOURCE_CHANGED','登记来源已变化、缺失或存在冲突，请先在编排中核对');
+      const items=[];for(const {entry,item}of rows) {
+        const file=vault.getAbstractFileByPath(item.path);if(!file||file.extension!=='md')throw bad('USAGE_SOURCE_CHANGED','登记来源已缺失');
+        const markdown=await io(()=>vault.read(file),options);if(file.path!==item.path||vault.getAbstractFileByPath(item.path)!==file||markdown!==item.markdown)throw bad('USAGE_SOURCE_CHANGED','登记来源在核对期间发生变化');
+        items.push({entryId:entry.entryId,kind:entry.kind,itemId:item.id||null,path:item.path,sourceFingerprint:item.fingerprint,revisionSha256:sha(markdown),markdown,title:entry.title,role:entry.role,fragmentRef:entry.fragmentRef?data(entry.fragmentRef):null,score:entry.score??null});
+      }
+      check(options);if(changed||sha(canonical(core.validatePlan(rawPlan)))!==planSnapshotSha256)throw bad('USAGE_SOURCE_CHANGED','来源或方案在核对期间发生变化');
+      const result={planSnapshotSha256,planTitle:plan.title,items};if(size(canonical(result))>MAX_BYTES-10000)throw bad('USAGE_LIMIT','本次使用快照超过 32 MiB，请分批登记');return {plan,selected,...result};
+    } finally {for(const ref of refs)vault.offref(ref);}
+  }
+  async function preparePlanUsage({plan,context,action,entryIds,occurredAt=now()},options={}) {
+    if(!['taught','assigned'].includes(action))throw bad('USAGE_INVALID','只能显式登记已讲授或已布置');context=contextOf(context);occurredAt=dateOf(occurredAt);
+    if(Date.parse(occurredAt)>Date.parse(dateOf(now()))+300000)throw bad('USAGE_INVALID','实际使用时间不能在未来');
+    await loadUsage({context},options);const snapshot=await capture(plan,entryIds,options);
+    const wrapper={schemaVersion:1,context,action,occurredAt,planSnapshotSha256:snapshot.planSnapshotSha256,planTitle:snapshot.planTitle,items:data(snapshot.items)};
+    candidates.set(wrapper,{...snapshot,context:data(context),action,occurredAt});return wrapper;
+  }
+  async function ensureFolder(path) {
+    let current='';for(const part of path.split('/')){current=current?current+'/'+part:part;let node=vault.getAbstractFileByPath(current);if(!node){try{await vault.createFolder(current);}catch(error){if(!Array.isArray(vault.getAbstractFileByPath(current)?.children))throw error;}node=vault.getAbstractFileByPath(current);}if(!Array.isArray(node?.children))throw bad('USAGE_CORRUPT','使用账本目录被文件占用');}
+  }
+  function makeEvent(command,actionId) {
+    text(actionId,'动作 ID',200);const contextId=contextKey(command.context),event={schemaVersion:1,kind:'mathsemble-usage-event',actionId,contextId,...data(command),createdAt:dateOf(now()),eventId:sha(contextId+'\n'+actionId)};
+    event.commandSha256=sha(canonical(commandOf(event)));return validateEvent(event,{core});
+  }
+  async function append(event,options={}) {
+    const path=folderFor(event.context)+'/'+event.eventId+'.json',existing=vault.getAbstractFileByPath(path);
+    const match=async file=>{const stored=await readEvent(file,event.context,{});if(stored.commandSha256!==event.commandSha256)throw bad('USAGE_ACTION_CONFLICT','动作 ID 已用于不同的登记，请勿重复利用');return {event:stored,path,state:'saved',idempotent:true};};
+    if(existing)return match(existing);await ensureFolder(folderFor(event.context));check(options);
+    const content=JSON.stringify(event,null,2)+'\n';if(size(content)>MAX_BYTES)throw bad('USAGE_LIMIT','本次使用记录超过 32 MiB');
+    // Vault.create is create-only. Once submitted, do not race cancellation or
+    // a timeout against its completion; a possibly persisted event must survive.
+    try {await vault.create(path,content);}
+    catch(error){const file=vault.getAbstractFileByPath(path);if(file){try{return await match(file);}catch(verifyError){if(verifyError.code==='USAGE_ACTION_CONFLICT'||verifyError.code==='USAGE_CORRUPT')throw verifyError;}}throw Object.assign(bad('USAGE_WRITE_UNVERIFIED','登记写入结果未确认；请刷新后用同一动作重试，不要另建动作'),{path,cause:error});}
+    const file=vault.getAbstractFileByPath(path);if(!file)throw Object.assign(bad('USAGE_WRITE_UNVERIFIED','登记写入后尚未确认；请刷新核对'),{path});
+    const result=await match(file);return {...result,idempotent:false};
+  }
+  function recordPlanUsage(candidate,{actionId},options={}) {
+    const state=candidates.get(candidate);if(!state)throw bad('USAGE_INVALID','登记候选无效，请重新核对当前方案');
+    const event=makeEvent({context:state.context,action:state.action,occurredAt:state.occurredAt,planSnapshotSha256:state.planSnapshotSha256,planTitle:state.planTitle,items:state.items},actionId);
+    return serial(async()=>{
+      check(options);await loadUsage({context:state.context},options);const existing=vault.getAbstractFileByPath(folderFor(state.context)+'/'+event.eventId+'.json');
+      if(existing)return append(event,options); // Retry of a verified commit does not reinterpret a later source revision.
+      await ensureFolder(folderFor(state.context));
+      const guard=watch((file,oldPath)=>/\.md$/i.test(file?.path||'')||/\.md$/i.test(oldPath||'')||Array.isArray(file?.children));
+      const guarded={...options,isCurrent:()=>{check(options);guard.check();return true;}};
+      try {
+      const fresh=await capture(state.plan,state.selected,options);
+      if(canonical(fresh.items)!==canonical(state.items)||fresh.planSnapshotSha256!==state.planSnapshotSha256)throw bad('USAGE_SOURCE_CHANGED','来源版本已变化，请重新核对登记');
+      await loadUsage({context:state.context},options);check(options);return await append(event,guarded);
+      } finally {guard.dispose();}
+    });
+  }
+  function revokeUsage(eventId,{actionId,context,reason=''},options={}) {
+    context=contextOf(context);text(reason,'撤销说明',1000,true);
+    if(!/^[a-f0-9]{64}$/.test(eventId))throw bad('USAGE_INVALID','撤销目标无效');
+    return serial(async()=>{
+      check(options);const ledger=await loadUsage({context},options),target=ledger.events.find(event=>event.eventId===eventId);
+      if(!target||target.action==='revoke')throw bad('USAGE_INVALID','只能撤销当前班级课程中的原始登记');
+      const same=ledger.events.find(event=>event.actionId===actionId);
+      if(same){if(same.action!=='revoke'||same.supersedes!==eventId||same.reason!==reason)throw bad('USAGE_ACTION_CONFLICT','动作 ID 已用于其他登记');return {event:same,path:folderFor(context)+'/'+same.eventId+'.json',state:'saved',idempotent:true};}
+      if(ledger.revokedEventIds.includes(eventId))throw bad('USAGE_ALREADY_REVOKED','这次登记已经撤销');
+      return append(makeEvent({context,action:'revoke',occurredAt:dateOf(now()),supersedes:eventId,reason},actionId),options);
+    });
+  }
+  return {newActionId:()=>text(newId(),'动作 ID',200),preparePlanUsage,recordPlanUsage,revokeUsage,loadUsage,listUsage:loadUsage,
+    filterUsage:(items,ledger,options)=>filterUsage(items,ledger,{...options,core}),selectUsage:(items,ledger,options)=>filterUsage(items,ledger,{...options,core}),
+    summarizeUsage:(items,ledger,options)=>summarizeUsage(items,ledger,{...options,core}),validateEvent:raw=>validateEvent(raw,{core}),contextKey,root};
+}
+module.exports={createUsageService,validateEvent,contextKey,summarizeUsage,filterUsage,selectUsage:filterUsage};
+
+return module.exports; })();
+const mwbAssemblyUsageUi = (() => { const module = {exports:{}};
+'use strict';
+
+// A teacher explicitly records an actual activity. Merely opening this modal,
+// previewing, saving a plan or exporting never creates a teaching event.
+module.exports=function createUsageModal({Modal,Component,Notice,core,service,onChanged}={}) {
+  const clone=value=>JSON.parse(JSON.stringify(value));
+  const localTime=()=>{const date=new Date();date.setMinutes(date.getMinutes()-date.getTimezoneOffset());return date.toISOString().slice(0,16);};
+  const scope=item=>item.fragmentRef?'部分使用：'+(item.fragmentRef.kind==='question-part'?'小问 ':'知识小节 ')+item.fragmentRef.ids.join('、')+(item.score!==null?' · '+item.score+' 分':''):'整份材料'+(item.score!==null?' · '+item.score+' 分':'');
+  return class UsageModal extends Modal {
+    constructor(app,plugin,view,options={}) {
+      super(app);this.plugin=plugin;this.view=view;this.options=options;this.closed=false;this.busy=false;this.candidate=null;
+      this.actionId=service.newActionId();this.revokeIds=new Map();this.visible=100;
+    }
+    el(tag,parent,text,cls){const node=this.contentEl.ownerDocument.createElement(tag);if(text!==undefined)node.textContent=String(text);if(cls)node.className=cls;parent?.appendChild(node);return node;}
+    field(parent,label,tag='input'){const wrap=this.el('label',parent,undefined,'mwb-usage-field');this.el('span',wrap,label);const node=this.el(tag,wrap);node.setAttribute('aria-label',label);return node;}
+    button(parent,label,fn){const node=this.el('button',parent,label);node.type='button';node.onclick=()=>{if(this.closed||this.busy||node.disabled)return;Promise.resolve().then(()=>{if(!this.closed&&!this.busy&&node.isConnected&&!node.disabled)return fn();}).catch(error=>this.status(error.message,true));};return node;}
+    context(){return {classId:this.classInput.value.trim(),courseId:this.courseInput.value.trim()};}
+    status(message,error=false){if(!this.closed){this.statusEl.textContent=message;this.statusEl.classList.toggle('is-error',error);}}
+    snapshot(){return {plan:JSON.stringify(this.view.plan),settings:JSON.stringify(this.view.settings),context:JSON.stringify(this.context()),action:this.actionInput.value,time:this.timeInput.value};}
+    current(snapshot){return !this.closed&&!this.view.closed&&!this.view.actionBusy&&!this.view.scanBusy&&JSON.stringify(this.view.plan)===snapshot.plan&&JSON.stringify(this.view.settings)===snapshot.settings&&JSON.stringify(this.context())===snapshot.context&&this.actionInput.value===snapshot.action&&this.timeInput.value===snapshot.time;}
+    updateBusy(){for(const node of this.contentEl.querySelectorAll('button,input,select'))node.disabled=this.busy||node.dataset.unavailable==='true';if(this.recordButton)this.recordButton.disabled=this.busy||!this.candidate;}
+    invalidate(){this.candidate=null;this.actionId=service.newActionId();this.preview?.replaceChildren();this.updateBusy();this.status('条件已变化，请重新核对后登记。');}
+    async action(label,fn){
+      if(this.closed||this.busy)return;this.busy=true;const controller=this.controller=new AbortController(),snapshot=this.snapshot();this.status(label+'…');this.updateBusy();
+      const options={signal:controller.signal,isCurrent:()=>this.controller===controller&&!controller.signal.aborted&&this.current(snapshot),config:clone(this.view.settings||{})};
+      try{if(!options.isCurrent())throw Error('编排工作区正在处理其他操作，请稍后重试');return await fn(options,snapshot);}
+      catch(error){this.status(error.message||String(error),error.name!=='AbortError');}
+      finally{if(this.controller===controller)this.controller=null;this.busy=false;if(!this.closed)this.updateBusy();}
+    }
+    async onOpen(){
+      if(Component){this.owner=new Component();this.owner.register?.(()=>{if(!this.closed)this.close();});this.plugin.addChild?.(this.owner);}
+      this.modalEl.classList.add('mwb-usage-modal');this.contentEl.classList.add('mwb-usage');this.el('h2',this.contentEl,'实际使用账本');
+      this.el('p',this.contentEl,'只有明确登记才计为已讲授或已布置；导出不代表使用，也不代表学生掌握。记录含当时原文，仅保存在本地账本。','mwb-assembly-muted');
+      const controls=this.el('div',this.contentEl,undefined,'mwb-usage-controls'),context=this.options.context||this.view.usageContext||{classId:'',courseId:''};
+      this.classInput=this.field(controls,'班级代号');this.classInput.value=context.classId||'';this.classInput.maxLength=200;
+      this.courseInput=this.field(controls,'课程代号');this.courseInput.value=context.courseId||'';this.courseInput.maxLength=200;
+      this.actionInput=this.field(controls,'实际使用类型','select');for(const [value,label]of [['taught','已讲授'],['assigned','已布置']])this.el('option',this.actionInput,label).value=value;
+      this.timeInput=this.field(controls,'实际使用时间');this.timeInput.type='datetime-local';this.timeInput.value=localTime();
+      for(const node of [this.classInput,this.courseInput,this.actionInput,this.timeInput])node.addEventListener('change',()=>{this.invalidate();if(node===this.classInput||node===this.courseInput){this.ledger=null;this.history?.replaceChildren();this.revokeIds.clear();}});
+      const actions=this.el('div',this.contentEl,undefined,'mwb-usage-actions');this.button(actions,'核对本次登记',()=>this.prepare());
+      this.recordButton=this.button(actions,'确认登记本次使用',()=>this.record());this.button(actions,'刷新使用记录',()=>this.refresh());
+      this.statusEl=this.el('p',this.contentEl,'填写班级或课程，再核对当前方案。','mwb-usage-status');this.statusEl.setAttribute('role','status');
+      this.preview=this.el('div',this.contentEl,undefined,'mwb-usage-preview');this.history=this.el('div',this.contentEl,undefined,'mwb-usage-history');this.updateBusy();
+      if(context.classId||context.courseId)await this.refresh();
+    }
+    async prepare(){return this.action('核对来源版本',async(options,snapshot)=>{
+      this.candidate=null;this.preview.replaceChildren();const date=new Date(this.timeInput.value);if(!Number.isFinite(date.getTime()))throw Error('请填写有效的实际使用时间');
+      const candidate=await service.preparePlanUsage({plan:clone(this.view.plan),context:this.context(),action:this.actionInput.value,occurredAt:date.toISOString()},options);
+      if(!options.isCurrent())throw Error('编排或登记条件已变化，未采用旧结果');this.candidate=candidate;this.candidateSnapshot=snapshot;
+      this.el('h3',this.preview,`${candidate.planTitle} · ${candidate.items.length} 项 · ${candidate.action==='taught'?'已讲授':'已布置'}`);
+      this.el('p',this.preview,'将保存来源当时的 Markdown 正文和版本摘要；不修改题卡或方案。');
+      const list=this.el('ol',this.preview);for(const item of candidate.items.slice(0,100))this.el('li',list,(item.title||item.path)+' · '+(item.itemId||'仅路径身份')+' · '+scope(item));
+      if(candidate.items.length>100)this.el('p',this.preview,'其余 '+(candidate.items.length-100)+' 项也将登记。');this.status('来源已核对。确认实际使用后，再点击“确认登记本次使用”。');
+    });}
+    async changed(result,context){const callback=this.options.onChanged||onChanged;if(callback)try{await callback({context,event:result.event,result});}catch(error){if(Notice)new Notice('使用记录已保存，但筛选刷新未完成：'+(error.message||String(error)));}}
+    async record(){const candidate=this.candidate;if(!candidate)return;return this.action('保存实际使用',async options=>{
+      if(!this.current(this.candidateSnapshot))throw Error('编排或条件已变化，请重新核对');
+      const result=await service.recordPlanUsage(candidate,{actionId:this.actionId},options);
+      this.candidate=null;this.actionId=service.newActionId();
+      // A submitted Vault write may finish after close. Keep the saved fact and
+      // notify the workspace, but do not reopen the modal or alter a new plan.
+      await this.changed(result,result.event.context);if(this.closed)return;
+      this.preview.replaceChildren();this.status(result.idempotent?'该动作已经登记，未重复计数。':'已保存本次使用；源卡与方案保持。');if(Notice)new Notice('实际使用已登记');
+      this.ledger=await service.loadUsage({context:this.context()},options);if(options.isCurrent())this.renderHistory();
+    });}
+    async refresh(){return this.action('读取本班课程记录',async options=>{const ledger=await service.loadUsage({context:this.context()},options);if(!options.isCurrent())throw Error('班级课程已变化，未采用旧记录');this.ledger=ledger;this.visible=100;this.renderHistory();this.status(`共 ${ledger.activeEvents.length} 次有效登记，${ledger.revokedEventIds.length} 次已撤销。`);});}
+    renderHistory(){
+      this.history.replaceChildren();if(!this.ledger)return;this.el('h3',this.history,'本班课程历史');
+      const revoked=new Set(this.ledger.revokedEventIds),events=this.ledger.events.filter(event=>event.action!=='revoke');
+      for(const event of events.slice(0,this.visible)){
+        const row=this.el('article',this.history,undefined,'mwb-usage-event');row.dataset.eventId=event.eventId;
+        this.el('h4',row,`${event.action==='taught'?'已讲授':'已布置'} · ${new Date(event.occurredAt).toLocaleString()} · ${event.items.length} 项${revoked.has(event.eventId)?' · 已撤销':''}`);
+        this.el('p',row,event.planTitle+' · 方案摘要 '+event.planSnapshotSha256.slice(0,12)+(event.items.some(item=>item.fragmentRef)?' · 含部分使用（整题筛选保守计为已用）':''));
+        const details=this.el('details',row);this.el('summary',details,'查看当时版本');let populated=false;
+        details.addEventListener('toggle',()=>{if(!details.open||populated)return;populated=true;for(const item of event.items){this.el('p',details,(item.title||item.path)+' · '+scope(item)+' · '+item.path+' · SHA-256 '+item.revisionSha256);this.el('pre',details,item.markdown);}});
+        if(!revoked.has(event.eventId)){const reason=this.field(row,'撤销说明');reason.maxLength=1000;this.button(row,'撤销这次登记',()=>this.revoke(event,reason.value));}
+        else for(const correction of this.ledger.events.filter(value=>value.action==='revoke'&&value.supersedes===event.eventId))this.el('p',row,'更正记录：'+new Date(correction.createdAt).toLocaleString()+(correction.reason?' · '+correction.reason:''));
+      }
+      if(events.length>this.visible)this.button(this.history,'再显示 100 次',()=>{this.visible+=100;this.renderHistory();this.updateBusy();});this.updateBusy();
+    }
+    async revoke(event,reason){return this.action('追加撤销更正',async options=>{
+      let actionId=this.revokeIds.get(event.eventId);if(!actionId){actionId=service.newActionId();this.revokeIds.set(event.eventId,actionId);}
+      const result=await service.revokeUsage(event.eventId,{actionId,context:this.context(),reason},options);await this.changed(result,result.event.context);if(this.closed)return;
+      this.ledger=await service.loadUsage({context:this.context()},options);if(options.isCurrent()){this.renderHistory();this.status('已追加撤销记录，原始登记仍保留。');}
+    });}
+    onClose(){this.closed=true;this.controller?.abort();this.controller=null;this.candidate=null;const owner=this.owner;this.owner=null;if(owner)this.plugin.removeChild?.(owner);if(this.view.usageModal===this)this.view.usageModal=null;this.contentEl.replaceChildren();}
+  };
+};
+
+return module.exports; })();
+const mwbAssemblyLibrary = (() => { const module = {exports:{}};
+'use strict';
+
+// Durable, create-only import receipts. Source notes are not edited by diagnosis
+// or staging. Transfer containers deliberately carry original bytes separately
+// from remapped candidates and never claim to implement an external QTI format.
+const B=()=>require('node:buffer').Buffer;
+const sha=value=>require('node:crypto').createHash('sha256').update(value).digest('hex');
+const uuid=()=>require('node:crypto').randomUUID();
+const ROOT='Mathsemble/待入库',PROFILE='mathsemble-question-json-v1',TRANSFER='mathsemble-transfer-v1';
+const MAX_BYTES=64*1024*1024,MAX_FILES=2000;
+const fail=(code,message)=>Object.assign(new Error(message),{code});
+function plain(value,depth=0,seen=new Set()) {
+  if(depth>32)throw fail('LIBRARY_DATA','数据嵌套过深');
+  if(value===null||typeof value==='string'||typeof value==='boolean'||typeof value==='number'&&Number.isFinite(value))return value;
+  if(!value||typeof value!=='object'||seen.has(value)||Object.getOwnPropertySymbols(value).length||![Object.prototype,null,Array.prototype].includes(Object.getPrototypeOf(value)))throw fail('LIBRARY_DATA','必须使用无循环的纯 JSON 数据');
+  const descriptors=Object.getOwnPropertyDescriptors(value);for(const [key,d]of Object.entries(descriptors))if(['__proto__','prototype','constructor'].includes(key)||d.get||d.set)throw fail('LIBRARY_DATA','不允许访问器或危险字段');
+  seen.add(value);let result;
+  if(Array.isArray(value)){if(value.length>10000||Object.keys(value).length!==value.length)throw fail('LIBRARY_DATA','列表无效');result=value.map(v=>plain(v,depth+1,seen));}
+  else result=Object.fromEntries(Object.keys(value).sort().map(k=>[k,plain(descriptors[k].value,depth+1,seen)]));
+  seen.delete(value);return result;
+}
+const json=value=>JSON.stringify(plain(value),null,2)+'\n';
+const objectHash=value=>sha(JSON.stringify(plain(value)));
+function pathOf(raw) {
+  if(typeof raw!=='string'||!raw||raw!==raw.trim()||raw.startsWith('/')||/[\\:\x00-\x1f\x7f]/.test(raw)||raw.split('/').some(p=>!p||p==='.'||p==='..'||/[. ]$/.test(p)||/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p)))throw fail('LIBRARY_PATH','必须使用安全的库内相对路径');
+  return raw;
+}
+const issue=(code,message,path='',severity='warning',extra={})=>({code,message,path,severity,...extra});
+const sourceKind=metadata=>/knowledge|知识/.test(String(metadata.note_type||metadata.type||''))?'knowledge':'question';
+function binary(value) {
+  if(typeof value==='string')return B().from(value,'utf8');
+  if(value instanceof Uint8Array)return B().from(value);
+  if(value instanceof ArrayBuffer)return B().from(new Uint8Array(value));
+  throw fail('LIBRARY_BYTES','文件内容必须为字符串或二进制');
+}
+function decode(base64) {
+  if(typeof base64!=='string'||base64.length>MAX_BYTES*1.4||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64))throw fail('LIBRARY_BYTES','Base64 编码无效');
+  const bytes=B().from(base64,'base64');if(bytes.toString('base64')!==base64)throw fail('LIBRARY_BYTES','Base64 编码不是规范形式');return bytes;
+}
+const utf8=bytes=>new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+function fileRecord(path,bytes,kind='asset') {bytes=binary(bytes);return {path:pathOf(path),kind,bytes:bytes.length,sha256:sha(bytes),base64:bytes.toString('base64')};}
+function checkedFiles(files) {
+  if(!Array.isArray(files)||!files.length||files.length>MAX_FILES)throw fail('LIBRARY_FILES','文件数量须为 1–2000');
+  const paths=new Set();let total=0;
+  return files.map(raw=>{const row=plain(raw),path=pathOf(row.path),key=path.toLowerCase();if(paths.has(key))throw fail('LIBRARY_PATH','包内路径重名（含大小写）：'+path);paths.add(key);
+    const bytes=decode(row.base64);total+=bytes.length;if(total>MAX_BYTES)throw fail('LIBRARY_BUDGET','材料超过 64 MiB 字节预算');
+    if(row.bytes!==bytes.length||row.sha256!==sha(bytes))throw fail('LIBRARY_INTEGRITY','文件摘要或字节数不符：'+path);
+    if(!['source','asset','plan','sidecar','archive'].includes(row.kind))throw fail('LIBRARY_KIND','未知文件类别：'+path);if(row.sourceKind!==undefined&&!['question','knowledge'].includes(row.sourceKind))throw fail('LIBRARY_KIND','未知源文类别：'+path);return row;});
+}
+function validateTransferPackage(raw) {
+  const value=plain(raw);if(value?.schemaVersion!==1||value?.format!==TRANSFER)throw fail('LIBRARY_SCHEMA','不支持的材料包版本或 profile');
+  if(!/^[a-f0-9]{64}$/.test(value.integrity))throw fail('LIBRARY_INTEGRITY','材料包缺少完整性摘要');
+  const {integrity,...body}=value;if(objectHash(body)!==integrity)throw fail('LIBRARY_INTEGRITY','材料包完整性校验失败');
+  value.files=checkedFiles(value.files);if(!Array.isArray(value.references)||!Array.isArray(value.issues))throw fail('LIBRARY_SCHEMA','材料包映射或问题列表无效');
+  for(const ref of value.references){pathOf(ref.sourcePath);if(ref.resolvedPath!=null)pathOf(ref.resolvedPath);if(typeof ref.target!=='string')throw fail('LIBRARY_SCHEMA','引用映射无效');}
+  return value;
+}
+function metadataOf(markdown,parseYaml) {
+  const match=String(markdown).replace(/^\uFEFF/,'').match(/^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/);
+  const metadata=match?parseYaml(match[1]):{};if(!metadata||typeof metadata!=='object'||Array.isArray(metadata))throw fail('LIBRARY_METADATA','元信息必须为字段对象');return plain(metadata);
+}
+function analyzeLibrary(index,{missingFields=['id','subject','question_type','family_id']}={}) {
+  const issues=(index.issues||[]).map(row=>({...plain(row),severity:row.severity||'warning'})),groups=new Map();
+  for(const item of index.items||[]){if(item.kind!=='question')continue;
+    for(const field of missingFields)if(!Object.hasOwn(item.metadata||{},field)||field!=='family_id'&&(item.metadata[field]==null||String(item.metadata[field]).trim()===''))issues.push(issue('missing-metadata','缺少元信息：'+field,item.path,'warning',{field}));
+    const body=item.markdown.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/,'').replace(/\s+/g,' ').trim();
+    if(body){const key=sha(body);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item.path);}
+  }
+  for(const paths of groups.values())if(paths.length>1)for(const path of paths)issues.push(issue('possible-same-body','疑似相同正文，仅供人工核对；不会自动合并或改号',path,'info',{relatedPaths:paths.filter(p=>p!==path)}));
+  return {issues,counts:{items:index.items?.length||0,issues:issues.length,errors:issues.filter(row=>row.severity==='error').length}};
+}
+function relative(from,to) {const left=from.split('/').slice(0,-1),right=to.split('/');while(left.length&&right.length&&left[0]===right[0]){left.shift();right.shift();}return '../'.repeat(left.length)+right.join('/');}
+function normalizedTarget(source,target) {
+  const raw=String(target).split(/[?#]/)[0];if(!raw||/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(raw))return null;
+  const parts=(raw.startsWith('/')?raw.slice(1):source.split('/').slice(0,-1).concat(raw).join('/')).split('/'),out=[];
+  for(const part of parts){if(!part||part==='.')continue;if(part==='..'){if(!out.length)return null;out.pop();}else out.push(part);}return out.join('/');
+}
+
+function createLibraryService({vault,core,assemblyService,parseYaml,collectMediaDependencies,resolveDependency,now=()=>new Date(),newId=uuid}={}) {
+  if(!vault||!core||!assemblyService||typeof parseYaml!=='function'||typeof collectMediaDependencies!=='function')throw fail('LIBRARY_ADAPTER','缺少题库服务依赖');
+  let queue=Promise.resolve();
+  const serial=fn=>{const task=queue.catch(()=>{}).then(fn);queue=task;return task;};
+  const check=options=>{if(options?.signal?.aborted||options?.isCurrent&&!options.isCurrent())throw Object.assign(new Error('操作已取消或工作区已变化'),{name:'AbortError'});};
+  const timestamp=()=>new Date(now()).toISOString();
+  async function readBytes(file){if(vault.readBinary)return binary(await vault.readBinary(file));return binary(await vault.read(file));}
+  async function ensureFolder(path){let current='';for(const part of pathOf(path).split('/')){current=current?current+'/'+part:part;let node=vault.getAbstractFileByPath(current);if(!node){try{await vault.createFolder(current);}catch(error){node=vault.getAbstractFileByPath(current);if(!Array.isArray(node?.children))throw error;}node=vault.getAbstractFileByPath(current);}if(!Array.isArray(node?.children))throw fail('LIBRARY_CONFLICT','目录已被文件占用：'+current);}}
+  async function create(path,bytes){pathOf(path);if(vault.getAbstractFileByPath(path))throw fail('LIBRARY_CONFLICT','目标已存在，未覆盖：'+path);await ensureFolder(path.slice(0,path.lastIndexOf('/')));if(vault.getAbstractFileByPath(path))throw fail('LIBRARY_CONFLICT','目标已存在，未覆盖：'+path);
+    bytes=binary(bytes);if(vault.createBinary)return vault.createBinary(path,bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength));return vault.create(path,utf8(bytes));}
+  async function resolve(target,sourcePath){if(resolveDependency){const value=await resolveDependency(target,sourcePath);if(value)return typeof value==='string'?value:value.path;}
+    const path=normalizedTarget(sourcePath,target),direct=String(target).split(/[?#]/)[0];if(path&&vault.getAbstractFileByPath(path))return path;if(vault.getAbstractFileByPath(direct))return direct;
+    const matches=(vault.getFiles?.()||vault.getMarkdownFiles()).filter(file=>file.path.split('/').pop()===direct);return matches.length===1?matches[0].path:null;}
+  async function declarations(markdown,path,known){const rows=[];for(const dep of collectMediaDependencies(markdown,path).dependencies){
+    const remote=/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(dep.target),resolvedPath=remote?null:known?known(dep.target,path):await resolve(dep.target,path);
+    rows.push({...dep,resolvedPath:resolvedPath||null,external:remote});}return rows;}
+  async function diagnose(options={}) {check(options);const index=await assemblyService.scan(options.config,options),report=analyzeLibrary(index);
+    for(const item of index.items){check(options);for(const dep of await declarations(item.markdown,item.path))if(!dep.resolvedPath&&!dep.external||dep.status==='unsupported')report.issues.push(issue(dep.status==='unsupported'?'unsupported-resource':'missing-resource','资源待核对：'+(dep.target||dep.reasonCode),item.path,'warning',{target:dep.target}));}
+    check(options);return {index,issues:report.issues,counts:{...report.counts,issues:report.issues.length}};}
+  function batchPath(batchId){if(typeof batchId!=='string'||!/^batch-[a-f0-9]{24}$/.test(batchId))throw fail('LIBRARY_BATCH','批次 ID 无效');return ROOT+'/'+batchId;}
+  async function loadBatch(batchId){const path=batchPath(batchId)+'/manifest.json',file=vault.getAbstractFileByPath(path);if(!file)throw fail('LIBRARY_BATCH','暂存批次不存在或尚未完成');
+    const text=utf8(await readBytes(file)),batch=plain(JSON.parse(text));if(batch.schemaVersion!==1||batch.batchId!==batchId||!Array.isArray(batch.files)||!Array.isArray(batch.originals))throw fail('LIBRARY_BATCH','批次清单无效');
+    const {manifestDigest,...body}=batch;if(objectHash(body)!==manifestDigest)throw fail('LIBRARY_INTEGRITY','批次清单摘要不符');
+    for(const row of batch.files){pathOf(row.targetPath);if(!row.stagePath.startsWith(batchPath(batchId)+'/candidates/'))throw fail('LIBRARY_PATH','暂存文件越界');pathOf(row.stagePath);}
+    return batch;}
+  async function listBatches(){const rows=[];for(const folder of vault.getAbstractFileByPath(ROOT)?.children||[]){if(!Array.isArray(folder.children)||!/^batch-/.test(folder.name))continue;try{const batch=await loadBatch(folder.name);rows.push({batchId:batch.batchId,profile:batch.profile,createdAt:batch.createdAt,status:batch.status,count:batch.files.length});}catch(_){rows.push({batchId:folder.name,status:'incomplete',count:0});}}return rows;}
+  function unknown(value,known,path,loss){for(const key of Object.keys(value))if(!known.includes(key))loss.push({code:'unknown-field-preserved',path,field:key,disposition:'原件完整保留；不自动映射该字段'});}
+  async function stageImport(raw,options={}) {return serial(async()=>{
+    check(options);const input=plain(raw),targetRoot=pathOf(input.targetRoot||'导入题库');if(targetRoot.startsWith('Mathsemble/'))throw fail('LIBRARY_PATH','源卡目标不能位于插件侧车目录');
+    const profile=input.profile,originals=(input.files||[]).map((row,i)=>fileRecord(pathOf(row.path||'input-'+i),row.base64!==undefined?decode(row.base64):binary(row.text),'asset'));
+    checkedFiles(originals);const idMap=plain(input.idMap||{});for(const [from,to]of Object.entries(idMap))if(!from||typeof to!=='string'||!to.trim()||/[\x00-\x1f]/.test(to))throw fail('LIBRARY_ID','ID 映射无效');
+    const digest=objectHash({profile,targetRoot,originals,idMap}),batchId='batch-'+digest.slice(0,24),base=batchPath(batchId);
+    if(vault.getAbstractFileByPath(base+'/manifest.json')){const existing=await loadBatch(batchId);if(existing.inputDigest!==digest)throw fail('LIBRARY_CONFLICT','批次摘要冲突');return existing;}
+    const issues=[],lossReport=[],referenceMap=[],files=[];let sourceFiles=[];
+    try {
+      if(profile==='markdown')sourceFiles=originals.map(row=>({...row,kind:/\.md$/i.test(row.path)?'source':'asset'}));
+      else if(profile===PROFILE){
+        for(const original of originals){const value=plain(JSON.parse(utf8(decode(original.base64))));if(value.schemaVersion!==1||!Array.isArray(value.items))throw fail('LIBRARY_SCHEMA','结构化 JSON 必须使用 schemaVersion:1 和 items');unknown(value,['schemaVersion','items','assets'],original.path,lossReport);
+          for(const item of value.items){if(typeof item.markdown!=='string'||!item.metadata||typeof item.metadata!=='object'||Array.isArray(item.metadata))throw fail('LIBRARY_PROFILE','结构化题目需要 path、markdown 和 metadata 对象');unknown(item,['path','markdown','metadata'],original.path+':'+item.path,lossReport);
+            const markdown='---\n'+JSON.stringify(plain(item.metadata))+'\n---\n'+item.markdown;sourceFiles.push(fileRecord(item.path,markdown,'source'));}
+          for(const asset of value.assets||[]){const bytes=decode(asset.base64);if(asset.sha256&&asset.sha256!==sha(bytes))throw fail('LIBRARY_INTEGRITY','JSON 资源摘要不符');unknown(asset,['path','base64','sha256'],original.path+':'+asset.path,lossReport);sourceFiles.push(fileRecord(asset.path,bytes,'asset'));}}
+      }else if(profile===TRANSFER){if(originals.length!==1)throw fail('LIBRARY_PROFILE','一次暂存一个材料包');const transfer=validateTransferPackage(JSON.parse(utf8(decode(originals[0].base64))));unknown(transfer,['schemaVersion','format','packageId','createdAt','files','references','issues','integrity'],originals[0].path,lossReport);sourceFiles=transfer.files;issues.push(...transfer.issues.map(row=>({...row,severity:row.severity||'warning'})));for(const row of sourceFiles)unknown(row,['path','kind','sourceKind','bytes','sha256','base64'],row.path,lossReport);
+      }else throw fail('LIBRARY_PROFILE','未知导入 profile，原件已保留但禁止提交');
+      sourceFiles=checkedFiles(sourceFiles);
+    }catch(error){issues.push(issue(error.code||'invalid-input',error.message,'','error'));sourceFiles=[];}
+    const mapping=Object.fromEntries(sourceFiles.map(row=>[row.path,row.kind==='plan'?'Mathsemble/组题方案/导入_'+batchId+'_'+row.path.split('/').pop():row.kind==='sidecar'?'Mathsemble/导入旁车/'+batchId+'/'+row.path:row.kind==='archive'?'Mathsemble/导入归档/'+batchId+'/'+row.path:targetRoot+'/'+row.path]));
+    const sourceByPath=new Map(sourceFiles.map(row=>[row.path,row])),originalItems=[],candidateItems=[];
+    const known=(target,source)=>{const direct=String(target).split(/[?#]/)[0],rel=normalizedTarget(source,target);if(sourceByPath.has(rel))return rel;if(sourceByPath.has(direct))return direct;const matches=sourceFiles.filter(row=>row.path.split('/').pop()===direct);return matches.length===1?matches[0].path:null;};
+    for(const row of sourceFiles){check(options);let bytes=decode(row.base64);if(row.kind==='source'){
+      try {const original=utf8(bytes),metadata=metadataOf(original,parseYaml),nextMetadata=plain(metadata);let markdown=original;
+        for(const field of ['id','parent_id'])if(typeof nextMetadata[field]==='string'&&Object.hasOwn(idMap,nextMetadata[field]))nextMetadata[field]=idMap[nextMetadata[field]];
+        if(JSON.stringify(nextMetadata)!==JSON.stringify(metadata)){const match=markdown.match(/^(\uFEFF?)---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/);if(!match)throw fail('LIBRARY_ID','ID 映射需要明确元信息块');markdown=match[1]+'---\n'+JSON.stringify(nextMetadata)+'\n---\n'+markdown.slice(match[0].length);lossReport.push({code:'metadata-remapped',path:row.path,disposition:'仅显式 ID 映射；原件与原摘要保留'});}
+        originalItems.push({path:row.path,kind:row.sourceKind||sourceKind(metadata),markdown:original,metadata});
+        for(const dep of await declarations(original,row.path,known)){
+          if(dep.external||dep.status==='unsupported'||!dep.resolvedPath){issues.push(issue('unpacked-dependency','未封装依赖：'+(dep.target||dep.reasonCode),row.path,'warning'));referenceMap.push({...dep,targetPath:null});continue;}
+          const destination=mapping[dep.resolvedPath],suffix=dep.target.slice(dep.target.split(/[?#]/)[0].length),replacement=(dep.syntax==='wiki-embed'?destination:relative(mapping[row.path],destination))+suffix;
+          referenceMap.push({...dep,targetPath:destination,rewrittenTarget:replacement});
+          // Probe each occurrence with the existing declaration parser. Literal
+          // code/math/ordinary-link text never becomes a replacement site.
+          const rawTarget=dep.rawTarget;if(!rawTarget)continue;let cursor=0,count=0;
+          while((cursor=markdown.indexOf(rawTarget,cursor))>=0){if(++count>2000)throw fail('LIBRARY_BUDGET','单个资源引用过多');const marker='__mwb_transfer_'+batchId+'_'+cursor+'.png',probe=markdown.slice(0,cursor)+marker+markdown.slice(cursor+rawTarget.length);
+            const declared=collectMediaDependencies(probe,row.path).dependencies.some(value=>value.rawTarget===marker);
+            if(declared){const encoded=dep.syntax==='wiki-embed'?replacement:dep.syntax==='html-image'?replacement.replace(/&/g,'&amp;').replace(/"/g,'&quot;'):(suffix?replacement.slice(0,-suffix.length):replacement).split('/').map(part=>encodeURIComponent(part)).join('/')+suffix;markdown=markdown.slice(0,cursor)+encoded+markdown.slice(cursor+rawTarget.length);cursor+=encoded.length;}else cursor+=rawTarget.length;
+          }
+        }
+        if(/\[\[[^\]]+\]\]/.test(markdown.replace(/!\[\[[^\]]+\]\]/g,'')))lossReport.push({code:'note-links-preserved',path:row.path,disposition:'非图片 Wiki 链接保持原文；跨根路径及 ID 型链接须核对，未宣称全部重映射'});
+        bytes=binary(markdown);candidateItems.push({path:mapping[row.path],kind:row.sourceKind||sourceKind(nextMetadata),markdown,metadata:nextMetadata});
+      }catch(error){issues.push(issue(error.code||'source-parse',error.message,row.path,'error'));}
+    }
+    files.push({...row,targetPath:mapping[row.path],stagePath:base+'/candidates/'+String(files.length).padStart(4,'0')+'.bin',base64:bytes.toString('base64'),bytes:bytes.length,sha256:sha(bytes),originalSha256:row.sha256});}
+    const originalIndex=core.buildIndex(originalItems),candidateIndex=core.buildIndex(candidateItems),oldById=new Map(originalIndex.items.filter(item=>item.id).map(item=>[item.id,item]));
+    for(const row of files)if(row.kind==='plan')try{
+      const plan=core.validatePlan(JSON.parse(utf8(decode(row.base64))));
+      for(const entry of plan.entries){if(entry.kind==='section')continue;const old=(entry.sourceId&&oldById.get(entry.sourceId))||originalIndex.items.find(item=>item.path===entry.sourcePath);
+        if(!old||old.fingerprint!==entry.sourceFingerprint)throw fail('LIBRARY_PLAN_SOURCE','方案来源缺失或已变化，不能自动迁移：'+entry.sourcePath);
+        const next=candidateIndex.items.find(item=>item.path===mapping[old.path]);if(!next)throw fail('LIBRARY_PLAN_SOURCE','方案来源不在包内');Object.assign(entry,{sourceId:next.id||'',sourcePath:next.path,sourceFingerprint:next.fingerprint});}
+      const bytes=binary(json(core.validatePlan(plan)));Object.assign(row,{base64:bytes.toString('base64'),bytes:bytes.length,sha256:sha(bytes)});
+      lossReport.push({code:'plan-reference-remapped',path:row.path,disposition:'新候选仅更新明确来源映射；原方案字节与摘要保留'});
+    }catch(error){issues.push(issue(error.code||'plan-schema',error.message,row.path,'error'));}
+    for(const row of files)if(['sidecar','archive'].includes(row.kind))lossReport.push({code:'opaque-history-preserved',path:row.path,disposition:'原字节完整携带；历史内部路径/摘要保持原义，不作为当前可执行记录恢复'});
+    issues.push(...analyzeLibrary(candidateIndex).issues);
+    const batch={schemaVersion:1,batchId,inputDigest:digest,createdAt:timestamp(),profile,targetRoot,status:issues.some(i=>i.severity==='error')?'blocked':'staged',
+      originals:originals.map((row,i)=>({...row,stagePath:base+'/originals/'+String(i).padStart(4,'0')+'.bin'})),files,issues,idMap,assetMap:mapping,referenceMap,lossReport};
+    // Stage files are deterministic and verified when recovering an interrupted
+    // staging write. A mismatching existing file is never overwritten.
+    for(const row of [...batch.originals,...files]){check(options);const existing=vault.getAbstractFileByPath(row.stagePath);if(existing){if(sha(await readBytes(existing))!==row.sha256)throw fail('LIBRARY_CONFLICT','暂存材料被修改：'+row.stagePath);}else await create(row.stagePath,decode(row.base64));}
+    batch.manifestDigest=objectHash(batch);await create(base+'/manifest.json',json(batch));return batch;
+  });}
+  async function events(batchId){const out=[];for(const file of vault.getAbstractFileByPath(batchPath(batchId)+'/events')?.children||[]){if(file.extension!=='json')continue;const row=plain(JSON.parse(utf8(await readBytes(file))));if(row.batchId!==batchId||!Number.isSafeInteger(row.sequence)||row.sequence<1)throw fail('LIBRARY_BATCH','提交日志所属批次或顺序错误');out.push(row);}return out.sort((a,b)=>a.sequence-b.sequence);}
+  async function event(batchId,type,data){const log=await events(batchId),sequence=(log.at(-1)?.sequence||0)+1,row={schemaVersion:1,batchId,eventId:newId(),sequence,time:timestamp(),type,...plain(data)};await create(batchPath(batchId)+'/events/'+String(sequence).padStart(8,'0')+'.json',json(row));return row;}
+  async function preflight(batch,options={}){const issues=[],log=await events(batch.batchId),owned=new Map(log.filter(row=>row.type==='created').map(row=>[row.path,row]));
+    for(const row of log.filter(row=>row.type==='removed'))owned.delete(row.path);
+    const ids=new Map();for(const file of vault.getMarkdownFiles()){check(options);if(file.path.startsWith('Mathsemble/'))continue;try{const meta=metadataOf(utf8(await readBytes(file)),parseYaml);if(typeof meta.id==='string'&&meta.id){if(!ids.has(meta.id))ids.set(meta.id,[]);ids.get(meta.id).push(file.path);}}catch(_){}}
+    const newIds=new Map();for(const row of batch.files){const existing=vault.getAbstractFileByPath(row.targetPath),receipt=owned.get(row.targetPath);if(existing){if(!receipt||sha(await readBytes(existing))!==receipt.sha256)issues.push(issue('target-exists','目标已存在或本批文件已被编辑：'+row.targetPath,row.targetPath,'error'));}
+      else if(receipt)issues.push(issue('created-file-missing','本批已创建文件后来被删除：'+row.targetPath,row.targetPath,'error'));
+      if(row.kind==='source')try{const meta=metadataOf(utf8(decode(row.base64)),parseYaml);if(typeof meta.id==='string'&&meta.id){const same=(ids.get(meta.id)||[]).filter(path=>path!==row.targetPath||!receipt);if(same.length||newIds.has(meta.id))issues.push(issue('id-conflict','题目 ID 已存在或批内重复：'+meta.id,row.targetPath,'error',{relatedPaths:[...same,...(newIds.has(meta.id)?[newIds.get(meta.id)]:[])]}));newIds.set(meta.id,row.targetPath);}}catch(error){issues.push(issue('metadata-invalid',error.message,row.targetPath,'error'));}}
+    return {issues,owned};}
+  async function inspectBatch(batchId,options={}){const batch=await loadBatch(batchId),state=await preflight(batch,options);return {...batch,issues:[...batch.issues,...state.issues],commitLog:await events(batchId)};}
+  async function commitBatch(batchId,{confirmed=false,...options}={}) {if(confirmed!==true)throw fail('LIBRARY_CONFIRM','核对批次后须明确确认入库');return serial(async()=>{
+    let writingPath=null,changed=false;const refs=[];
+    const current=()=>{check(options);if(changed)throw fail('LIBRARY_CHANGED','提交期间题库发生变化，请重新核对批次');};
+    if(vault.on&&vault.offref)for(const type of ['create','modify','delete','rename'])refs.push(vault.on(type,(file,oldPath)=>{if(type==='create'&&(file?.path===writingPath||writingPath&&Array.isArray(file?.children)&&writingPath.startsWith(file.path+'/')))return;if([file?.path,oldPath].some(path=>typeof path==='string'&&!path.startsWith('Mathsemble/')))changed=true;}));
+    try {
+    current();const batch=await loadBatch(batchId);if(batch.status==='blocked'||batch.issues.some(row=>row.severity==='error'))throw fail('LIBRARY_BLOCKED','批次存在阻断问题，原件保留但不可提交');
+    const state=await preflight(batch,options);current();if(state.issues.length)return {status:'conflict',batchId,issues:state.issues,created:[]};const created=[];
+    for(const row of batch.files){check(options);if(state.owned.has(row.targetPath))continue;
+      const staged=vault.getAbstractFileByPath(row.stagePath);if(!staged||sha(await readBytes(staged))!==row.sha256)throw fail('LIBRARY_INTEGRITY','暂存候选发生变化，未提交');
+      // Persist intent first. A rejected create may have written bytes: without
+      // an acknowledged created receipt it remains unverified, never auto-owned.
+      await event(batchId,'intent',{path:row.targetPath,sha256:row.sha256});current();
+      try {const bytes=await readBytes(staged);if(sha(bytes)!==row.sha256)throw fail('LIBRARY_INTEGRITY','暂存候选变化');current();writingPath=row.targetPath;await create(row.targetPath,bytes);writingPath=null;await event(batchId,'created',{path:row.targetPath,sha256:row.sha256});created.push(row.targetPath);}
+      catch(error){return {status:'partial',batchId,created,issues:[issue('write-unverified','创建结果需核对，未覆盖或删除：'+error.message,row.targetPath,'error')]};}
+    }
+    current();await event(batchId,'committed',{paths:batch.files.map(row=>row.targetPath)});return {status:'complete',batchId,created,issues:[]};
+    }finally{for(const ref of refs)vault.offref(ref);}
+  });}
+  async function undoBatch(batchId,{confirmed=false,...options}={}){if(confirmed!==true)throw fail('LIBRARY_CONFIRM','须明确确认撤销本批创建文件');return serial(async()=>{
+    const batch=await loadBatch(batchId),state=await preflight(batch,options),removed=[],issues=[];
+    for(const [path,receipt]of state.owned){check(options);if(!batch.files.some(row=>row.targetPath===path&&row.sha256===receipt.sha256)){issues.push(issue('undo-ownership','日志与批次不匹配，未删除',path,'error'));continue;}
+      const file=vault.getAbstractFileByPath(path);if(!file){await event(batchId,'removed',{path,sha256:receipt.sha256});continue;}
+      if(sha(await readBytes(file))!==receipt.sha256||vault.getAbstractFileByPath(path)!==file||sha(await readBytes(file))!==receipt.sha256){issues.push(issue('undo-edited','本批文件已被编辑或替换，未删除',path,'error'));continue;}
+      check(options);try{await vault.delete(file,true);await event(batchId,'removed',{path,sha256:receipt.sha256});removed.push(path);}catch(error){issues.push(issue('undo-unverified','删除结果需核对：'+error.message,path,'error'));}
+    }
+    return {status:issues.length?'partial':'complete',batchId,removed,issues};
+  });}
+  async function exportTransfer({sourcePaths=[],planPaths=[],sidecarPaths=[],archivePaths=[],plan}={},options={}) {
+    check(options);const files=[],references=[],issues=[],seen=new Set();
+    async function capture(path,kind){pathOf(path);if(seen.has(path))return;seen.add(path);const file=vault.getAbstractFileByPath(path);if(!file||Array.isArray(file.children)){issues.push(issue('missing-file','缺少待封装文件',path,'error'));return;}
+      const bytes=await readBytes(file);check(options);if(vault.getAbstractFileByPath(path)!==file||sha(await readBytes(file))!==sha(bytes))throw fail('LIBRARY_CHANGED','封装期间文件变化：'+path);files.push(fileRecord(path,bytes,kind));
+      if(kind==='asset'&&/\.svg$/i.test(path)&&/(?:href\s*=\s*["']\s*(?:https?:|\/\/)|url\(\s*["']?(?:https?:|\/\/))/i.test(bytes.toString('utf8')))issues.push(issue('svg-external-dependency','SVG 含未封装外部引用',path,'warning'));
+      if(kind==='source')for(const dep of await declarations(utf8(bytes),path)){references.push({sourcePath:path,target:dep.target,resolvedPath:dep.resolvedPath,syntax:dep.syntax,status:dep.status});if(dep.resolvedPath&&dep.status!=='unsupported')await capture(dep.resolvedPath,/\.md$/i.test(dep.resolvedPath)?'source':'asset');else issues.push(issue('unpacked-dependency','未封装依赖：'+(dep.target||dep.reasonCode),path,'warning'));}}
+    const plans=[];if(plan)plans.push({path:'plans/current.plan.json',plan:core.validatePlan(plan)});
+    for(const path of planPaths){await capture(path,'plan');const row=files.find(row=>row.path===path);if(row)plans.push({path,plan:core.validatePlan(JSON.parse(utf8(decode(row.base64))))});}
+    for(const row of plans){if(!seen.has(row.path)){files.push(fileRecord(row.path,json(row.plan),'plan'));seen.add(row.path);}for(const entry of row.plan.entries)if(entry.kind!=='section'){await capture(entry.sourcePath,'source');const source=files.find(file=>file.path===entry.sourcePath);if(source)source.sourceKind=entry.kind;}}
+    for(const path of sourcePaths)await capture(path,'source');for(const path of sidecarPaths)await capture(path,'sidecar');
+    for(const path of archivePaths){const node=vault.getAbstractFileByPath(path);if(Array.isArray(node?.children)){const walk=async folder=>{for(const child of folder.children){if(Array.isArray(child.children))await walk(child);else await capture(child.path,'archive');}};await walk(node);}else await capture(path,'archive');}
+    checkedFiles(files);check(options);const body={schemaVersion:1,format:TRANSFER,packageId:newId(),createdAt:timestamp(),files,references,issues};return {package:{...body,integrity:objectHash(body)},issues,status:issues.length?'partial':'complete'};
+  }
+  const stageTransfer=(value,{targetRoot='导入题库',idMap={},...options}={})=>stageImport({profile:TRANSFER,targetRoot,idMap,files:[{path:'transfer.json',text:JSON.stringify(value)}]},options);
+  return {diagnose,stageImport,listBatches,loadBatch,inspectBatch,commitBatch,undoBatch,exportTransfer,stageTransfer,
+    openSource:path=>assemblyService.openSource(path),profiles:['markdown',PROFILE,TRANSFER],limits:{maxFiles:MAX_FILES,maxBytes:MAX_BYTES}};
+}
+module.exports={createLibraryService,analyzeLibrary,validateTransferPackage};
+
+return module.exports; })();
+const mwbAssemblyLibraryUi = (() => { const module = {exports:{}};
+'use strict';
+
+module.exports=function createLibraryModal({Modal,Notice,service,getPlan}={}) {
+  return class LibraryModal extends Modal {
+    constructor(app){super(app);this.libraryEditor=true;this.closed=false;this.busy=false;this.batch=null;this.transfer=null;}
+    el(tag,parent,text){const node=this.contentEl.ownerDocument.createElement(tag);if(text!==undefined)node.textContent=String(text);parent?.appendChild(node);return node;}
+    button(parent,text,fn){const button=this.el('button',parent,text);button.type='button';button.onclick=()=>{if(!button.disabled&&!this.closed)void this.action(text,fn);};return button;}
+    field(parent,label,tag='input'){const wrapper=this.el('label',parent);this.el('span',wrapper,label);const node=this.el(tag,wrapper);node.setAttribute('aria-label',label);return node;}
+    message(text,error=false){if(this.closed)return;this.status.textContent=text;this.status.classList.toggle('is-error',error);}
+    async action(label,fn){if(this.closed||this.busy)return;this.busy=true;this.controller=new AbortController();this.controls();this.message(label+'…');const controller=this.controller;
+      try{return await fn({signal:controller.signal,isCurrent:()=>!this.closed&&this.controller===controller&&!controller.signal.aborted});}
+      catch(error){this.message(error.message||String(error),error.name!=='AbortError');}
+      finally{if(this.controller===controller)this.controller=null;this.busy=false;if(!this.closed)this.controls();}}
+    controls(){for(const node of this.contentEl.querySelectorAll('input,select,button'))node.disabled=this.busy;if(this.commitButton)this.commitButton.disabled=this.busy||!this.batch||!this.confirm.checked||this.batch.status==='blocked'||this.batch.issues.some(row=>row.severity==='error');if(this.undoButton)this.undoButton.disabled=this.busy||!this.batch||!this.confirm.checked;}
+    async onOpen(){this.modalEl.classList.add('mwb-library-modal');this.contentEl.classList.add('mwb-library');this.el('h2',this.contentEl,'题库诊断与待入库');
+      this.el('p',this.contentEl,'先核对原件、问题与损耗报告，再确认创建新文件。不会自动合并重复题、改号或覆盖已有材料。');
+      const nav=this.el('div',this.contentEl);this.panels={};for(const [id,label]of [['diagnose','集中诊断'],['batch','待入库批次'],['transfer','材料包']]){this.button(nav,label,async()=>this.show(id));const panel=this.el('section',this.contentEl);panel.dataset.libraryPanel=id;this.panels[id]=panel;}
+      this.status=this.el('p',this.contentEl,'选择操作。');this.status.setAttribute('role','status');
+      const diag=this.panels.diagnose;this.button(diag,'扫描当前题库',options=>this.scan(options));this.diagnosticList=this.el('div',diag);
+      const batch=this.panels.batch;this.profile=this.field(batch,'输入 profile','select');for(const [value,label]of [['markdown','Markdown 与本地图片'],['mathsemble-question-json-v1','Mathsemble 结构化 JSON v1'],['mathsemble-transfer-v1','Mathsemble 材料包 v1']])this.el('option',this.profile,label).value=value;
+      this.el('p',batch,'结构化 JSON v1：{schemaVersion:1,items:[{path,metadata,markdown}],assets?:[{path,base64,sha256?}]}。metadata 原样保留；未映射字段另列报告。未支持 Word／PDF／OCR／QTI。');
+      this.inputFiles=this.field(batch,'选择待入库文件');this.inputFiles.type='file';this.inputFiles.multiple=true;
+      this.targetRoot=this.field(batch,'源卡目标目录');this.targetRoot.value='导入题库';
+      this.idMap=this.field(batch,'显式 ID 映射（JSON，可留空）','textarea');this.idMap.placeholder='{"冲突旧ID":"人工确认的新ID"}';
+      this.button(batch,'保存为待入库批次',options=>this.stage(options));
+      this.batchSelect=this.field(batch,'已暂存批次','select');this.button(batch,'刷新批次列表',()=>this.refresh());this.button(batch,'打开批次',options=>this.openBatch(this.batchSelect.value,options));
+      this.batchSummary=this.el('div',batch);this.confirm=this.field(batch,'已核对问题与损耗，确认创建／撤销本批文件');this.confirm.type='checkbox';this.confirm.onchange=()=>this.controls();
+      this.commitButton=this.button(batch,'确认入库',options=>this.commit(options));this.undoButton=this.button(batch,'撤销本批创建',options=>this.undo(options));
+      const transfer=this.panels.transfer;this.el('p',transfer,'导出当前编排所引用源卡、本地图片与方案。含教师答案和隐藏资源，请作为教师私有材料保管。外链、未知依赖及历史旁车内部路径会明确报告；本格式不是 QTI。');
+      this.sidecars=this.field(transfer,'另携带旁车路径（每行一个，可留空）','textarea');this.archives=this.field(transfer,'另携带归档目录（每行一个，可留空）','textarea');
+      this.button(transfer,'封装当前编排',options=>this.pack(options));this.packageSummary=this.el('div',transfer);this.packageText=this.field(transfer,'材料包 JSON','textarea');this.packageText.rows=10;
+      this.button(transfer,'下载材料包 JSON',()=>this.download());this.button(transfer,'将此材料包暂存待入库',options=>this.stagePackage(options));
+      this.show('diagnose');await this.action('读取批次列表',()=>this.refresh());this.controls();}
+    show(id){for(const [name,panel]of Object.entries(this.panels))panel.hidden=name!==id;}
+    listIssues(parent,issues){const list=this.el('ul',parent);for(const row of issues){const item=this.el('li',list,(row.severity==='error'?'阻断：':'')+row.message+(row.path?' · '+row.path:''));if(row.path?.endsWith('.md'))this.button(item,'打开原文',()=>service.openSource(row.path));}return list;}
+    async scan(options){const report=await service.diagnose(options);if(this.closed)return;this.diagnosticList.replaceChildren();this.el('p',this.diagnosticList,report.counts.items+' 份素材，'+report.issues.length+' 项诊断。疑似重复仅为人工核对候选。');this.listIssues(this.diagnosticList,report.issues);this.message('诊断完成，未修改源文。');}
+    async refresh(){const batches=await service.listBatches();if(this.closed)return;const value=this.batchSelect.value;this.batchSelect.replaceChildren();this.el('option',this.batchSelect,'选择批次').value='';for(const batch of batches)this.el('option',this.batchSelect,batch.batchId+' · '+batch.status+' · '+batch.count+' 文件').value=batch.batchId;this.batchSelect.value=this.batch?.batchId||value;}
+    async stage(options){if(!this.inputFiles.files.length)throw Error('先选择原件');const files=[];for(const file of this.inputFiles.files){const bytes=new Uint8Array(await file.arrayBuffer());let raw='';for(let i=0;i<bytes.length;i+=32768)raw+=String.fromCharCode(...bytes.subarray(i,i+32768));files.push({path:file.webkitRelativePath||file.name,base64:btoa(raw)});}
+      const batch=await service.stageImport({profile:this.profile.value,files,targetRoot:this.targetRoot.value,idMap:this.idMap.value.trim()?JSON.parse(this.idMap.value):{}},options);if(this.closed)return;await this.refresh();await this.openBatch(batch.batchId,options);this.message('原件与候选已暂存；尚未进入素材目录。');}
+    async openBatch(id,options={}){if(!id)throw Error('先选择批次');const batch=await service.inspectBatch(id,options);if(this.closed)return;this.batch=batch;this.confirm.checked=false;this.show('batch');this.batchSummary.replaceChildren();this.el('h3',this.batchSummary,batch.batchId+' · '+batch.status);this.el('p',this.batchSummary,batch.originals.length+' 份原件，'+batch.files.length+' 个候选文件；原件摘要与候选摘要分别保存。');this.listIssues(this.batchSummary,batch.issues);
+      const losses=this.el('details',this.batchSummary);this.el('summary',losses,'损耗、未知字段及映射报告（'+batch.lossReport.length+'）');for(const loss of batch.lossReport)this.el('p',losses,(loss.path||'')+' '+(loss.field||'')+'：'+loss.disposition);
+      const files=this.el('details',this.batchSummary);this.el('summary',files,'候选路径与 ID／资源映射');for(const row of batch.files)this.el('p',files,row.path+' → '+row.targetPath);this.el('pre',files,JSON.stringify(batch.idMap,null,2));
+      const log=this.el('details',this.batchSummary);this.el('summary',log,'提交与撤销日志');this.el('pre',log,JSON.stringify(batch.commitLog,null,2));this.controls();}
+    async commit(options){if(!this.confirm.checked||!this.batch)throw Error('先核对并确认本批材料');const result=await service.commitBatch(this.batch.batchId,{...options,confirmed:true});if(this.closed)return;await this.openBatch(this.batch.batchId,options);this.message(result.status==='complete'?'本批入库完成；仅创建新文件。':'入库未完整完成，请查看冲突／日志；已创建文件保留。',result.status!=='complete');if(result.issues?.length)this.listIssues(this.batchSummary,result.issues);}
+    async undo(options){if(!this.confirm.checked||!this.batch)throw Error('先核对并确认撤销');const result=await service.undoBatch(this.batch.batchId,{...options,confirmed:true});if(this.closed)return;await this.openBatch(this.batch.batchId,options);this.message(result.status==='complete'?'已撤销本批确认创建且内容未变的文件；原件与日志保留。':'部分文件无法撤销；已编辑或归属不明的材料未删除。',result.status!=='complete');if(result.issues?.length)this.listIssues(this.batchSummary,result.issues);}
+    async pack(options){const plan=await getPlan?.();if(!plan)throw Error('先打开包含素材的编排方案');const lines=node=>node.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);const result=await service.exportTransfer({plan,sidecarPaths:lines(this.sidecars),archivePaths:lines(this.archives)},options);if(this.closed)return;this.transfer=result.package;this.packageText.value=JSON.stringify(result.package);this.packageSummary.replaceChildren();this.el('p',this.packageSummary,result.package.files.length+' 个文件；'+(result.status==='complete'?'已捕获范围完整。':'存在未封装依赖或其他缺口，请核对。'));this.listIssues(this.packageSummary,result.issues);this.message('材料包已准备；未写入源文或正式素材目录。');}
+    download(){if(!this.packageText.value)throw Error('先封装或粘贴材料包');const blob=new Blob([this.packageText.value],{type:'application/json'}),url=URL.createObjectURL(blob),link=this.el('a',this.contentEl,'');link.href=url;link.download='mathsemble-materials.json';link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+    async stagePackage(options){const value=JSON.parse(this.packageText.value),batch=await service.stageTransfer(value,{...options,targetRoot:this.targetRoot.value,idMap:this.idMap.value.trim()?JSON.parse(this.idMap.value):{}});if(this.closed)return;await this.refresh();await this.openBatch(batch.batchId,options);this.message('材料包已校验并暂存，确认前不会创建正式材料。');}
+    onClose(){this.closed=true;this.controller?.abort();this.controller=null;this.batch=null;this.transfer=null;this.contentEl.replaceChildren();}
+  };
+};
+
+return module.exports; })();
+const mwbAssemblyPresentation = (() => { const module = {exports:{}};
+'use strict';
+
+// The compiled document and its source map are one snapshot. Never split a
+// question at a heading guessed from its text, or put a hidden teacher DOM
+// behind the student view.
+function slidesFromCompilation(plan, prepared, outputPath = 'Mathsemble/讲义/__presentation__.md') {
+  if (!plan || !Array.isArray(plan.entries) || typeof prepared?.markdown !== 'string' || !Array.isArray(prepared.sourceMap))
+    throw new Error('缺少逐题展示的完整来源快照');
+  const entries = plan.entries.filter(entry => entry.kind !== 'section');
+  if (!entries.length || prepared.sourceMap.length !== entries.length) throw new Error('逐题展示的来源数量不一致');
+  const lines = prepared.markdown.split('\n'), slides = [];
+  let previousEnd = 0, section = '', cursor = 0;
+  for (const entry of plan.entries) {
+    if (entry.kind === 'section') { section = entry.title; continue; }
+    const range = prepared.sourceMap[cursor++];
+    if (!range || range.entryId !== entry.entryId || range.kind !== entry.kind || typeof range.path !== 'string' || !range.path ||
+        !Number.isInteger(range.startLine) || !Number.isInteger(range.endLine) || range.startLine <= previousEnd ||
+        range.startLine < 1 || range.endLine < range.startLine || range.endLine > lines.length)
+      throw new Error('逐题展示的来源映射失效，请重新生成');
+    const markdown = lines.slice(range.startLine - 1, range.endLine).join('\n');
+    if (!markdown.trim()) throw new Error('展示内容为空');
+    slides.push(Object.freeze({entryId:entry.entryId,kind:entry.kind,title:entry.title || range.path,
+      section,sourcePath:range.path,renderPath:outputPath,markdown}));
+    previousEnd = range.endLine;
+  }
+  return Object.freeze(slides);
+}
+
+function createPresentationModal({Modal,Component,core,service,projectMarkdown,renderMarkdown}) {
+  return class PresentationModal extends Modal {
+    constructor(app,plugin,view) {
+      super(app); this.plugin=plugin; this.view=view; this.closed=true; this.position=0;
+      this.revealed=false; this.generation=0; this.invalid=false; this.slides=[];
+    }
+    el(tag,parent,className,text) {
+      const node=this.contentEl.ownerDocument.createElement(tag);
+      if(className)node.className=className;
+      if(text!==undefined)node.textContent=String(text);
+      parent?.appendChild(node); return node;
+    }
+    button(parent,label,action) {
+      const button=this.el('button',parent,'',label); button.type='button';
+      button.addEventListener('click',()=>{if(!button.disabled)void Promise.resolve().then(action).catch(error=>this.fail(error));});
+      return button;
+    }
+    samePlan() { return !this.view.closed && JSON.stringify(this.view.plan)===this.planKey; }
+    clearRender() {
+      this.generation++; this.controller?.abort(); this.controller=null;
+      if(this.owner) {
+        if(this.plugin.removeChild)this.plugin.removeChild(this.owner); else this.owner.unload?.();
+        this.owner=null;
+      }
+    }
+    fail(error) {
+      if(this.closed)return;
+      this.invalid=true; this.revealed=false; this.clearRender(); this.body?.replaceChildren();
+      this.status.textContent=String(error?.message||error); this.status.classList.add('is-error'); this.controls();
+    }
+    controls() {
+      if(!this.previous)return;
+      const disabled=this.closed||this.invalid||!this.slides.length;
+      this.previous.disabled=disabled||this.position===0;
+      this.next.disabled=disabled||this.position===this.slides.length-1;
+      this.reveal.disabled=disabled;
+      this.reveal.textContent=this.revealed?'隐藏答案':'揭示当前答案';
+      this.reveal.setAttribute('aria-pressed',String(this.revealed));
+      this.counter.textContent=this.slides.length?`${this.position+1} / ${this.slides.length}`:'准备中';
+    }
+    async onOpen() {
+      this.closed=false; this.contentEl.replaceChildren(); this.modalEl.classList.add('mwb-presentation-modal');
+      const header=this.el('header',this.contentEl,'mwb-presentation-header');
+      this.el('h2',header,'','逐题投影');
+      this.counter=this.el('span',header,'mwb-presentation-counter');
+      this.button(header,'返回编排',()=>this.close());
+      const nav=this.el('nav',this.contentEl,'mwb-presentation-nav'); nav.setAttribute('aria-label','投影控制');
+      this.previous=this.button(nav,'上一项',()=>this.move(-1));
+      this.reveal=this.button(nav,'揭示当前答案',()=>this.toggle());
+      this.next=this.button(nav,'下一项',()=>this.move(1));
+      this.el('p',this.contentEl,'mwb-assembly-muted','← / → 翻页，A 揭示或隐藏当前答案；每次换页恢复隐藏。教师内容按方案的教师版选项显示。');
+      this.status=this.el('p',this.contentEl,'mwb-presentation-status','正在核对来源…'); this.status.setAttribute('role','status');
+      this.body=this.el('section',this.contentEl,'mwb-typography mwb-presentation-body'); this.body.tabIndex=0;
+      this.body.setAttribute('aria-label','当前展示内容');
+      this.onKey=event=>{
+        if(event.defaultPrevented||event.altKey||event.ctrlKey||event.metaKey||event.isComposing||
+            event.target.closest?.('input,textarea,select,button,a,[contenteditable="true"]'))return;
+        const action={ArrowLeft:()=>this.move(-1),PageUp:()=>this.move(-1),ArrowRight:()=>this.move(1),PageDown:()=>this.move(1),
+          Home:()=>this.show(0),End:()=>this.show(this.slides.length-1),a:()=>this.toggle(),A:()=>this.toggle()}[event.key];
+        if(action){event.preventDefault();void Promise.resolve().then(action).catch(error=>this.fail(error));}
+      };
+      this.contentEl.addEventListener('keydown',this.onKey); this.controls();
+      try {
+        this.plan=core.validatePlan(this.view.plan); this.planKey=JSON.stringify(this.view.plan);
+        this.guard=service.beginSourceCheck(this.view.settings,()=>this.fail(new Error('素材已变化，请返回编排刷新后重新投影。')));
+        const outputPath='Mathsemble/讲义/__presentation__.md';
+        this.prepareController=new AbortController();
+        const prepared=await service.compile(this.plan,this.view.index,{config:this.view.settings,outputPath,signal:this.prepareController.signal});
+        if(this.closed)return;
+        this.guard.assertCurrent();
+        if(!this.samePlan())throw new Error('编排已变化，请重新打开逐题投影');
+        this.slides=slidesFromCompilation(this.plan,prepared,outputPath);
+        await this.show(0);
+      } catch(error){this.fail(error);}
+    }
+    async move(delta) { return this.show(this.position+delta); }
+    async toggle() { if(!this.invalid&&this.slides.length)return this.show(this.position,!this.revealed); }
+    async show(position,revealed=false) {
+      if(this.closed||this.invalid||position<0||position>=this.slides.length)return;
+      if(!this.samePlan()){this.fail(new Error('编排已变化，请重新打开逐题投影'));return;}
+      this.guard.assertCurrent(); this.clearRender();
+      const generation=this.generation,slide=this.slides[position];
+      this.position=position;this.revealed=!!revealed;this.controls();
+      // Remove the old answer immediately, including during a slow render.
+      this.body.replaceChildren(); this.status.classList.remove('is-error'); this.status.textContent='正在显示…';
+      this.body.dataset.entryId=slide.entryId; this.body.dataset.mode=revealed?'teacher':'student';
+      const Controller=this.contentEl.ownerDocument.defaultView?.AbortController||globalThis.AbortController;
+      this.controller=Controller?new Controller():null; const signal=this.controller?.signal;
+      const owner=Component?new Component():null; this.owner=owner;
+      if(owner){if(this.plugin.addChild)this.plugin.addChild(owner);else owner.load?.();}
+      const staging=this.el('div',this.body,'mwb-presentation-slide');
+      staging.style.visibility='hidden';
+      try {
+        if(typeof projectMarkdown!=='function'||typeof renderMarkdown!=='function')throw new Error('课堂内容投影器未配置');
+        const markdown=await projectMarkdown(slide.markdown,revealed?'teacher':'student',this.plan.output?.solutionOptions||{});
+        if(typeof markdown!=='string')throw new Error('课堂内容投影结果无效');
+        await renderMarkdown(markdown,staging,slide.renderPath,owner,signal);
+        if(this.closed||this.invalid||signal?.aborted||generation!==this.generation)return;
+        this.guard.assertCurrent();
+        if(!this.samePlan())throw new Error('编排已变化，请重新打开逐题投影');
+        staging.style.removeProperty('visibility'); this.body.scrollTop=0;
+        this.status.textContent=[slide.section,slide.title,revealed?'答案已揭示':'答案已隐藏'].filter(Boolean).join(' · ');
+        this.body.focus({preventScroll:true});
+      }catch(error){if(!this.closed&&generation===this.generation&&!signal?.aborted)this.fail(error);}
+    }
+    onClose() {
+      this.closed=true; this.prepareController?.abort();this.clearRender();this.guard?.dispose();this.guard=null;
+      this.contentEl.removeEventListener('keydown',this.onKey);this.contentEl.replaceChildren();
+      this.slides=[];this.plan=null;
+    }
+  };
+}
+
+module.exports={slidesFromCompilation,createPresentationModal};
 
 return module.exports; })();
 const mwbAssemblyBlueprintUi = (() => { const module = {exports:{}};
@@ -7689,7 +8669,8 @@ const mwbAssemblyView = (() => { const module = {exports:{}};
 
 // Native Obsidian view. UI state belongs to the workspace; content writes are
 // delegated to explicit service actions. No source Markdown is mutated here.
-module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily}) {
+module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily,
+  usageService,openUsage,openLibrary,openPresentation}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
   const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
@@ -7736,12 +8717,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.inlinePreviewGroups = new Map();
       this.inlinePreviewQueue = [];
       this.inlinePreviewActive = 0;
+      this.usageFilter={classId:'',courseId:'',mode:'all',days:30};
+      this.usageGeneration=0;this.usageLedger=null;this.usageState='idle';this.usageStats=new Map();
     }
     getViewType() { return VIEW_TYPE; }
     getDisplayText() { return this.plan?.title || '选材与编排'; }
     getIcon() { return 'layers'; }
     getState() {
-      return {plan:this.plan,planPath:this.planPath,dirty:this.dirty,filters:this.filters,workspaceMode:this.workspaceMode};
+      return {plan:this.plan,planPath:this.planPath,dirty:this.dirty,filters:this.filters,usageFilter:this.usageFilter,workspaceMode:this.workspaceMode};
     }
     async setState(state, result) {
       if (state?.plan) {
@@ -7757,8 +8740,13 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         } catch (error) { this.notice('无法恢复旧编排：' + errorText(error)); }
       }
       if(['library','arrangement'].includes(state?.workspaceMode))this.workspaceMode=state.workspaceMode;
+      if(state?.usageFilter&&typeof state.usageFilter==='object'){
+        const raw=state.usageFilter;
+        this.usageFilter={classId:typeof raw.classId==='string'?raw.classId.slice(0,200):'',courseId:typeof raw.courseId==='string'?raw.courseId.slice(0,200):'',
+          mode:['all','unused','taught-not-assigned'].includes(raw.mode)?raw.mode:'all',days:Number.isSafeInteger(raw.days)&&raw.days>0&&raw.days<=36500?raw.days:30};
+      }
       await super.setState?.(state, result);
-      if (!this.closed && this.root) this.render();
+      if (!this.closed && this.root) {this.render();await this.refreshUsage();}
     }
     notice(message) { if (Notice) new Notice(message, 6000); }
     el(tag, parent, className, text) {
@@ -7861,6 +8849,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.app.workspace.requestSaveLayout?.();
     }
     stateChanged() {
+      if(this.presentationModal&&!this.presentationModal.closed)this.presentationModal.fail(new Error('编排已变化，请重新打开逐题投影'));
       this.clearArrangementDrag();
       this.clearSelection('编排已变化，请重新生成候选。');
       this.dirty = true;
@@ -8029,6 +9018,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const knowledge = this.plan.entries.filter(entry => entry.kind === 'knowledge').length;
       const sections=this.plan.entries.filter(entry=>entry.kind==='section').length;
       this.summaryEl.textContent = [`已选 ${questions} 题`,knowledge?`${knowledge} 篇知识`:'',sections?`${sections} 个分区`:''].filter(Boolean).join(' · ');
+      const scored=this.plan.entries.filter(entry=>entry.kind==='question'&&typeof entry.score==='number');
+      if(scored.length){const sum=scored.reduce((total,entry)=>total+Math.round(entry.score*100),0)/100;this.summaryEl.textContent+=` · ${scored.length===questions?'总分':'已设分值小计'} ${sum} 分`;}
       this.summaryEl.setAttribute('aria-label',`查看预览编排：${this.plan.entries.length} 项，${questions} 道题，${knowledge} 篇知识，${sections} 个分区`);
       if(this.saveStateEl){
         this.saveStateEl.textContent=this.dirty?'方案未保存':this.planPath?'方案已保存':'新方案';
@@ -8101,6 +9092,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.closed = true;
       this.blueprintModal?.close();
       this.familyModal?.close();
+      this.usageModal?.close();this.libraryModal?.close();this.presentationModal?.close();
+      this.usageGeneration++;
       this.clearArrangementDrag();
       this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
@@ -8253,6 +9246,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.el('p',menuBody,'mwb-assembly-muted',planSaveHint);
       this.renderPlanSettings(menuBody);
       const menuActions=this.el('div',menuBody,'mwb-assembly-menu-actions');
+      if(openUsage)this.button(menuActions,'实际使用账本',()=>openUsage(this));
+      if(openLibrary)this.button(menuActions,'题库诊断与入库',()=>openLibrary(this));
+      if(openPresentation)this.button(menuActions,'逐题投影',()=>openPresentation(this));
       this.button(menuActions, '新建', () => {
         if (this.actionBusy || !this.confirmDiscard('new','新建')) return;
         this.plan = core.createPlan(); this.planPath = null; this.dirty = false; this.pendingBlueprintRun=null;
@@ -8321,6 +9317,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.el('h4', filterHeader, '', '筛选条件');
       this.button(filterHeader,'清除筛选',()=>{
         this.filters={kind:this.filters.kind,query:''};this.limit=100;
+        this.resetUsageFilter();
         if (this.searchInput) this.searchInput.value='';
         this.populateFilters();this.renderResults();
       },'mwb-assembly-text-button');
@@ -8337,6 +9334,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       this.advancedFilters.open=['difficulty','role','method','source'].some(key=>this.filters[key]);
       this.populateFilters();
+      if(usageService)this.renderUsageFilters(this.left);
       this.tree = this.el('div',this.left,'mwb-assembly-tree');
       this.renderTree();
     }
@@ -8363,6 +9361,51 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         }
         select.value=current;
       }
+    }
+    usageContext() { return {classId:this.usageFilter.classId.trim(),courseId:this.usageFilter.courseId.trim()}; }
+    resetUsageFilter() {
+      this.usageFilter.mode='all';const select=this.root?.querySelector('[data-usage-field="mode"]');if(select)select.value='all';
+      this.usageGeneration++;this.app.workspace.requestSaveLayout?.();
+    }
+    async refreshUsage() {
+      if(!usageService)return;
+      const generation=++this.usageGeneration,context=this.usageContext();
+      this.usageLedger=null;this.usageStats=new Map();
+      this.clearSelection('使用记录已变化，请重新生成候选。');
+      if(!context.classId&&!context.courseId){this.usageState='idle';this.usageError='请填写班级或课程代号';if(!this.closed)this.renderResults();return;}
+      this.usageState='loading';if(!this.closed)this.renderResults();
+      try {
+        const ledger=await usageService.loadUsage({context});
+        if(this.closed||generation!==this.usageGeneration)return;
+        this.usageLedger=ledger;this.usageState='ready';this.usageNow=new Date().toISOString();
+        this.usageStats=new Map(usageService.summarizeUsage(this.index.items,ledger,{context,now:this.usageNow}).map(row=>[row.item.key,row]));
+      }catch(error){if(!this.closed&&generation===this.usageGeneration){this.usageState='error';this.usageError=errorText(error);}}
+      if(!this.closed&&generation===this.usageGeneration)this.renderResults();
+    }
+    usageIndex(index=this.index,ledger=this.usageLedger) {
+      if(!usageService||this.usageFilter.mode==='all')return index;
+      if(!ledger||this.usageState!=='ready')throw new Error(this.usageState==='loading'?'正在读取使用记录，请稍候':this.usageError||'请先填写班级或课程并刷新使用记录');
+      const eligible=new Set(usageService.filterUsage(index.items,ledger,{context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days}));
+      // Keep knowledge nodes for normal knowledge-tag resolution. Filtering the
+      // question pool must not change the meaning of a shared knowledge tag.
+      return {...index,items:index.items.filter(item=>item.kind==='knowledge'||eligible.has(item))};
+    }
+    renderUsageFilters(parent) {
+      const panel=this.el('details',parent,'mwb-assembly-usage-filters');panel.open=this.usageFilter.mode!=='all';
+      this.el('summary',panel,'','实际使用筛选');
+      const body=this.el('div',panel);
+      for(const [key,label] of [['classId','班级代号'],['courseId','课程代号']]){
+        const input=this.field(body,label);input.maxLength=200;input.value=this.usageFilter[key];input.dataset.usageField=key;
+        input.addEventListener('change',()=>{this.usageFilter[key]=input.value.trim();this.app.workspace.requestSaveLayout?.();void this.refreshUsage();});
+      }
+      const mode=this.field(body,'使用条件','select');mode.dataset.usageField='mode';
+      for(const [value,label] of [['all','不限'],['unused','本班／课程近期未用'],['taught-not-assigned','已讲但尚未布置']])this.el('option',mode,'',label).value=value;
+      mode.value=this.usageFilter.mode;mode.addEventListener('change',()=>{this.usageFilter.mode=mode.value;this.app.workspace.requestSaveLayout?.();void this.refreshUsage();});
+      const days=this.field(body,'近期天数');days.type='number';days.min='1';days.max='36500';days.step='1';days.value=String(this.usageFilter.days);days.dataset.usageField='days';
+      days.addEventListener('change',()=>{const value=Number(days.value);if(!Number.isSafeInteger(value)||value<1||value>36500){days.value=String(this.usageFilter.days);this.notice('请输入 1 至 36500 的整数天数');return;}this.usageFilter.days=value;this.app.workspace.requestSaveLayout?.();void this.refreshUsage();});
+      this.button(body,'刷新使用记录',()=>this.refreshUsage());
+      if(openUsage)this.button(body,'登记或查看使用',()=>openUsage(this));
+      this.el('p',body,'mwb-assembly-muted','班级和课程共同确定记录范围；含小问的部分使用也计为该题已用。筛选应用于选材和条件抽题，配额蓝图使用自己的条件。');
     }
     renderTree() {
       if (!this.tree) return;
@@ -8452,7 +9495,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.renderSelection();
       const previews=this.beginInlinePreviews('results');
       this.results.replaceChildren();
-      const items=core.filterItems(this.index,this.filters);
+      let items=[];
+      try{items=core.filterItems(this.usageIndex(),this.filters);}
+      catch(error){this.resultsSummary.textContent='使用筛选未就绪';this.emptyState(this.results,'使用记录待核对',errorText(error));return;}
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
       if(this.filters.familyId&&core.familyGroups){
         const family=core.familyGroups(this.index).groups.find(value=>value.familyId===this.filters.familyId);
@@ -8461,7 +9506,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(!items.length){
         const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再刷新素材。');
         if(Object.entries(this.filters).some(([key,value])=>key!=='kind'&&value))this.button(empty,'清除筛选',()=>{
-          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.searchInput.value='';this.populateFilters();this.renderResults();
+          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.resetUsageFilter();this.searchInput.value='';this.populateFilters();this.renderResults();
         });
         else if(!this.index.items.length)this.button(empty,'配置内容目录',()=>{this.configDetails.open=true;this.switchPane('filters');this.questionRootsInput.focus();});
       }
@@ -8473,6 +9518,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const info=[item.subject,item.kind==='question'?(typeNames[item.questionType]||item.questionType):'整篇知识',item.difficulty?`难度 ${item.difficulty}`:'',item.tier,item.role].filter(Boolean);
         const badges=this.el('div',row,'mwb-assembly-badges');
         for(const text of info)this.el('span',badges,'mwb-assembly-badge',text);
+        const usage=this.usageStats.get(item.key);
+        if(usage?.lastUsed)this.el('span',badges,'mwb-assembly-badge','本班／课程上次使用 '+new Date(usage.lastUsed).toLocaleDateString());
         const related=this.relatedKnowledge(item);
         if(related.length){const links=this.el('div',row,'mwb-assembly-muted mwb-assembly-card-related','关联知识：'+related.map(node=>node.title).join('、'));links.title=links.textContent;}
         this.addInlinePreview(previews,row,item);
@@ -8504,7 +9551,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
     }
     selectionContext() {
-      return JSON.stringify({filters:this.filters,plan:this.plan,count:this.selectionCount,scan:this.scanGeneration,settings:this.settings});
+      return JSON.stringify({filters:this.filters,usage:this.usageFilter,usageGeneration:this.usageGeneration,plan:this.plan,count:this.selectionCount,scan:this.scanGeneration,settings:this.settings});
     }
     selectionIsCurrent() {
       return !!this.selection && this.selection.index===this.index && this.selection.context===this.selectionContext();
@@ -8594,7 +9641,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(this.closed||this.actionBusy||this.scanBusy) return;
       if(this.filters.kind!=='question') return;
       try {
-        const result=core.selectQuestions(this.index,this.filters,this.plan,Number(this.selectionCount));
+        const result=core.selectQuestions(this.usageIndex(),this.filters,this.plan,Number(this.selectionCount));
         this.selection={...result,index:this.index,context:this.selectionContext()};
         this.selectionNotice='';this.renderSelection();
         this.setStatus(`已生成 ${result.items.length} 道候选题，核对后可加入编排。`);
@@ -8617,12 +9664,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           sourceCheck=service.beginSourceCheck(this.settings);
           this.selectionSourceCheck=sourceCheck;
           latest=await service.scan(this.settings);
+          let usageLedger=this.usageLedger;
+          if(usageService&&this.usageFilter.mode!=='all')usageLedger=await usageService.loadUsage({context:this.usageContext()});
           if(this.closed)return;
           if(this.selection!==selection||!this.selectionIsCurrent())
             throw new Error('筛选或编排已变化，请重新生成候选');
           sourceCheck.assertCurrent();
           const count=selection.items.length;
-          const next=core.addSelectedQuestions(this.plan,latest,this.filters,selection.items);
+          const next=core.addSelectedQuestions(this.plan,this.usageIndex(latest,usageLedger),this.filters,selection.items);
           this.index=latest;this.indexState='ready';this.selection=null;
           this.selectionNotice=`已将 ${count} 道题加入编排，可在“预览编排”调整顺序和角色。`;
           this.populateFilters();this.renderTree();this.setPlan(next);
@@ -8833,6 +9882,67 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       for(const node of [record.node,record.body]){group.resizeRecords.set(node,record);group.resizeObserver?.observe(node);}
       record.updateOverflow();
     }
+    renderEntryContentSettings(parent,row,entry,item,status) {
+      if(!service.updateEntryContent||entry.kind==='section')return;
+      const panel=this.el('details',parent,'mwb-assembly-part-settings');
+      this.el('summary',panel,'',entry.kind==='question'?'内容范围与本次分值':'知识小节范围');
+      this.el('p',panel,'mwb-assembly-muted','只保存本次编排的选择；启用分值或片段后为 v4 方案，旧方案请另存。');
+      let total;
+      if(entry.kind==='question'){
+        total=this.field(panel,'本次总分（可留空）');total.type='number';total.min='0';total.max='1000000';total.step='0.01';
+        total.value=entry.score==null?'':String(entry.score);total.dataset.arrangementField='score';total.dataset.arrangementMutate='true';
+      }
+      const choices=[];let parsed;
+      try{parsed=item&&core.listFragments?core.listFragments(item):null;}
+      catch(error){this.el('p',panel,'mwb-assembly-error',errorText(error));}
+      if(parsed?.supported&&!parsed.valid)this.el('p',panel,'mwb-assembly-error',parsed.issues.map(issue=>issue.message).join('；'));
+      else if(parsed?.supported){
+        this.el('p',panel,'mwb-assembly-muted',entry.kind==='question'?'勾选所需小问；自动保留共用题干。每个小问的分数全部填写或全部留空。':'勾选需要的小节；不按当前标题位置推断身份。');
+        for(const part of parsed.fragments){
+          const group=this.el('div',panel,'mwb-assembly-part-row');
+          const label=this.el('label',group,'mwb-assembly-check'),check=this.el('input',label);check.type='checkbox';
+          check.checked=!!entry.fragmentRef?.ids.includes(part.id);check.dataset.partId=part.id;check.dataset.arrangementMutate='true';
+          label.appendChild(this.contentEl.ownerDocument.createTextNode(part.title+' ['+part.id+']'));
+          let score;
+          if(entry.kind==='question'){
+            score=this.el('input',group);score.type='number';score.min='0';score.max='1000000';score.step='0.01';score.placeholder='小问分值';
+            score.setAttribute('aria-label',part.title+'分值');score.dataset.partScore=part.id;score.dataset.arrangementMutate='true';
+            score.value=entry.fragmentRef?.scores?.[part.id]==null?'':String(entry.fragmentRef.scores[part.id]);
+          }
+          choices.push({id:part.id,check,score});
+        }
+      }else this.el('p',panel,'mwb-assembly-muted','此来源未声明稳定片段，继续使用整题／整篇；需要截取时先在原文中按片段契约声明。');
+      if(entry.fragmentRef)this.el('p',panel,'mwb-assembly-muted','当前选用：'+entry.fragmentRef.ids.join('、'));
+      const apply=this.button(panel,'应用内容与分值',async()=>{
+        if(!row.isConnected||this.closed||this.actionBusy||this.scanBusy)return;
+        const selected=choices.filter(choice=>choice.check.checked),selectedIds=new Set(selected.map(choice=>choice.id));
+        const ids=[...(entry.fragmentRef?.ids||[]).filter(id=>selectedIds.has(id)),...selected.map(choice=>choice.id).filter(id=>!entry.fragmentRef?.ids.includes(id))];
+        let fragmentRef=ids.length?{kind:entry.kind==='question'?'question-part':'knowledge-section',ids}:null;
+        const patch={fragmentRef};
+        if(total)patch.score=total.value.trim()===''?null:Number(total.value);
+        if(fragmentRef&&entry.kind==='question'){
+          const scored=selected.filter(choice=>choice.score.value.trim()!=='');
+          if(scored.length&&scored.length!==selected.length)throw new Error('请填写所有已选小问分值，或将小问分值全部留空');
+          if(scored.length){fragmentRef.scores=Object.fromEntries(scored.map(choice=>[choice.id,Number(choice.score.value)]));delete patch.score;}
+        }
+        await this.applyEntryContent(entry.entryId,patch,row);
+      });apply.dataset.arrangementMutate='true';apply.dataset.boundary=String(status!=='ok'||parsed?.supported&&!parsed.valid);
+      if(entry.fragmentRef){
+        const whole=this.button(panel,'恢复整题／整篇',()=>this.applyEntryContent(entry.entryId,{fragmentRef:null,...(total?{score:null}:{})},row));
+        whole.dataset.arrangementMutate='true';
+      }
+    }
+    async applyEntryContent(entryId,patch,row) {
+      if(this.closed||!row.isConnected||this.actionBusy||this.scanBusy)return;
+      const plan=this.plan,config=JSON.stringify(this.settings);
+      await this.runAction('核对内容范围与分值',async()=>{
+        const result=await service.updateEntryContent(plan,entryId,patch,{config:this.settings,
+          isCurrent:()=>!this.closed&&this.plan===plan&&JSON.stringify(this.settings)===config});
+        if(this.closed||this.plan!==plan)return;
+        this.index=result.index;this.indexState='ready';this.setPlan(result.plan);
+        this.setStatus('已更新本次内容范围与分值；原题卡保持不变。');
+      });
+    }
     renderArrangement() {
       this.clearArrangementDrag();
       if(!this.arrangementList)return;
@@ -8915,6 +10025,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
             role.value=this.plan.entries.find(value=>value.entryId===entry.entryId)?.role||'';
           });
         }
+        if(entry.score!=null)this.el('span',header,'mwb-assembly-badge',entry.score+' 分');
+        if(entry.fragmentRef)this.el('span',header,'mwb-assembly-badge','选用 '+entry.fragmentRef.ids.length+' 个片段');
         const action=(parent,label,key,callback)=>{
           const button=this.button(parent,label,callback);button.dataset.arrangementAction=key;return button;
         };
@@ -8948,6 +10060,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         if(entry.kind!=='section'){
           const source=action(actions,'打开原文','source',()=>{if(row.isConnected)return service.openSource(item?.path||entry.sourcePath);});
           source.setAttribute('aria-label',`打开原文：${item?.path||entry.sourcePath}`);
+          this.renderEntryContentSettings(actions,row,entry,item,status);
         }
         if(entry.kind==='question'&&openFamily){
           const replace=action(actions,'同族换题','family',()=>{if(row.isConnected)openFamily(this,entry.entryId);});
@@ -8960,10 +10073,15 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.el('p',more,'mwb-assembly-muted',section?`第 ${sectionIndex+1} 个分区，共 ${sections.length} 个；整体移动标题及下方 ${section.end-section.start-1} 项内容，直到下一个分区。移除标题会保留内容。`:`第 ${index+1} 项，共 ${this.plan.entries.length} 项；位置包含题目、知识和分区。`);
         if(entry.kind!=='section'){
           this.el('div',more,'mwb-assembly-result-path',item?.path||entry.sourcePath);
-          const message={changed:'源文已变化。可打开原文核对，再点击“接受来源更新”。',missing:'找不到源文件，请恢复来源并刷新素材，或移除此项。',conflict:'来源身份冲突，请修正后刷新素材。'}[status];
+          const message={changed:'源文已变化。可打开原文核对，再点击“接受来源更新”。',missing:'找不到源文件，请恢复来源并刷新素材，或移除此项。',conflict:'来源身份冲突，请修正后刷新素材。', 'fragment-missing':'稳定片段已缺失；请恢复锚点或切回整题／整篇。','fragment-invalid':'来源片段契约有误，请打开原文核对。'}[status];
           if(message)this.el('p',row,'mwb-assembly-error',message);
           if(status==='ok'&&item){
-            const record=this.addInlinePreview(previews,row,item);
+            let previewItem=item;
+            if(entry.fragmentRef){
+              try{previewItem={...item,markdown:core.resolveFragment(item,entry.fragmentRef).markdown};}
+              catch(error){this.el('p',row,'mwb-assembly-error',errorText(error));return;}
+            }
+            const record=this.addInlinePreview(previews,row,previewItem);
             record.node.toggleAttribute('inert',!this.arrangementExpanded.has(entry.entryId));
             record.node.setAttribute('aria-label','已选内容正文');
             const expand=action(row,'展开全文','expand',()=>{
@@ -9003,6 +10121,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const index=await service.scan(this.settings);
         if(this.closed||generation!==this.scanGeneration)return;
         this.index=index;this.indexState='ready';this.limit=100;
+        if(usageService)await this.refreshUsage();
+        if(this.closed||generation!==this.scanGeneration)return;
         this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
         const issues=index.issues?.length||0;
         this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);
@@ -12096,12 +13216,35 @@ module.exports = class MathsemblePlugin extends Plugin {
             assemblyPreview:options.assemblyPreview,onReturnToAssembly:options.onReturnToAssembly,
             planSettings:options.planSettings,onApplyPlanSettings:options.onApplyPlanSettings}).open();
       }});
+    const usageService=mwbAssemblyUsage.createUsageService({vault:this.app.vault,core:mwbAssemblyCore,
+      scanIndex:options=>assemblyService.scan(options.config,options)});
+    const libraryService=mwbAssemblyLibrary.createLibraryService({vault:this.app.vault,core:mwbAssemblyCore,assemblyService,parseYaml,
+      collectMediaDependencies:mwbAssemblyMarkdown.collectMediaDependencies,
+      resolveDependency:(target,path)=>this.app.metadataCache.getFirstLinkpathDest(target,path)});
+    const UsageModal=mwbAssemblyUsageUi({Modal,Component,Notice,core:mwbAssemblyCore,service:usageService});
+    const PresentationModal=mwbAssemblyPresentation.createPresentationModal({Modal,Component,core:mwbAssemblyCore,service:assemblyService,
+      projectMarkdown:(markdown,mode,options)=>handoutPlan(markdown,mode,options).markdown.replace(/MWB_SOLUTION_SPACE_ANCHOR_\d+_END/g,''),
+      renderMarkdown:(markdown,container,path,owner,signal)=>mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
+    this.assemblyService=assemblyService;this.usageService=usageService;this.libraryService=libraryService;
     const BlueprintModal = mwbAssemblyBlueprintUi({Modal,Component,Notice,core:mwbAssemblyCore,engine:blueprintEngine,
       service:assemblyService,renderMarkdown:(markdown,container,path,owner,signal) =>
         mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
     const FamilyModal = mwbAssemblyFamilyUi({Modal,Component,core:mwbAssemblyCore,service:assemblyService,
       renderMarkdown:(markdown,container,path,owner,signal)=>mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
-    const AssemblyView = mwbAssemblyView({ItemView,Component,Notice,core:mwbAssemblyCore,
+    const AssemblyView = mwbAssemblyView({ItemView,Component,Notice,core:mwbAssemblyCore,usageService,
+      openUsage:view=>{
+        if(view.closed||view.actionBusy||view.scanBusy||view.usageModal&&!view.usageModal.closed)return;
+        view.usageModal=new UsageModal(this.app,this,view,{context:view.usageContext(),onChanged:()=>view.refreshUsage()});view.usageModal.open();
+      },
+      openLibrary:view=>{
+        if(view.closed||view.actionBusy||view.scanBusy||view.libraryModal&&!view.libraryModal.closed)return;
+        const LibraryModal=mwbAssemblyLibraryUi({Modal,Notice,service:libraryService,getPlan:()=>mwbAssemblyCore.validatePlan(view.plan)});
+        view.libraryModal=new LibraryModal(this.app);view.libraryModal.open();
+      },
+      openPresentation:view=>{
+        if(view.closed||view.actionBusy||view.scanBusy||view.presentationModal&&!view.presentationModal.closed)return;
+        view.presentationModal=new PresentationModal(this.app,this,view);view.presentationModal.open();
+      },
       openFamily:(view,entryId)=>{
         if(view.closed||view.actionBusy||view.scanBusy)return;
         if(view.familyModal&&!view.familyModal.closed)return;
@@ -12115,6 +13258,19 @@ module.exports = class MathsemblePlugin extends Plugin {
       service:assemblyService,renderMarkdown:(markdown,container,path,owner,signal) =>
         mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
     this.registerView('mathsemble-assembly', leaf => new AssemblyView(leaf,this));
+    let usageRefreshTimer;
+    const refreshUsageViews=(file,oldPath)=>{
+      if(![file?.path,oldPath].some(path=>typeof path==='string'&&(path==='Mathsemble/使用账本'||path.startsWith('Mathsemble/使用账本/'))))return;
+      for(const leaf of this.app.workspace.getLeavesOfType('mathsemble-assembly')){
+        leaf.view.usageGeneration++;leaf.view.usageState='loading';leaf.view.usageLedger=null;
+        leaf.view.clearSelection('使用记录已变化，请重新生成候选。');leaf.view.renderResults();
+      }
+      clearTimeout(usageRefreshTimer);usageRefreshTimer=setTimeout(()=>{
+        for(const leaf of this.app.workspace.getLeavesOfType('mathsemble-assembly'))void leaf.view.refreshUsage();
+      },80);
+    };
+    for(const event of ['create','modify','delete','rename'])this.registerEvent(this.app.vault.on(event,refreshUsageViews));
+    this.register(()=>clearTimeout(usageRefreshTimer));
     const openAssembly = async () => {
       let leaf=this.app.workspace.getLeavesOfType('mathsemble-assembly')[0];
       if (!leaf) { leaf=this.app.workspace.getLeaf('tab'); await leaf.setViewState({type:'mathsemble-assembly',active:true}); }

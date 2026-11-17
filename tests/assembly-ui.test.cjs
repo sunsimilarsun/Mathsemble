@@ -15,7 +15,9 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
 (async()=>{
  const checks=[];
  const check=(value,name)=>{if(!value)throw Error(name);checks.push(name);};
- const load=source=>{const module={exports:{}};new Function('module',source)(module);return module.exports;};
+ let fragmentApi;
+ const load=source=>{const module={exports:{}};new Function('module','MWB_ASSEMBLY_FRAGMENTS',source)(module,fragmentApi);return module.exports;};
+ fragmentApi=load(${source('assembly-fragments.cjs')});
  const core=load(${source('assembly-core.cjs')});
  const records=[{path:'知识/集合.md',kind:'knowledge',metadata:{id:'K1',title:'集合',subject:'高中数学',teaching_tier:['基础','培优'],knowledge_nodes:['集合表示法']},markdown:'# 集合\\n完整知识正文'},
  {path:'题库/第一题.md',kind:'question',metadata:{id:'Q1',subject:'高中数学',question_type:'choice',role:'训练',knowledge_nodes:['集合表示法','[[~]]'],methods:['[[分类讨论]]',[]]},markdown:'题干（!{B}）'},

@@ -15,7 +15,9 @@ test('conditional selection UI keeps review separate from atomic insertion and r
 (async()=>{
  const checks=[];
  const check=(value,name)=>{if(!value)throw Error(name);checks.push(name);};
- const load=source=>{const module={exports:{}};new Function('module',source)(module);return module.exports;};
+ let fragmentApi;
+ const load=source=>{const module={exports:{}};new Function('module','MWB_ASSEMBLY_FRAGMENTS',source)(module,fragmentApi);return module.exports;};
+ fragmentApi=load(${source('assembly-fragments.cjs')});
  const core=load(${source('assembly-core.cjs')});
  const records=Array.from({length:5},(_,i)=>({path:'题库/Q'+i+'.md',kind:'question',metadata:{id:'Q'+i,subject:'高中数学',question_type:i===4?'proof':'choice',teaching_tier:'基础',knowledge_nodes:['集合']},markdown:'题干 '+i}));
  records.push({path:'知识/集合.md',kind:'knowledge',metadata:{id:'K1',subject:'高中数学',knowledge_nodes:['集合']},markdown:'知识正文'});

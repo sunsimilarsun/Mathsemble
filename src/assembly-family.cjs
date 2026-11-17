@@ -52,6 +52,7 @@ function createFamilyEngine({core}={}) {
     const conflict=(code,message,extra={})=>({status:'conflict',candidates:[],issues:[issue(code,message,{entryId,...extra})]});
     const entry=current.entries.find(value=>value.entryId===entryId);
     if(!entry||entry.kind!=='question')return conflict('FAMILY_TARGET_INVALID','只能替换当前方案中的题目');
+    if(entry.fragmentRef)return conflict('FAMILY_FRAGMENT_SELECTED','此项选用了稳定小问；请先切回整题再换题，避免把片段身份套用到另一道题');
     if(locked)return conflict('FAMILY_LOCKED','请先显式解除该题的锁定再换题');
     const resolved=core.resolvePlan(current,index),target=resolved.entries.find(value=>value.entry.entryId===entryId);
     const ids=new Map(),paths=new Map();

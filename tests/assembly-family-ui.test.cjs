@@ -17,7 +17,9 @@ async function browserCases(sources) {
   const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
   const until=async(fn,message)=>{const end=Date.now()+3000;while(!fn()&&Date.now()<end)await pause(10);ok(fn(),message);};
   const nodeCrypto={randomUUID:()=>crypto.randomUUID(),createHash(name){ok(name==='sha256','unexpected hash algorithm');let text='';return {update(value){text+=value;return this;},digest(format){ok(format==='hex','unexpected digest format');const xhr=new XMLHttpRequest();xhr.open('POST','/sha256',false);xhr.send(text);ok(xhr.status===200,'SHA endpoint failed');return xhr.responseText;}};}};
-  const load=source=>{const module={exports:{}};new Function('module','require',source)(module,name=>{if(name==='node:crypto')return nodeCrypto;throw Error('Unexpected browser require '+name);});return module.exports;};
+  let fragmentApi;
+  const load=source=>{const module={exports:{}};new Function('module','require','MWB_ASSEMBLY_FRAGMENTS',source)(module,name=>{if(name==='node:crypto')return nodeCrypto;throw Error('Unexpected browser require '+name);},fragmentApi);return module.exports;};
+  fragmentApi=load(sources.fragments);
   const core=load(sources.core),blueprintEngine=load(sources.blueprint).createBlueprintEngine({core}),familyEngine=load(sources.family).createFamilyEngine({core});
   const createService=load(sources.service),createModal=load(sources.ui),createView=load(sources.view);
   const button=(node,label)=>[...node.querySelectorAll('button')].find(el=>el.textContent.trim()===label);
@@ -159,7 +161,7 @@ async function browserCases(sources) {
 
 test('family modal and AssemblyView contracts with the actual service in Chromium',async t=>{
   if(!chrome){if(process.env.CI)throw Error('Chrome is required for family UI tests');t.skip('Set CHROME_PATH');return;}
-  const sources=Object.fromEntries([['core','assembly-core.cjs'],['blueprint','assembly-blueprint.cjs'],['family','assembly-family.cjs'],['service','assembly-service.cjs'],['ui','assembly-family-ui.cjs'],['view','assembly-view.cjs']].map(([key,file])=>[key,fs.readFileSync(path.join(root,'src',file),'utf8')]));
+  const sources=Object.fromEntries([['fragments','assembly-fragments.cjs'],['core','assembly-core.cjs'],['blueprint','assembly-blueprint.cjs'],['family','assembly-family.cjs'],['service','assembly-service.cjs'],['ui','assembly-family-ui.cjs'],['view','assembly-view.cjs']].map(([key,file])=>[key,fs.readFileSync(path.join(root,'src',file),'utf8')]));
   const script='('+browserCases.toString()+')('+JSON.stringify(sources)+').catch(error=>{const out=document.createElement("pre");out.id="mwb-test-results";out.textContent=JSON.stringify([{name:"fixture initialization",ok:false,error:String(error.stack||error)}]);document.body.append(out);});';
   const html='<!doctype html><meta charset="utf-8"><body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>';
   const server=http.createServer((request,response)=>{

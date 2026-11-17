@@ -113,6 +113,55 @@ test('plans save and reload under their dedicated folder with no source writes',
   assert.equal(f.nodes.get('题库/题.md').content,q());
 });
 
+test('v4 requires Save As from every old plan version, leaving original bytes unchanged',async()=>{
+  for(const version of [1,2,3]) {
+    const f=await prepared(),raw={...f.plan,schemaVersion:version};
+    if(version===1){delete raw.course;delete raw.output;}
+    const path='Mathsemble/组题方案/旧'+version+'.json',original=JSON.stringify(raw)+'\n';f.file(path,original);
+    const session=f.service.createPlanSession(),loaded=await session.loadPlan(path),id=loaded.entries.find(e=>e.kind==='question').entryId;
+    const scored=core.updateEntry(loaded,id,{score:12.5});
+    await assert.rejects(session.savePlan(scored,path),error=>error.code==='PLAN_V4_SAVE_AS_REQUIRED');
+    assert.equal(f.nodes.get(path).content,original);
+    const nextPath=await session.savePlan(scored);assert.notEqual(nextPath,path);assert.equal(JSON.parse(f.nodes.get(nextPath).content).schemaVersion,4);
+    assert.deepEqual(await session.loadPlan(nextPath),scored);
+    const revised=core.updateEntry(scored,id,{score:13});await session.savePlan(revised,nextPath);
+    assert.equal(JSON.parse(f.nodes.get(nextPath).content).entries.find(e=>e.entryId===id).score,13);
+    assert.equal(f.nodes.get(path).content,original);
+  }
+});
+test('feature-free legacy plans continue normal v3 save without source mutations',async()=>{
+  const f=await prepared(),raw={schemaVersion:1,title:f.plan.title,entries:f.plan.entries};
+  const path='Mathsemble/组题方案/旧.json';f.file(path,JSON.stringify(raw));const loaded=await f.service.loadPlan(path);
+  await f.service.savePlan({...loaded,title:'改名'},path);assert.equal(JSON.parse(f.nodes.get(path).content).schemaVersion,3);
+  assert.equal(f.nodes.get('题库/题.md').content,q());
+});
+test('entry content edits recheck live sources and publish score/fragment changes atomically with no writes',async()=>{
+  const body='<!-- mathsemble:stem -->\n\n共同题干\n\n<!-- mathsemble:end -->\n\n<!-- mathsemble:part p1 -->\n\n小问 ?{1}\n\n> [!answer]- 答案\n> 完整步骤\n\n<!-- mathsemble:end -->';
+  const f=await prepared({'题库/题.md':q('Q1',body)}),id=f.plan.entries.find(e=>e.kind==='question').entryId,before=JSON.stringify(f.plan),writes=f.writes.length;
+  const updated=await f.service.updateEntryContent(f.plan,id,{fragmentRef:{kind:'question-part',ids:['p1'],scores:{p1:2.5}}});
+  assert.equal(updated.plan.schemaVersion,4);assert.equal(updated.plan.entries.find(e=>e.entryId===id).score,2.5);
+  assert.equal(JSON.stringify(f.plan),before);assert.equal(f.writes.length,writes);assert.equal(f.listenerCount(),0);
+  await f.vault.modify(f.nodes.get('题库/题.md'),q('Q1',body+'\n来源发生变化'));
+  await assert.rejects(f.service.updateEntryContent(updated.plan,id,{score:2.5}),/变化|片段契约/);
+  assert.equal(updated.plan.entries.find(e=>e.entryId===id).score,2.5);assert.equal(f.listenerCount(),0);
+});
+test('fragment deletion blocks preview, even after accepting whole source fingerprint',async()=>{
+  const body='<!-- mathsemble:stem -->\n\n题干\n\n<!-- mathsemble:end -->\n\n<!-- mathsemble:part p1 -->\n\n小问 ?{1}\n\n<!-- mathsemble:end -->';
+  const f=await prepared({'题库/题.md':q('Q1',body)}),id=f.plan.entries.find(e=>e.kind==='question').entryId;
+  let plan=core.updateEntry(f.plan,id,{fragmentRef:{kind:'question-part',ids:['p1']}});
+  await f.vault.modify(f.nodes.get('题库/题.md'),q('Q1',body.replace('part p1','part p2')));
+  const fresh=await f.service.scan();plan=core.updateEntry(plan,id,{sourceFingerprint:fresh.items.find(i=>i.id==='Q1').fingerprint});
+  await assert.rejects(f.service.compile(plan,fresh),/稳定片段已缺失/);
+  const whole=await f.service.updateEntryContent(plan,id,{fragmentRef:null});assert.equal(whole.plan.schemaVersion,3);
+  assert.match((await f.service.compile(whole.plan,whole.index)).markdown,/小问/);
+});
+test('source edits during content-update final read reject the entire UI patch',async()=>{
+  const f=await prepared(),id=f.plan.entries.find(e=>e.kind==='question').entryId,original=JSON.stringify(f.plan),read=f.vault.read;
+  let n=0;f.vault.read=async file=>{const value=await read(file);if(file.path==='题库/题.md'&&++n===2){file.content=q('Q1','并发编辑');return file.content;}return value;};
+  await assert.rejects(f.service.updateEntryContent(f.plan,id,{score:5}),/源文发生变化/);
+  assert.equal(JSON.stringify(f.plan),original);assert.equal(f.listenerCount(),0);
+});
+
 test('saving a plan refuses to overwrite edits made outside the current service',async()=>{
   const f=await prepared(),path=await f.service.savePlan(f.plan);
   const external={...f.plan,title:'另一窗口修改'};

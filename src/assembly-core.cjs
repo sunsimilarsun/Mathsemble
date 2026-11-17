@@ -1,5 +1,7 @@
 'use strict';
 
+const fragments = typeof MWB_ASSEMBLY_FRAGMENTS !== 'undefined' ? MWB_ASSEMBLY_FRAGMENTS : require('./assembly-fragments.cjs');
+
 // Pure, host-independent assembly logic. The source notes are never mutated.
 const MAX_ENTRIES = 1000;
 const FORBIDDEN = new Set(['__proto__', 'prototype', 'constructor']);
@@ -369,7 +371,7 @@ function validateOutputSettings(raw) {
 }
 function validatePlan(raw) {
   safeObject(raw,'组题方案');
-  if (![1,2,3].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
+  if (![1,2,3,4].includes(raw.schemaVersion)) throw new Error('不支持的组题方案版本');
   exactFields(raw,raw.schemaVersion === 1 ? ['schemaVersion','title','entries'] :
     ['schemaVersion','title','entries','course','output'],'组题方案');
   const title = boundedString(raw.title,'方案标题',500,false);
@@ -382,10 +384,11 @@ function validatePlan(raw) {
     throw new TypeError('编排列表含不允许的属性');
   }
   const entryIds = new Set(), sourceIds = new Set(), sourcePaths = new Set();
-  const fields = new Set(['entryId','kind','sourceId','sourcePath','sourceFingerprint','title','role']);
+  const fields = new Set(['entryId','kind','sourceId','sourcePath','sourceFingerprint','title','role',
+    ...(raw.schemaVersion===4?['score','fragmentRef']:[])]);
   const entries = raw.entries.map(entry => {
     safeObject(entry,'编排项');
-    if (Object.keys(entry).some(key => !fields.has(key))) throw new TypeError('编排项含未知字段');
+    if (Reflect.ownKeys(entry).some(key => !fields.has(key))) throw new TypeError('编排项含未知字段');
     const entryId = boundedString(entry.entryId,'编排项 ID',512,false);
     if (entryIds.has(entryId)) throw new Error('编排项 ID 重复');
     entryIds.add(entryId);
@@ -395,6 +398,18 @@ function validatePlan(raw) {
       sourcePath:boundedString(entry.sourcePath,'源路径',4096),
       sourceFingerprint:boundedString(entry.sourceFingerprint,'源指纹',128),
       title:boundedString(entry.title,'显示标题',500),role:boundedString(entry.role,'教学角色',50)};
+    if(Object.hasOwn(entry,'score')) {
+      if(entry.kind!=='question')throw new Error('仅题目编排项可设置分值');
+      result.score=fragments.validateScore(entry.score);
+    }
+    if(Object.hasOwn(entry,'fragmentRef')) {
+      result.fragmentRef=fragments.validateFragmentRef(entry.fragmentRef,entry.kind);
+      const sum=fragments.totalScore(result.fragmentRef);
+      if(sum!==null) {
+        if(Object.hasOwn(result,'score')&&result.score!==sum)throw new Error('整题分值须等于全部已选小问分值之和');
+        result.score=sum;
+      }
+    }
     if (entry.kind === 'section') {
       if (result.sourceId || result.sourcePath || result.sourceFingerprint || result.role || !result.title.trim()) throw new Error('分区字段无效');
     } else {
@@ -406,7 +421,7 @@ function validatePlan(raw) {
     }
     return result;
   });
-  return {schemaVersion:3,title,entries,course,output};
+  return {schemaVersion:entries.some(entry=>Object.hasOwn(entry,'score')||entry.fragmentRef)?4:3,title,entries,course,output};
 }
 function createPlan(title = '新讲义') {
   return validatePlan({schemaVersion:3,title,entries:[],course:defaultCourse(),output:defaultOutputSettings()});
@@ -463,11 +478,23 @@ function moveSection(plan,entryId,targetIndex) {
 }
 function updateEntry(plan,entryId,patch) {
   const next=validatePlan(plan); safeObject(patch,'编排修改');
-  const allowed=new Set(['title','role','sourceId','sourcePath','sourceFingerprint']);
-  if (Object.keys(patch).some(key => !allowed.has(key))) throw new Error('不允许修改此编排字段');
+  const allowed=new Set(['title','role','sourceId','sourcePath','sourceFingerprint','score','fragmentRef']);
+  if (Reflect.ownKeys(patch).some(key => !allowed.has(key))) throw new Error('不允许修改此编排字段');
   const entry=next.entries.find(entry => entry.entryId === entryId);
   if (!entry) throw new Error('编排项不存在');
-  Object.assign(entry,patch); return validatePlan(next);
+  if(entry.fragmentRef && (Object.hasOwn(patch,'sourceId')&&patch.sourceId!==entry.sourceId ||
+      Object.hasOwn(patch,'sourcePath')&&patch.sourcePath!==entry.sourcePath && !entry.sourceId) && patch.fragmentRef!==null)
+    throw new Error('片段引用不能转移到另一来源，请先切回整题');
+  if(Object.hasOwn(patch,'fragmentRef')) {
+    const ref=patch.fragmentRef===null?null:fragments.validateFragmentRef(patch.fragmentRef,entry.kind);
+    const changed=JSON.stringify(entry.fragmentRef?.ids||null)!==JSON.stringify(ref?.ids||null);
+    if(changed&&!Object.hasOwn(patch,'score'))delete entry.score;
+    if(ref?.scores&&!Object.hasOwn(patch,'score'))entry.score=fragments.totalScore(ref);
+  }
+  for(const [key,value] of Object.entries(patch)) {
+    if((key==='score'||key==='fragmentRef')&&value===null)delete entry[key];else entry[key]=value;
+  }
+  next.schemaVersion=4;return validatePlan(next);
 }
 function resolvePlan(plan,index) {
   const current=validatePlan(plan), items=Array.isArray(index?.items) ? index.items : [], issues=[];
@@ -478,8 +505,13 @@ function resolvePlan(plan,index) {
     if (matches.length > 1 || item?.identityConflict || item && (item.kind !== entry.kind || !entry.sourceId && item.id)) status='conflict';
     else if (!item) status='missing';
     else status=item.fingerprint === entry.sourceFingerprint ? 'ok' : 'changed';
+    let fragmentIssue;
+    if(item&&status!=='conflict'&&entry.fragmentRef) {
+      try {fragments.resolveFragment(item,entry.fragmentRef);}
+      catch(error) {status=error.code==='FRAGMENT_MISSING'?'fragment-missing':'fragment-invalid';fragmentIssue=error.message;}
+    }
     if (status !== 'ok') issues.push({code:status,entryId:entry.entryId,path:entry.sourcePath,
-      message:status === 'missing' ? `来源已缺失：${entry.title}` : status === 'conflict' ? `来源身份冲突：${entry.title}` : `来源已更新：${entry.title}`});
+      message:fragmentIssue || (status === 'missing' ? `来源已缺失：${entry.title}` : status === 'conflict' ? `来源身份冲突：${entry.title}` : `来源已更新：${entry.title}`)});
     return {entry,item,status};
   });
   return {entries,issues};
@@ -487,4 +519,6 @@ function resolvePlan(plan,index) {
 
 module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,getSections,moveSection,updateEntry,
   resolvePlan,validatePlan,defaultCourse,defaultOutputSettings,validateCourse,validateOutputSettings,
-  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint};
+  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint,
+  validateScore:fragments.validateScore,validateFragmentRef:fragments.validateFragmentRef,
+  listFragments:fragments.listFragments,resolveFragment:fragments.resolveFragment};

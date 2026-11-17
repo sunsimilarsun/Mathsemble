@@ -195,6 +195,8 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
           if (file) {
             if (!knownPlanContents.has(target)) throw new Error('请先打开该方案再保存，或另存为新方案');
             if (await vault.read(file) !== knownPlanContents.get(target)) throw new Error('方案文件已被外部修改，请重新打开后再保存');
+            if(plan.schemaVersion===4&&JSON.parse(knownPlanContents.get(target)).schemaVersion<4)
+              throw Object.assign(new Error('分值或稳定片段需要方案 v4，请另存为新方案；原方案保留，旧插件不能读取 v4'),{code:'PLAN_V4_SAVE_AS_REQUIRED'});
             await vault.modify(file,text);
           } else await vault.create(target,text);
           knownPlanContents.set(target,text);
@@ -563,14 +565,14 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     const result = core.resolvePlan(plan,fresh);
     const invalid = result.entries.filter(row=>row.status !== 'ok');
     if (invalid.length) throw new Error('来源已变化、缺失或存在身份冲突，请刷新素材并在“预览编排”核对，再接受来源更新：' +
-      invalid.map(row=>row.entry.title || row.entry.sourcePath).slice(0,5).join('、'));
+      invalid.map(row=>result.issues.find(issue=>issue.entryId===row.entry.entryId)?.message || row.entry.title || row.entry.sourcePath).slice(0,5).join('、'));
     const sources = Object.freeze(result.entries.filter(row=>row.item).map(({item}) => {
       const live = vault.getAbstractFileByPath(item.path);
       if (!live || live.extension !== 'md') throw new Error('来源已删除或替换：'+item.path);
       // Freeze the evidence, never the host's live TFile instance.
       return Object.freeze({path:item.path,live,markdown:item.markdown});
     }));
-    return {result,sources};
+    return {result,sources,index:fresh};
   }
   async function recheckSources(sources,io,guard) {
     for (const source of sources) {
@@ -666,8 +668,23 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     if (!file || file.extension !== 'md') throw new Error('源文件不存在');
     await app.workspace.getLeaf('tab').openFile(file);
   }
+  async function updateEntryContent(rawPlan,entryId,patch,options={}) {
+    // UI edits use the same source-wide guard as preview; never acknowledge a
+    // changed source or publish a partial score/selection update implicitly.
+    const plan=core.validatePlan(rawPlan),baseline=planDigest(plan),next=core.updateEntry(plan,entryId,patch),io=readContext(options);let guard;
+    if(Reflect.ownKeys(patch).some(key=>!['score','fragmentRef'].includes(key))) {io.close();throw new Error('此操作仅修改分值和片段引用');}
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config);
+      const {sources,index}=await readResolvedSources(next,config,io);
+      await recheckSources(sources,io,guard);originCheck(options);
+      if(planDigest(rawPlan)!==baseline)throw new Error('编排已变化，分值或片段修改未应用');
+      return {plan:next,index};
+    } finally {guard?.dispose();io.close();}
+  }
   return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
     listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
     replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
-    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement};
+    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,updateEntryContent};
 };

@@ -245,3 +245,32 @@
 .mwb-family-question { margin-top: 10px; overflow-wrap: anywhere; }
 .mwb-family-question img { max-width: 100%; height: auto; }
 .mwb-family-status.is-error { color: var(--text-error); }
+/* P2 auxiliary surfaces stay inside their own modal/view boundaries. */
+.modal.mwb-usage-modal, .modal.mwb-library-modal { width: min(90vw, 1080px); max-width: 90vw; max-height: 92vh; }
+.mwb-usage, .mwb-library { overflow: auto; }
+.mwb-usage-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mwb-usage-field, .mwb-library label { display: flex; flex-direction: column; gap: 5px; margin-block: 9px; }
+.mwb-usage-actions, .mwb-library section > div { margin-block: 10px; }
+.mwb-usage-actions button, .mwb-library button { margin: 4px 8px 4px 0; }
+.mwb-usage-event { border-top: 1px solid var(--background-modifier-border); padding-block: 8px; }
+.mwb-usage-event pre, .mwb-library pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
+.mwb-usage .is-error, .mwb-library .is-error { color: var(--text-error); }
+.mwb-library textarea { min-height: 5em; width: 100%; resize: vertical; }
+@media (max-width: 600px) { .mwb-usage-controls { grid-template-columns: 1fr; } }
+.modal.mwb-presentation-modal { width: min(96vw, 1440px); max-width: 96vw; height: 94vh; }
+.mwb-presentation-modal .modal-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.mwb-presentation-header, .mwb-presentation-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.mwb-presentation-header h2 { margin: 0; flex: 1; }
+.mwb-presentation-counter { font-variant-numeric: tabular-nums; }
+.mwb-presentation-nav { margin-block: 12px 0; }
+.mwb-presentation-status { margin-block: 8px; }
+.mwb-presentation-status.is-error { color: var(--text-error); }
+.mwb-presentation-body { flex: 1; min-height: 0; overflow: auto; padding: 20px 24px 36px; font-size: clamp(20px, 2.1vw, 30px); }
+.mwb-presentation-body img { max-height: 65vh; object-fit: contain; }
+.mwb-presentation-body .mwb-page-break { display: none; }
+.mwb-assembly-usage-filters { margin-block: 12px; }
+.mwb-assembly-usage-filters > div { display: grid; grid-template-columns: 1fr; gap: 8px; margin-block: 8px; }
+.mwb-assembly-part-settings { border-top: 1px solid var(--background-modifier-border); padding-block: 8px; margin-top: 8px; }
+.mwb-assembly-part-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 6px; }
+.mwb-assembly-part-row input[type="number"] { width: 90px; }
+.mwb-assembly-arrangement-score { max-width: 85px; }
