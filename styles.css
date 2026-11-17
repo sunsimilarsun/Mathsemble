@@ -21,6 +21,16 @@
   line-height: inherit;
 }
 .mwb-typography li { margin-block: 0.24em; line-height: inherit; }
+/* Host themes give HRs rem-based gaps while isolated PDF uses browser defaults.
+ * Fix the paper geometry in both contexts; ordinary note styling is untouched. */
+.mwb-typography.mwb-print-document hr {
+  box-sizing: border-box;
+  height: 0;
+  margin: 0.5em 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid #999;
+}
 .mwb-typography h1,
 .mwb-typography h2,
 .mwb-typography h3,
