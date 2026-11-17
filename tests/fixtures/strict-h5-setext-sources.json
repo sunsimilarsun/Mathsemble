@@ -1,0 +1,26 @@
+[
+  {
+    "name": "six-multiline-metadata-blocks",
+    "source": "## Algebra review\n\n### Review 1\n\nPrompt 1.\n\n---\ntags: [math, algebra]\nlevel: core\nreason: Example 1.\n---\n\n### Review 2\n\nPrompt 2.\n\n---\ntags: [math, algebra]\nlevel: core\nreason: Example 2.\n---\n\n### Review 3\n\nPrompt 3.\n\n---\ntags: [math, algebra]\nlevel: core\nreason: Example 3.\n---\n\n### Review 4\n\nPrompt 4.\n\n---\ntags: [math, algebra]\nlevel: core\nreason: Example 4.\n---\n\n### Review 5\n\nPrompt 5.\n\n---\ntags: [math, algebra]\nlevel: core\nreason: Example 5.\n---\n\n### Review 6\n\nPrompt 6.\n\n---\ntags: [math, algebra]\nlevel: core\nreason: Example 6.\n---",
+    "headingCount": 7,
+    "groupCount": 0
+  },
+  {
+    "name": "multiline-dash-within-h5",
+    "source": "##### Example 1\n\nFirst paragraph line\nSecond paragraph line\n---\n\nMore content.\n\n##### Example 2\n\nNext content.",
+    "headingCount": 2,
+    "groupCount": 2
+  },
+  {
+    "name": "multiline-equals-within-h5",
+    "source": "##### Example 1\n\nFirst paragraph line\nSecond paragraph line\n===\n\nMore content.\n\n##### Example 2\n\nNext content.",
+    "headingCount": 2,
+    "groupCount": 2
+  },
+  {
+    "name": "single-line-setext-after-horizontal-rule",
+    "source": "##### Example 1\n\nQuestion body.\n\n---\nSummary\n===\n\nExplanation.",
+    "headingCount": 2,
+    "groupCount": 1
+  }
+]
