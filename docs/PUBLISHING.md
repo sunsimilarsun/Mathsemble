@@ -1,8 +1,8 @@
 # Mathsemble 发布指引
 
-当前版本为 [0.3.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.3.0)。2026-11-17，用户明确授权提交本次改动、合并 main、发布新版本，并在备份后更新正式教学库插件。实际本地、原生及远端验证范围见 [0.3.0 测试记录](TESTING_0.3.0.md)；历史发布和社区目录状态不据此改写。
+版本号以仓库根目录的 `manifest.json` 为准，公开安装包见 [GitHub 最新正式版](https://github.com/sunsimilarsun/Mathsemble/releases/latest)。
 
-安装与发布均使用同版本的 `main.js`、`manifest.json`、`styles.css`，先备份被替换插件目录（包括设置）、启用清单及方案。0.3.0 保持 v3 方案并继续读取 v1／v2；回退到 0.2.5 可读取 v3，但不会提供新增蓝图、运行记录和归档功能。正式 0.2.4 不能读 v3，不能只改 JSON 版本号。升级说明见 [0.3.0 说明](RELEASE_NOTES_0.3.0.md)。
+安装与发布均使用同一版本的 `main.js`、`manifest.json`、`styles.css`。升级前备份被替换的插件目录、启用清单及方案。0.4.0 可读取 v1 至 v4 方案，使用分值或片段后须保留旧版可读的副本。[0.4.0 升级说明](RELEASE_NOTES_0.4.0.md)
 
 ## 本地与 CI 门槛
 

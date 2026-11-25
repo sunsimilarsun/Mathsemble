@@ -1,6 +1,6 @@
 # Mathsemble 产品流程与设计边界
 
-适用版本：[0.3.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.3.0)。实现与验证状态见[功能矩阵](FEATURE_MATRIX.md)，内容语法以 [Markdown 规范](MARKDOWN_SPEC.md) 为准。[旧版 FRD](REQUIREMENTS.md)保留历史，不作为当前功能状态。
+本文适用于 Mathsemble 0.4.0。[发布说明](RELEASE_NOTES_0.4.0.md) · [功能矩阵](FEATURE_MATRIX.md) · [Markdown 规范](MARKDOWN_SPEC.md) · [历史需求记录](REQUIREMENTS.md)
 
 ## 主流程
 
@@ -64,7 +64,7 @@ Obsidian 可恢复工作区草稿。显式保存方案后，可重新使用其�
 
 课程标题用内部 `null` 表示跟随讲义标题，字符串空值表示有意留空；未编辑的 A4 课题不会把继承关系改成固定标题。教师为空时生成 `author: 孙老师`。警告确认、跳过内容许可、诊断状态和输出结果不写入方案。
 
-当前方案读取 v1／v2／v3，显式保存写为 v3。v1 在内存补默认设置；v2 的 `solutionSpaces`／`showSolution` 按原布尔值映射为 `solution` 类型的学生留白／教师显示选择，读取本身不写文件。正式 0.2.4 只接受 v1／v2，不能读取 v3；回退应保留并使用升级前方案。外部修改冲突检测继续使用真实文件内容。
+0.4.0 读取 v1 至 v4 方案。v1 在内存补齐默认设置，v2 的 `solutionSpaces`／`showSolution` 映射到学生留白和教师显示选项。普通方案保存为 v3；给旧方案加入分值或片段时，另存为 v4，留下原文件供旧版使用。保存时仍核对文件是否被外部修改。[分值、片段与方案兼容](ASSEMBLY_FRAGMENTS.md)
 
 ## 刷新与定位
 
@@ -102,4 +102,4 @@ Obsidian 可恢复工作区草稿。显式保存方案后，可重新使用其�
 
 图片在测量前固定，同次双版导出共享会话；本地内容变化阻止沿用旧预览。默认记录当次导出事实，可选归档原文、媒体、方案及已确认产物，详见[导出归档](EXPORT_ARCHIVE.md)。归档目前不提供一键回导。
 
-知识小节截取、课堂实际使用账本、自动入库及学生端仍属后续设计，未包含在本轮实施中。
+0.4.0 支持选取知识小节、按班级或课程登记实际使用，以及经教师确认后入库。学生端仍在路线图中。[功能矩阵](FEATURE_MATRIX.md)

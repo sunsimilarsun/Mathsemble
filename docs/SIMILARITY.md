@@ -11,7 +11,7 @@
 
 ## 数据与解释
 
-读取已有 `knowledge_nodes`、`methods`、`family_id`、`subject`、`question_type`、`difficulty`、`teaching_tier` 和兼容字段。不增加必填字段、不迁移源题卡、不向方案写入算法分数。旧 v1—v3 方案沿用现行兼容行为；含 P2 分值或片段的方案由本工作分支的 P2 v4 规则处理。v4 兼容性不代表已发布的 0.3.0 具有这些能力。
+检索使用已有的 `knowledge_nodes`、`methods`、`family_id`、`subject`、`question_type`、`difficulty`、`teaching_tier` 和兼容字段。0.4.0 可继续读取 v1 至 v3 方案。使用分值或稳定片段的方案保存为 v4。[方案兼容说明](ASSEMBLY_FRAGMENTS.md)
 
 `family_id` 仅去首尾空白、区分大小写；未归族题不共享一个空题族。`parent_id` 只解释显式关系，不从角色或同族推断。
 
