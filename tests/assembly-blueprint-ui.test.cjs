@@ -44,7 +44,7 @@ async function browserCases(sources) {
   }
   class Notice {constructor(message){this.message=message;}}
   const records=(extra=0)=>[
-    {path:'题库/C.md',kind:'question',metadata:{id:'C',title:'选择题 C',subject:'高中数学',question_type:'choice',role:'训练'},markdown:'---\ntitle: 私有元信息\n---\n选择题 C，求 $1+1$。'},
+    {path:'题库/C.md',kind:'question',metadata:{id:'C',title:'选择题 C',subject:'高中数学',question_type:'choice',role:'训练',methods:['[[换元法|变量替换]]']},markdown:'---\ntitle: 私有元信息\n---\n选择题 C，求 $1+1$。'},
     ...Array.from({length:1+extra},(_,i)=>({path:'题库/F'+i+'.md',kind:'question',metadata:{id:'F'+i,title:'填空题 F'+i,subject:'高中数学',question_type:'fill_blank',role:'训练'},markdown:'填空题 F'+i+'，$1+1=?{2}$。'}))
   ];
   const blueprint=()=>({schemaVersion:1,blueprintId:'test-blueprint',revision:1,title:'双行配额',rows:[
@@ -113,6 +113,36 @@ async function browserCases(sources) {
     button(m.contentEl,'应用完整配额').click();await until(()=>m.closed,'complete candidate was not applied');
     ok(f.view.plan.entries.length===2&&f.view.pendingBlueprintRun.assignments.length===2&&f.view.dirty,'plan and pending sidecar were not published together');
     eq(Object.keys(f.view.plan).sort(),['course','entries','output','schemaVersion','title'],'plan v3 was extended');
+  });
+
+  await check('editing a quota row after generating candidates changes the next draw and the applied plan',async()=>{
+    const f=await fixture({extra:2}),m=f.modal;
+    await m.generate(false);
+    const panel=m.rowsEl.firstElementChild;
+    change(field(panel,'题数'),2);
+    change(field(panel,'配额行名称'),'两道填空');
+    choose(field(panel,'题型'),['fill_blank']);
+    ok(!m.candidate&&m.applyButton.disabled,'editing a generated quota left a stale candidate applicable');
+    await m.generate(true);
+    const row=m.candidate.blueprint.rows[0];
+    eq([row.count,row.label,row.filters.questionType],[2,'两道填空',['fill_blank']],'redraw lost visible row edits');
+    await m.apply();
+    ok(f.view.plan.entries.length===2&&f.view.plan.entries.every(entry=>entry.sourceId.startsWith('F')),'applied plan ignored revised quota');
+  });
+
+  await check('method quota options and older saved Wiki-link filters both select cards by the link target',async()=>{
+    const f=await fixture(),m=f.modal;
+    const methods=field(m.rowsEl,'方法');
+    ok([...methods.options].some(option=>option.value==='换元法'),'method option did not offer the canonical target');
+    choose(methods,['换元法']);
+    await m.generate(false);
+    eq(m.candidate.allocation.assignments.map(a=>a.sourceId),['C'],'selected method missed its card');
+    const saved=clone(m.blueprint);
+    saved.rows[0].filters.method=['[[换元法|旧名称]]'];
+    await f.setBlueprint(saved);
+    eq([...field(m.rowsEl,'方法').selectedOptions].map(option=>option.value),['换元法'],'old method selection was lost on reopen');
+    await m.generate(false);
+    eq(m.candidate.allocation.assignments.map(a=>a.sourceId),['C'],'old saved method no longer selects its target');
   });
 
   await check('insufficient quotas remain visible but cannot partially apply',async()=>{

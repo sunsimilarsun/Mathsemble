@@ -42,8 +42,8 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     saveQueue = task; await task;
   }
   function frontmatter(markdown) {
-    const match = markdown.replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/);
-    const result = match ? parseYaml(match[1]) : {};
+    const {yaml} = core.splitFrontmatter(markdown);
+    const result = yaml.trim() ? parseYaml(yaml) : {};
     if (result == null) return {};
     if (typeof result !== 'object' || Array.isArray(result)) throw new Error('元信息必须为字段对象');
     return result;

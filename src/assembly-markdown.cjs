@@ -2,12 +2,9 @@
 
 // Compile selected source snapshots, never mutate the source notes. The result
 // is a normal handout that uses Mathsemble's existing answer/print pipeline.
+const {splitFrontmatter} = typeof mwbAssemblyCore !== 'undefined' ? mwbAssemblyCore : require('./assembly-core.cjs');
 function stripFrontmatter(text) {
-  const value = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-  if (!/^---\s*\n/.test(value)) return value;
-  const end = /^---\s*\n[\s\S]*?\n(?:---|\.\.\.)[ \t]*(?:\n|$)/.exec(value);
-  if (!end) throw new Error('源笔记 frontmatter 未闭合，无法安全组题');
-  return value.slice(end[0].length);
+  return splitFrontmatter(text).body;
 }
 function plainTitle(value) {
   return String(value || '').replace(/[\r\n\t]+/g, ' ').trim()
@@ -291,9 +288,10 @@ function relativePath(path, outputPath) {
   while (from.length && to.length && from[0] === to[0]) { from.shift(); to.shift(); }
   return [...from.map(() => '..'), ...to].join('/') || '.';
 }
-function encodePath(value) {
-  return value.split('/').map(part => encodeURIComponent(part).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())).join('/');
+function encodeComponent(value) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
 }
+function encodePath(value) { return value.split('/').map(encodeComponent).join('/'); }
 function isExternal(value) { return /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(value); }
 function splitTarget(value) {
   const index = value.indexOf('#');
@@ -304,7 +302,9 @@ async function mapTarget(raw, sourcePath, options, image, wiki = false) {
   if (isExternal(target)) return target;
   target = target.replace(/\\([()\[\] <>])/g, '$1');
   const parts = splitTarget(target);
-  const suffix = wiki ? parts.suffix : parts.suffix ? '#' + encodeURIComponent(parts.suffix.slice(1)) : '';
+  // A Markdown fragment can already contain URL escapes, including %25 itself.
+  let suffix = parts.suffix;
+  if (!wiki && suffix) suffix = '#' + encodeComponent(suffix.slice(1)).replace(/%25([0-9a-f]{2})/gi, '%$1');
   let decoded = parts.path;
   // Markdown destinations are URLs; Wiki targets are literal vault paths.
   // Pass a canonical path to the host resolver, which must not decode again.
@@ -487,4 +487,4 @@ async function compileMarkdown(plan, resolved, options = {}) {
   }
   return markdown;
 }
-module.exports = {compileMarkdown,collectMediaDependencies};
+module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds};

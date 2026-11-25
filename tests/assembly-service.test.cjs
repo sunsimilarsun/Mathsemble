@@ -86,6 +86,22 @@ test('an explicitly selected knowledge directory includes whole notes without YA
   assert.equal(f.writes.length,0);
 });
 
+test('empty Obsidian properties preserve the whole knowledge note through scan and compilation',async()=>{
+  const body='第一段正文\n\n---\n\n第二段正文';
+  const files={'知识/直接闭合.md':'---\n---\n完整正文',
+    '知识/带分隔线.md':'\uFEFF---\r\n---\r\n'+body.replace(/\n/g,'\r\n'),
+    '知识/另一闭合符.md':'---\n...\n'+body};
+  const f=fixture(files),config={questionRoots:[],knowledgeRoots:['知识'],recursive:true};
+  const index=await f.service.scan(config);
+  assert.deepEqual(index.items.map(item=>item.path).sort(),Object.keys(files).sort());
+  for(const item of index.items) {
+    const plan=core.addItem(core.createPlan(),item);
+    const result=await f.service.compile(plan,index,{config});
+    assert(result.markdown.includes(item.path==='知识/直接闭合.md'?'完整正文':body));
+  }
+  assert.equal(f.writes.length,0);
+});
+
 test('settings reject traversal and non-folders, preserving unrelated plugin data',async()=>{
   const f=fixture({'题库/题.md':q(),'知识/集合.md':k()},{unrelated:{keep:true}});
   for(const path of ['', '/绝对路径','../题库','题库/../知识','题库//子目录','题库/题.md','不存在']){

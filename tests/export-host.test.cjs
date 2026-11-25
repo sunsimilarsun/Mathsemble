@@ -63,7 +63,7 @@ test('declared hidden images resolve in each original source context',async()=>{
 });
 function imageNode(url) {
   const attrs=new Map([['src',url],['srcset',url+' 2x'],['alt','diagram']]);
-  return {get currentSrc(){return attrs.get('src');},hasAttribute:key=>attrs.has(key),getAttribute:key=>attrs.get(key),
+  return {localName:'img',get currentSrc(){return attrs.get('src');},hasAttribute:key=>attrs.has(key),getAttribute:key=>attrs.get(key),
     setAttribute:(key,value)=>attrs.set(key,value),removeAttribute:key=>attrs.delete(key)};
 }
 test('DOM freezing finishes before measurement, retains SVG fragments and does not read frozen nodes again',async()=>{
@@ -82,4 +82,57 @@ test('uncaptured images require a warning and a resource omission; cancellation 
   const controller=new AbortController();controller.abort(Object.assign(Error('cancelled'),{name:'AbortError'}));
   await assert.rejects(host.freezeMediaDom(session,root,{signal:controller.signal}),{name:'AbortError'});
   assert.equal(omissions.length,1);
+});
+
+test('an inline SVG keeps its selected view while only the original SVG bytes are archived',async()=>{
+  const svg='<svg xmlns="http://www.w3.org/2000/svg"><view id="diagram" viewBox="10 0 10 10"/></svg>';
+  const node=imageNode('data:image/svg+xml,'+encodeURIComponent(svg)+'#diagram');
+  const root={ownerDocument:{baseURI:'file:///'},querySelectorAll:()=>[node]};
+  const session=createResourceSession();
+  await host.freezeMediaDom(session,root);
+  assert.equal(node.getAttribute('src'),'data:image/svg+xml;base64,'+Buffer.from(svg).toString('base64')+'#diagram');
+  const [resource]=session.manifest().resources;
+  assert.equal(Buffer.from(session.readBlob(resource.blobId)).toString(),svg);
+  session.dispose();
+});
+
+test('a malformed image URL produces a partial-export warning with a private omission record',async()=>{
+  const invalid='http://[invalid',node=imageNode(invalid);
+  node.removeAttribute('srcset');
+  const root={ownerDocument:{baseURI:'file:///'},querySelectorAll:()=>[node]};
+  const session=createResourceSession();
+  const result=await host.freezeMediaDom(session,root);
+  assert.equal(result.changed,false);
+  assert.equal(result.warnings.length,1);
+  assert.equal(node.getAttribute('src'),invalid);
+  const {omissions}=session.manifest();
+  assert.equal(omissions.length,1);
+  assert.equal(omissions[0].reasonCode,'RESOURCE_UNAVAILABLE');
+  assert.equal(omissions[0].displayUrl,undefined);
+  session.dispose();
+});
+
+test('responsive images wait for browser selection and freeze the selected picture or srcset-only image',async()=>{
+  const selected='https://example.org/selected.png',frozen='data:image/png;base64,YQ==';
+  for(const isPicture of [true,false]){
+    const node=imageNode('https://example.org/fallback.png');
+    const source=imageNode(selected);
+    source.localName='source';
+    if(isPicture){
+      node.parentElement={localName:'picture',children:[source,node]};
+      node.removeAttribute('srcset');
+    }else node.removeAttribute('src');
+    let currentSrc='';
+    Object.defineProperty(node,'currentSrc',{get:()=>currentSrc});
+    const root={ownerDocument:{baseURI:'file:///'},querySelectorAll:()=>[node]};
+    const reads=[],nodes=new WeakMap(),session={read:async url=>{reads.push(url);return frozen;}};
+    assert.equal((await host.freezeMediaDom(session,root,{nodes})).changed,false);
+    currentSrc=selected;
+    assert.equal((await host.freezeMediaDom(session,root,{nodes})).changed,true);
+    assert.equal(node.getAttribute('src'),frozen);
+    assert.equal(node.hasAttribute('srcset'),false);
+    if(isPicture) assert.equal(source.hasAttribute('srcset'),false);
+    assert.equal((await host.freezeMediaDom(session,root,{nodes})).changed,false);
+    assert.deepEqual(reads,[selected]);
+  }
 });

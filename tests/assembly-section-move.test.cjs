@@ -34,9 +34,9 @@ async function browserCases(sources,css) {
     // Rendering content is irrelevant to ordering. Keep the real scheduler
     // and owners, with a deterministic observer and a minimal host renderer.
     win.IntersectionObserver=class{observe(){}unobserve(){}disconnect(){}};
-    const load=source=>{const module={exports:{}};new win.Function('module',source)(module);return module.exports;};
+    const load=(source,core)=>{const module={exports:{}};new win.Function('module','mwbAssemblyCore',source)(module,core);return module.exports;};
     const clone=value=>win.JSON.parse(JSON.stringify(value));
-    const core=load(sources.core),compiler=load(sources.markdown),index=core.buildIndex(clone(records));
+    const core=load(sources.core),compiler=load(sources.markdown,core),index=core.buildIndex(clone(records));
     const saved=[],previews=[],notices=[],opened=[];let stored=null;
     class Component{load(){}unload(){}}
     class ItemView extends Component{

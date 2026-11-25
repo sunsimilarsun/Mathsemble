@@ -1,5 +1,18 @@
 'use strict';
 
+function splitFrontmatter(markdown) {
+  const source = String(markdown ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const opening = /^---[ \t]*\n/.exec(source);
+  if (!opening) return {yaml:'', body:source, offset:0};
+
+  const delimiter = /^(?:---|\.\.\.)[ \t]*(?:\n|$)/gm;
+  delimiter.lastIndex = opening[0].length;
+  const closing = delimiter.exec(source);
+  if (!closing) throw new Error('源笔记 frontmatter 未闭合，无法安全组题');
+  const yaml = source.slice(opening[0].length, closing.index);
+  return {yaml, body:source.slice(delimiter.lastIndex), offset:2 + (yaml.match(/\n/g) || []).length};
+}
+
 // Pure, host-independent assembly logic. The source notes are never mutated.
 const MAX_ENTRIES = 1000;
 const FORBIDDEN = new Set(['__proto__', 'prototype', 'constructor']);
@@ -212,6 +225,7 @@ function filterItems(index, filters = {}) {
   const match = (filter, values) => !options(filter).length || options(filter).some(want => values.some(value => fold(value) === fold(want)));
   const familyIds=(Array.isArray(filters.familyId)?filters.familyId:[filters.familyId]).filter(value=>value!=null&&!(typeof value==='string'&&!value.trim()));
   const familyStates=options(filters.familyState);
+  const methodTargets=new Set(options(filters.method).map(value=>fold(parseKnowledgeRef(value).target)));
   return items.filter(item => {
     if (familyIds.length && (item.kind!=='question' || item.familyState!=='classified' ||
       !familyIds.some(value=>typeof value==='string'&&value.trim()===item.familyId))) return false;
@@ -219,7 +233,7 @@ function filterItems(index, filters = {}) {
     if (!match(filters.kind,[item.kind]) || !match(filters.subject,[item.subject]) ||
       !match(filters.questionType,[item.questionType]) || !match(filters.difficulty,[item.difficulty]) ||
       !match(filters.tier,item.tiers) || !match(filters.role,[item.role]) ||
-      !match(filters.method,item.methods.map(value => parseKnowledgeRef(value).target))) return false;
+      (methodTargets.size && !item.methods.some(value => methodTargets.has(fold(parseKnowledgeRef(value).target))))) return false;
     if (options(filters.source).length && !options(filters.source).some(value => fold(item.source).includes(fold(value)))) return false;
     const keywords = fold(filters.query).split(/\s+/).filter(Boolean);
     const haystack = fold([item.title,item.id,item.path,item.markdown,...item.aliases,...item.knowledgeNodes,...item.methods,item.source].join('\n'));
@@ -487,4 +501,4 @@ function resolvePlan(plan,index) {
 
 module.exports={buildIndex,filterItems,selectQuestions,addSelectedQuestions,createPlan,addItem,addSection,removeEntry,moveEntry,getSections,moveSection,updateEntry,
   resolvePlan,validatePlan,defaultCourse,defaultOutputSettings,validateCourse,validateOutputSettings,
-  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint};
+  normalizeRole,normalizeFamilyMetadata,familyGroups,parseKnowledgeRef,fingerprint,splitFrontmatter};

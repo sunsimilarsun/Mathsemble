@@ -13,6 +13,12 @@ if (!existsSync(input)) {
 if (!existsSync(resolve(root, 'styles.css'))) throw new Error('Missing styles.css; cannot generate printing stylesheet');
 const original = readFileSync(input, 'utf8');
 let source = original.replace(/\r\n?/g, '\n');
+if (source.includes('/* MWB_HANDOUT_EMBEDS_START */')) {
+  const embeds = readFileSync(resolve(root,'src/handout-embeds.cjs'),'utf8').replace(/\r\n?/g,'\n');
+  source = source.replace(/\/\* MWB_HANDOUT_EMBEDS_START \*\/[\s\S]*?\/\* MWB_HANDOUT_EMBEDS_END \*\//,
+    () => '/* MWB_HANDOUT_EMBEDS_START */\nconst MWB_HANDOUT_EMBEDS = (() => { const module = {exports:{}};\n' +
+      embeds + '\nreturn module.exports; })();\n/* MWB_HANDOUT_EMBEDS_END */');
+}
 if (source.includes('/* MWB_EXPORT_GENERATED_START */')) {
   const modules = ['resources','archive','host'].map(name => {
     const body = readFileSync(resolve(root, `src/export-${name}.cjs`), 'utf8').replace(/\r\n?/g, '\n');

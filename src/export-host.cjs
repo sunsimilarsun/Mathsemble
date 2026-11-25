@@ -36,29 +36,47 @@ function createMediaSession({vault, reader, mimeFor, createResourceSession, time
   return createResourceSession({reader,resolveLocal,readLocal,mimeForLocal:mimeFor});
 }
 
+function omissionAddress(value, base) {
+  try { return new URL(value,base).href; }
+  catch (_) {
+    // The manifest hashes data URLs without displaying their contents.
+    return 'data:text/plain,' + new URLSearchParams({target:value}).toString();
+  }
+}
+
 async function freezeMediaDom(session, root, {signal, nodes = new WeakMap()} = {}) {
   const warnings = [];
   let changed = false;
-  for (const node of root.querySelectorAll('img[src],svg image[href],svg image[xlink\\:href]')) {
+  for (const node of root.querySelectorAll('img,svg image[href],svg image[xlink\\:href]')) {
     if (signal?.aborted) throw signal.reason || new Error('资源读取已取消');
-    const attr = node.hasAttribute('src') ? 'src' : node.hasAttribute('href') ? 'href' : 'xlink:href';
+    const attr = node.localName === 'img' ? 'src' : node.hasAttribute('href') ? 'href' : 'xlink:href';
     const raw = node.getAttribute(attr);
-    if (!raw || raw[0] === '#' || nodes.get(node)?.value === raw) continue;
+    const sources = attr === 'src' && node.parentElement?.localName === 'picture'
+      ? Array.from(node.parentElement.children).filter(child => child.localName === 'source' && child.hasAttribute('srcset'))
+      : [];
+    const responsive = node.hasAttribute('srcset') || sources.length > 0;
+    if (!responsive && (!raw || raw[0] === '#' || nodes.get(node)?.value === raw)) continue;
+    // currentSrc becomes available during render settling. Freezing the
+    // fallback earlier would permanently override the browser's selection.
+    if (responsive && !node.currentSrc) continue;
     const url = attr === 'src' && node.currentSrc ? node.currentSrc : raw;
     try {
       let value = await session.read(url, root.ownerDocument.baseURI, {signal,kind:'image'});
       // A fragment selects an SVG view; it is not part of the captured bytes.
-      if (!/^data:/i.test(url) && /^data:image\/svg\+xml[;,]/i.test(value))
+      if (/^data:image\/svg\+xml[;,]/i.test(value))
         value += new URL(url,root.ownerDocument.baseURI).hash;
       node.setAttribute(attr,value);
-      if (attr === 'src') node.removeAttribute('srcset');
+      if (attr === 'src') {
+        node.removeAttribute('srcset');
+        for (const source of sources) source.removeAttribute('srcset');
+      }
       nodes.set(node,{value}); changed = true;
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError' || /BUDGET|DISPOSED/.test(error?.code || '')) throw error;
       // Existing partial-export consent remains necessary. A loaded but
       // uncaptured image must not silently claim a reproducible export.
       warnings.push('图片资源未能固定，输出可能不完整：'+String(node.getAttribute('alt') || '图片').slice(0,80));
-      session.recordOmission({url,base:root.ownerDocument.baseURI,kind:'image',stage:'read',reasonCode:'RESOURCE_UNAVAILABLE'});
+      session.recordOmission({url:omissionAddress(url,root.ownerDocument.baseURI),kind:'image',stage:'read',reasonCode:'RESOURCE_UNAVAILABLE'});
     }
   }
   return {changed,warnings:[...new Set(warnings)]};
@@ -70,9 +88,11 @@ function previewEvidence(preview, collectMediaDependencies) {
     || (preview.exam ? preview.exam.items : [{file:preview.file,markdown:preview.markdown}]);
   const sources = records.map(record=>({path:record.file.path,markdown:record.markdown,
     ...(typeof record.metadata?.id === 'string' && record.metadata.id ? {sourceId:record.metadata.id} : {})}));
+  const noteEmbeds = new Set((preview.sourceSnapshot?.embeddedLinks || [])
+    .map(link => JSON.stringify([link.sourcePath,link.syntax || 'wiki-embed',link.target])));
   const declaredDependencies = sources.flatMap(source => {
     const result = collectMediaDependencies(source.markdown,source.path);
-    return result.dependencies;
+    return result.dependencies.filter(item => !noteEmbeds.has(JSON.stringify([source.path,item.syntax,item.target])));
   });
   return {sources,declaredDependencies};
 }
@@ -96,10 +116,7 @@ async function captureDeclaredMedia(session, declarations, app, signal) {
       await session.read(url, 'file:///', {signal,kind:'image'});
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError' || /BUDGET|DISPOSED/.test(error?.code || '')) throw error;
-      let address = String(url || sourcePath);
-      try { address = new URL(address,'file:///').href; }
-      catch (_) { address = 'data:text/plain,'+encodeURIComponent(address); }
-      session.recordOmission({url:address,base:'file:///',kind:'image',stage:'render',
+      session.recordOmission({url:omissionAddress(url || sourcePath,'file:///'),kind:'image',stage:'render',
         reasonCode:'DECLARED_MEDIA_UNAVAILABLE',reason:'原文中的嵌入资源未能归档'});
     }
   }

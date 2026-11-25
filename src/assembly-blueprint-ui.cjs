@@ -95,7 +95,7 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
     }
     options(name) {
       const items=(this.view.index?.items||[]).filter(item=>item.kind==='question');
-      const values=items.flatMap(item=>name==='tier'?item.tiers:name==='method'?item.methods:name==='knowledge'?item.knowledgeNodes:[item[name]]).filter(value=>value!==undefined&&value!==null&&value!=='');
+      const values=items.flatMap(item=>name==='tier'?item.tiers:name==='method'?item.methods.map(value=>core.parseKnowledgeRef(value).target):name==='knowledge'?item.knowledgeNodes:[item[name]]).filter(value=>value!==undefined&&value!==null&&value!=='');
       if(name==='questionType')values.push(...Object.keys(types));
       if(name==='difficulty')values.push(1,2,3,4,5);
       return [...new Set(values.map(String))].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}));
@@ -103,8 +103,9 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
     filter(parent,row,name,label) {
       const input=this.field(parent,label,'select');input.multiple=true;input.size=3;input.dataset.filter=name;
       const selected=Array.isArray(row.filters[name])?row.filters[name]:row.filters[name]?[row.filters[name]]:[];
-      const values=[...new Set([...this.options(name),...selected.map(String)])];
-      for(const value of values){const option=this.el('option',input,name==='questionType'?types[value]||value:value);option.value=value;option.selected=selected.map(String).includes(value);}
+      const selectedValues=new Set(selected.map(value=>name==='method'?core.parseKnowledgeRef(value).target:String(value)));
+      const values=[...new Set([...this.options(name),...selectedValues])];
+      for(const value of values){const option=this.el('option',input,name==='questionType'?types[value]||value:value);option.value=value;option.selected=selectedValues.has(value);}
       input.onchange=()=>{row.filters[name]=[...input.selectedOptions].map(option=>name==='difficulty'?Number(option.value):option.value);this.changed();};
       return input;
     }
@@ -146,7 +147,7 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
       await this.action('按配额生成',async options=>{
         if(redraw)this.seed=uid();
         const value=await service.generateBlueprintCandidate({plan:clone(this.view.plan),blueprint:clone(this.blueprint),locks:clone(this.locks),excludedKeys:[],seed:this.seed},options);
-        if(this.closed)return;this.candidate=value;this.blueprint=value.blueprint||this.blueprint;this.visible=50;this.renderCandidate();
+        if(this.closed)return;this.candidate=value;this.visible=50;this.renderCandidate();
       });
     }
     updateApply() {if(this.applyButton){this.applyButton.dataset.unavailable=String(this.candidate?.allocation?.status!=='complete');this.applyButton.disabled=this.busy||this.applyButton.dataset.unavailable==='true';}}

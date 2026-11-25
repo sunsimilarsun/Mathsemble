@@ -68,6 +68,14 @@ test('balanced parentheses and angle image destinations are encoded',async()=>{
  const out=await run([{markdown:'![a](./img(1).png)\n![b](<./with space.png>)'}],{resolveLink:async t=>({path:'assets/'+t.replace(/^\.\//,''),extension:'png'})});
  assert(out.includes('img%281%29.png'));assert(out.includes('with%20space.png'));
 });
+test('local Markdown heading links keep existing URL escapes and encode literal heading characters once',async()=>{
+ const markdown='[定义](note#basic%20concepts)\n[百分号](<#增长 50%>)\n[字面转义](#value%2520)\n[[note#原 标题|Wiki]]';
+ const out=await run([{markdown}],{resolveLink:resolver});
+ assert.match(out,/note\.md#basic%20concepts\)/);
+ assert(out.includes('#'+encodeURIComponent('增长 50%')+')'));
+ assert(out.includes('#value%2520)'));
+ assert(out.includes('[[知识/note.md#原 标题|Wiki]]'));
+});
 test('reference images, links and footnotes are isolated per source',async()=>{
  const md='![图][same]\n[链接][same]\n[same][]\n[same]\n文本[^a]\n\n[same]: 图.png "图示"\n[^a]: 脚注。';
  const out=await run([{markdown:md},{markdown:md}],{resolveLink:resolver});
