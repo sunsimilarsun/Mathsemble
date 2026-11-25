@@ -75,6 +75,16 @@ test('legacy content-bearing overflow exception is redacted without permitting p
  assert.match(state.scripts[1],/document\.querySelector\('\.mwb-export-doc'\), true, false, true/);
  assert.doesNotMatch(JSON.stringify(state.responses),/SECRET|34–––/);cleaned(state);
 });
+test('missing answer space stops printing even when partial images, math and block omission are allowed', async () => {
+ const failure = new Error('分页后答题空间丢失或高度异常：目标 120px，实得 0px，段数 0/1');
+ const {Window,state} = host({paginateFailure:failure});
+ await assert.rejects(pdf(html,Window,{
+  allowPartialImage:true, allowPartialMath:true, allowOverflowOmission:true
+ }), /分页后答题空间丢失或高度异常/);
+ assert.equal(state.printed,0);
+ cleaned(state);
+});
+
 test('source-path and section-label exceptions retain category without copying source data',async()=>{
  for(const message of ['试题为空：PRIVATE_PATH','存在没有题目的试卷分区：SECRET_TEACHER']) {
   const {Window,state}=host({paginateFailure:new Error(message)});
