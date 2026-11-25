@@ -422,9 +422,9 @@ test('answer-slot syntax and fenced literal solution callouts stay intact',()=>{
 test('preview UI passes solution preferences to student and teacher rendering and export rechecks',()=>{
   assert.match(js,/this\.solutionOptions = \{ studentBlankCallouts: \[\], teacherVisibleCallouts: \[\] \}/);
   assert.match(js,/handoutPlan\(this\.questionPlan\.markdown, mode, this\.solutionOptions\)/);
-  assert.match(js,/studentSpacePlan\(item\.markdown, this\.solutionOptions\)/);
-  assert.match(js,/transformQuestion\(item\.markdown, 'teacher', this\.solutionOptions\)/);
-  assert.match(js,/mwbTeacherMeasurementPlan\(this\.markdown, this\.solutionOptions\)/);
+  assert.match(js,/studentSpacePlan\(item\.printSource, this\.solutionOptions\)/);
+  assert.match(js,/transformQuestion\(item\.printSource, 'teacher', this\.solutionOptions\)/);
+  assert.match(js,/mwbTeacherMeasurementPlan\(markdown, this\.solutionOptions\)/);
   assert.match(js,/this\.solutionModeLabels\.student\.style\.display = mode === 'student'/);
   assert.match(js,/this\.solutionModeLabels\.teacher\.style\.display = mode === 'teacher'/);
 });

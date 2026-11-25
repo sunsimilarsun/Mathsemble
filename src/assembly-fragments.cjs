@@ -234,12 +234,7 @@ function resolveFragment(item,raw) {
     if(!found)throw fail('FRAGMENT_MISSING','引用的稳定片段已缺失：'+id+'；不会按标题或序号回退');
     return {...found};
   });
-  const blocks=selected.map(part=>{
-    if(!ref.scores)return part.markdown;
-    const body=part.markdown.replace(/^#{1,6}[ \t]+[^\n]+(?:\n|$)/,'').trim();
-    return '## '+part.title+'（'+ref.scores[part.id]+' 分）\n\n'+body;
-  });
-  const markdown=[parsed.sharedMarkdown,...blocks].filter(Boolean).join('\n\n');
+  const markdown=[parsed.sharedMarkdown,...selected.map(part=>part.markdown)].filter(Boolean).join('\n\n');
   assertReferenceClosure(markdown,item.markdown);
   return {reference:ref,markdown,
     sharedMarkdown:parsed.sharedMarkdown,fragments:selected,score:totalScore(ref)};

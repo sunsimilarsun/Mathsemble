@@ -123,7 +123,7 @@ ID 使用英文字母开头的 1–64 位字母、数字、下划线或连字符
 - `service.updateEntryContent(plan, entryId, patch, options)` 在真实来源检查后返回 `{plan,index,run?}`；允许的 patch 仅为 `score`、`fragmentRef`。`options` 支持既有 `signal`、`isCurrent`、配置与超时，以及显式选择的 `run`。调用方只在成功返回后替换当前方案，并将返回的派生 `run` 保留为待保存记录。
 - 若存在精确匹配的配额记录，修改分值会保留原蓝图、逐槽归属与真实锁，派生新的记录 ID 和方案摘要，不覆盖旧记录。多份匹配记录必须明确选择，不能悄悄退回无配额模式。已归属整题配额的条目不能直接改成小问片段；未归属的其他条目仍可选片段，但既有配额、来源去重和题族上限继续核对。方案和派生记录仍分别保存。
 - 覆盖旧方案时错误码 `PLAN_V4_SAVE_AS_REQUIRED` 表示必须另存，不能据此自动覆盖旧文件。
-- 编译沿用双版管线，在题标题显示总分、有完整小问分值时在对应小问标题显示分值；`sourceMap` 可选携带 `fragmentRef`、`score`，原始来源快照保持全文。
+- 学生版和教师版的题号后直接接题干，小问使用原有编号和正文。本次分值保存在方案中。编译结果的 `sourceMap` 可携带 `fragmentRef`、`score`，原始来源快照保留全文。
 - `assembly-fragments.cjs` 为纯函数模块；内嵌包先提供 `MWB_ASSEMBLY_FRAGMENTS`，Node 测试使用正常 CommonJS 加载。没有新增题卡 YAML 必填字段。
 
 本文说明数据和源码契约；自动化测试、真实 Obsidian 和实际 PDF 的完成状态分别记录，不由本文宣称全部验收。

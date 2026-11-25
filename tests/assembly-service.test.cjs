@@ -151,6 +151,28 @@ test('feature-free legacy plans continue normal v3 save without source mutations
   await f.service.savePlan({...loaded,title:'改名'},path);assert.equal(JSON.parse(f.nodes.get(path).content).schemaVersion,3);
   assert.equal(f.nodes.get('题库/题.md').content,q());
 });
+test('v1-v4 stored plans keep private card and occurrence metadata while all materialized questions omit it',async()=>{
+  const originalCard=source({id:'Q1',subject:'高中数学',question_type:'fill_blank',role:'训练',
+    title:'原卡标题',source:'私人题目来源'},'# 首行原题名\n\n##### 首行题标\n\n函数题干 ?{1}。');
+  for(const version of [1,2,3,4]){
+    const f=await prepared({'题库/题.md':originalCard});
+    const plan={...f.plan,schemaVersion:version};if(version===1){delete plan.course;delete plan.output;}
+    const question=plan.entries.find(e=>e.kind==='question');
+    question.title='方案内标题';question.role='变式';if(version===4)question.score=6.5;
+    const path='Mathsemble/组题方案/原方案.json',json=JSON.stringify(plan);f.file(path,json);
+    const loaded=await f.service.loadPlan(path),before=JSON.stringify(loaded);
+    const preview=await f.service.compile(loaded,f.index);
+    const reference=await f.service.exportMarkdown(loaded,f.index),expanded=await f.service.exportMarkdown(loaded,f.index,{questionFormat:'expanded'});
+    for(const output of [preview.markdown,f.nodes.get(reference).content,f.nodes.get(expanded).content]){
+      for(const privateText of ['原卡标题','私人题目来源','首行原题名','首行题标','方案内标题','变式','6.5 分'])assert(!output.includes(privateText));
+      assert(output.includes('完整知识正文'));
+    }
+    assert(f.nodes.get(reference).content.includes('![[题库/题.md]]'));
+    assert(preview.markdown.includes('>1.</span>\n\n函数题干 ?{1}。'));
+    if(version===4)assert.equal(preview.sourceMap.find(row=>row.kind==='question').score,6.5);
+    assert.equal(before,JSON.stringify(loaded));assert.equal(f.nodes.get(path).content,json);assert.equal(f.nodes.get('题库/题.md').content,originalCard);
+  }
+});
 test('entry content edits recheck live sources and publish score/fragment changes atomically with no writes',async()=>{
   const body='<!-- mathsemble:stem -->\n\n共同题干\n\n<!-- mathsemble:end -->\n\n<!-- mathsemble:part p1 -->\n\n小问 ?{1}\n\n> [!answer]- 答案\n> 完整步骤\n\n<!-- mathsemble:end -->';
   const f=await prepared({'题库/题.md':q('Q1',body)}),id=f.plan.entries.find(e=>e.kind==='question').entryId,before=JSON.stringify(f.plan),writes=f.writes.length;

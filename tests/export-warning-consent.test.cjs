@@ -128,3 +128,15 @@ test('acknowledgement never bypasses an entirely missing mathematical render', a
   await assert.rejects(fixture.modal.preparePrintHtml('Exam'), /预览存在严重问题：包含数学公式，但尚未检测到渲染结果/);
   assert.equal(fixture.exportAttempts(), 0);
 });
+
+test('print preflight uses the exported question body for global and per-card checks',async () => {
+  const {modal,reachedExport,questions}=examModal();
+  questions[0].brokenImage=false;
+  modal.renderWarnings=[];
+  modal.exam.items[0].markdown='# 题库文件名\n\n##### 二次函数 $y=x^2$ 的题图 ![old](missing.png)\n\nQuestion text';
+  for(const mode of ['teacher','student']){
+    modal.mode=mode;
+    await assert.rejects(modal.preparePrintHtml('Exam'),error=>error===reachedExport);
+    assert.equal(modal.renderWarnings.length,0);
+  }
+});

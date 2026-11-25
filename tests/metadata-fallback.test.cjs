@@ -17,9 +17,14 @@ const context = {
   require: name => name === 'obsidian' ? obsidian : require(name),
   console, Buffer,
 };
-vm.runInNewContext(source + '\n;globalThis.metadataReview = { metadataOf, metadataAudit, teachingRoleMetadata };', context);
-const { metadataOf, metadataAudit, teachingRoleMetadata } = context.metadataReview;
+vm.runInNewContext(source + '\n;globalThis.metadataReview = { metadataOf, metadataAudit, teachingRoleMetadata, MODE_DEFAULTS };', context);
+const { metadataOf, metadataAudit, teachingRoleMetadata, MODE_DEFAULTS } = context.metadataReview;
 const fromFields = fields => metadataOf({ markdown: `---\n${fields}\n---\nQuestion text` });
+
+test('both paper editions start with no optional card metadata selected', () => {
+  assert.deepEqual(Array.from(MODE_DEFAULTS.student), []);
+  assert.deepEqual(Array.from(MODE_DEFAULTS.teacher), []);
+});
 
 test('fallback distinguishes absent keys, empty values and explicit YAML nulls', () => {
   const absent = fromFields('object_type: question');

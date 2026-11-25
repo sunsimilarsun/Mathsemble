@@ -26,6 +26,7 @@ async function fixture() {
 test('presentation uses compiler ranges: internal headings never create extra slides',async()=>{
   const data=await fixture(),before=JSON.stringify(data),slides=slidesFromCompilation(data.plan,data);
   assert.equal(slides.length,3);assert(slides[0].markdown.includes('SHARED_TAIL'));
+  assert.equal(slides[0].title,'');assert(!slides[0].markdown.includes('甲'));assert.equal(slides[1].title,'知识');
   assert(slides[1].markdown.includes('KNOWLEDGE_TAIL'));assert(!slides[0].markdown.includes('KNOWLEDGE'));
   assert.equal(slides[2].section,'前半节');assert(Object.isFrozen(slides[0]));assert.equal(JSON.stringify(data),before);
 });
@@ -59,7 +60,7 @@ async function browserCases(moduleSource,css) {
   const style=document.createElement('style');style.textContent=css;document.head.append(style);
   class Modal {constructor(app){this.app=app;this.modalEl=document.createElement('div');this.modalEl.className='modal';this.contentEl=document.createElement('div');this.contentEl.className='modal-content';this.modalEl.append(this.contentEl);document.body.append(this.modalEl);}open(){return this.onOpen();}close(){this.onClose();this.modalEl.remove();}}
   class Component {load(){this.loaded=true;}unload(){this.loaded=false;}}
-  function make({slow=false}={}) {
+  function make({slow=false,withNumber=false}={}) {
     let activeGuard=0,changed,gate,late;const owners=[],calls=[];
     const app={},plugin={addChild(owner){owners.push(owner);owner.load();},removeChild(owner){owner.unload();}};
     const plan={title:'课堂',entries:[{entryId:'a',kind:'question',title:'甲'},{entryId:'b',kind:'question',title:'乙'}],output:{solutionOptions:{}}};
@@ -68,13 +69,17 @@ async function browserCases(moduleSource,css) {
       async compile(){return {markdown:'A PRIVATE_A\n\nB PRIVATE_B',sourceMap:[{entryId:'a',kind:'question',path:'a.md',startLine:1,endLine:1},{entryId:'b',kind:'question',path:'b.md',startLine:3,endLine:3}]};}};
     const Type=module.exports.createPresentationModal({Modal,Component,core:{validatePlan:raw=>JSON.parse(JSON.stringify(raw))},service,
       projectMarkdown:(md,mode)=>mode==='student'?md.replace(/PRIVATE_[AB]/g,''):md,
-      renderMarkdown:async(md,target,sourcePath,owner,signal)=>{ok(target.isConnected,'renderer staging disconnected');calls.push({md,sourcePath,owner,signal});if(slow&&md.includes('PRIVATE'))await new Promise(resolve=>{gate=resolve;late=()=>{target.textContent=md;};});target.textContent=md;}});
+      inlineQuestionNumber:(root,number)=>{root.nextElementSibling.prepend(number+' ');root.remove();},
+      renderMarkdown:async(md,target,sourcePath,owner,signal)=>{ok(target.isConnected,'renderer staging disconnected');calls.push({md,sourcePath,owner,signal});if(slow&&md.includes('PRIVATE'))await new Promise(resolve=>{gate=resolve;late=()=>{target.textContent=md;};});
+        if(withNumber){target.innerHTML='<div><h5><span class="mwb-auto-question-number">1.</span></h5></div><p></p>';target.lastElementChild.textContent=md;}
+        else target.textContent=md;}});
     const modal=new Type(app,plugin,view);
     return {modal,view,calls,owners,change:()=>changed(),release(){gate?.();late?.();},guards:()=>activeGuard};
   }
   await check('starts hidden; only current slide reveals; keyboard and previous reset answers',async()=>{
-    const f=make();try{
+    const f=make({withNumber:true});try{
       await f.modal.open();ok(!f.modal.contentEl.textContent.includes('PRIVATE'),'initial teacher content leaked');
+      ok(!f.modal.contentEl.textContent.includes('甲')&&!f.modal.body.querySelector('h5')&&f.modal.body.querySelector('p')?.textContent.startsWith('1. A'),'question title or separate heading displayed');
       await f.modal.toggle();ok(f.modal.body.textContent.includes('PRIVATE_A')&&!f.modal.body.textContent.includes('PRIVATE_B'),'reveal affected other slide');
       f.modal.body.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));await tick();
       ok(f.modal.position===1&&!f.modal.revealed&&!f.modal.body.textContent.includes('PRIVATE'),'navigation retained answers');

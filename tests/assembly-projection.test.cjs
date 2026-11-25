@@ -25,7 +25,8 @@ test('mixed compiled handout uses real projection without losing knowledge or ex
  const markdown=await compileMarkdown(data.plan,data.resolved);
  const boundaries=api.mwbHandoutQuestionPlan(markdown);
  assert.equal(boundaries.errors.length,0);assert.equal(boundaries.groups.length,2);
- assert.deepEqual(Array.from(boundaries.groups,g=>g.title),['例题1 第一道','训练2 第二道']);
+ assert.deepEqual(Array.from(boundaries.groups,g=>g.title),['<span class="mwb-auto-question-number">1.</span>','<span class="mwb-auto-question-number">2.</span>']);
+ assert(!markdown.includes('第一道'));assert(!markdown.includes('第二道'));
  const first=boundaries.groups[0];
  const lines=markdown.split('\n');
  assert.equal(lines[first.end],'## 知识乙');

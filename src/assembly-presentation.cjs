@@ -19,14 +19,14 @@ function slidesFromCompilation(plan, prepared, outputPath = 'Mathsemble/讲义/_
       throw new Error('逐题展示的来源映射失效，请重新生成');
     const markdown = lines.slice(range.startLine - 1, range.endLine).join('\n');
     if (!markdown.trim()) throw new Error('展示内容为空');
-    slides.push(Object.freeze({entryId:entry.entryId,kind:entry.kind,title:entry.title || range.path,
+    slides.push(Object.freeze({entryId:entry.entryId,kind:entry.kind,title:entry.kind==='knowledge' ? entry.title : '',
       section,sourcePath:range.path,renderPath:outputPath,markdown}));
     previousEnd = range.endLine;
   }
   return Object.freeze(slides);
 }
 
-function createPresentationModal({Modal,Component,core,service,projectMarkdown,renderMarkdown}) {
+function createPresentationModal({Modal,Component,core,service,projectMarkdown,renderMarkdown,inlineQuestionNumber}) {
   return class PresentationModal extends Modal {
     constructor(app,plugin,view) {
       super(app); this.plugin=plugin; this.view=view; this.closed=true; this.position=0;
@@ -126,6 +126,16 @@ function createPresentationModal({Modal,Component,core,service,projectMarkdown,r
         if(this.closed||this.invalid||signal?.aborted||generation!==this.generation)return;
         this.guard.assertCurrent();
         if(!this.samePlan())throw new Error('编排已变化，请重新打开逐题投影');
+        if(slide.kind==='question'){
+          const first=staging.firstElementChild;
+          const heading=first?.matches('h5')?first:first?.querySelector('h5');
+          const number=heading?.querySelector('span.mwb-auto-question-number')?.textContent;
+          if(number && /^\d+\.$/.test(number)){
+            const parent=heading.parentElement;
+            const headingRoot=parent!==staging && parent.childElementCount===1 ? parent : heading;
+            inlineQuestionNumber(headingRoot,number);
+          }
+        }
         staging.style.removeProperty('visibility'); this.body.scrollTop=0;
         this.status.textContent=[slide.section,slide.title,revealed?'答案已揭示':'答案已隐藏'].filter(Boolean).join(' · ');
         this.body.focus({preventScroll:true});

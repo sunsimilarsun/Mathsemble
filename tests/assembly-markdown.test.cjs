@@ -16,13 +16,14 @@ function outputProperties(markdown) {
     const separator=line.indexOf(':');return [line.slice(0,separator),JSON.parse(line.slice(separator+1).trim())];
   }));
 }
-test('v4 whole-question score appears in both-mode source heading without modifying source',async()=>{
+test('v4 whole-question score stays on the plan and only its number precedes the stem',async()=>{
   const data=fixture([{markdown:'题干 ?{42}\n\n> [!answer]- 答案\n> 满分解答'}]);
   data.plan.entries[0].score=12.5;const before=JSON.stringify(data);
-  const out=await compileMarkdown(data.plan,data.resolved);assert.match(out,/##### 例题1 测试 0（12.5 分）/);
+  const out=await compileMarkdown(data.plan,data.resolved);assert(out.includes(numberedQuestionHeading(1)+'\n\n题干'));
+  assert(!out.includes('12.5 分'));assert(!out.includes('例题1'));assert(!out.includes('测试 0'));
   assert.equal(JSON.stringify(data),before);
 });
-test('selected parts compile shared resources and answers with total and per-part scores',async()=>{
+test('selected parts retain resources, answers and scoring evidence without printing scores',async()=>{
   const block=(type,id,body)=>`<!-- mathsemble:${type}${id?' '+id:''} -->\n\n${body}\n\n<!-- mathsemble:end -->`;
   const markdown='# 原题名\n\n'+block('stem','','共用题干 ![图](stem.png)')+'\n\n'+
     block('part','p-a','## 小问甲\n\n输入 ?{1}\n\n> [!answer]- 答案\n> 甲步骤 ![图](answer.png)')+'\n\n'+
@@ -32,7 +33,7 @@ test('selected parts compile shared resources and answers with total and per-par
     {fragmentRef:{kind:'question-part',ids:['p-a'],scores:{'p-a':4.25}}});
   const calls=[],sourceMaps=[];const before=JSON.stringify({plan,index});
   const out=await compileMarkdown(plan,core.resolvePlan(plan,index).entries,{resolveLink:async target=>{calls.push(target);return{path:'图/'+target,extension:'png'};},onSourceMap:rows=>sourceMaps.push(rows)});
-  assert(out.includes(numberedQuestionHeading(1,4.25)));assert.match(out,/###### 小问甲（4.25 分）/);assert.match(out,/甲步骤/);
+  assert(out.includes(numberedQuestionHeading(1)));assert.match(out,/###### 小问甲\n/);assert.match(out,/甲步骤/);assert(!out.includes('4.25 分'));
   assert(!out.includes('未选'));assert(!out.includes('mathsemble:'));assert.deepEqual(calls,['stem.png','answer.png']);
   assert.deepEqual(sourceMaps[0][0].fragmentRef,plan.entries[0].fragmentRef);assert.equal(sourceMaps[0][0].score,4.25);
   assert.throws(()=>sourceMaps[0][0].fragmentRef.ids.push('p-b'),TypeError);
@@ -58,7 +59,7 @@ test('whole knowledge and questions keep order, answer slots and source unchange
  const data=fixture([{kind:'knowledge',title:'知识梳理',markdown:'---\nid: K01\n---\n# 原标题\n\n## 定义\n完整正文。\n\n$$A=\\{x\\mid x>0\\}$$\n\n### 例子\n所有例子。'}, {role:'变式',markdown:'# 原题名\n\n题干 ?{42}。\n\n## 方法\n> [!answer]- 答案\n> 标准解答。\n> [!solution]- 补充\n> 说明。'}]);
  const before=JSON.stringify(data); const out=await compileMarkdown(data.plan,data.resolved);
  assert(out.includes('## 知识梳理')); assert(!out.includes('原标题')); assert(out.includes('完整正文。')); assert(out.includes('所有例子。'));
- assert(out.includes('##### 变式1 测试 1')); assert(out.includes('###### 方法')); assert(out.includes('题干 ?{42}。')); assert(out.includes('> [!answer]- 答案')); assert(out.indexOf('知识梳理')<out.indexOf('##### 变式1'));
+ assert(out.includes(numberedQuestionHeading(1))); assert(out.includes('###### 方法')); assert(out.includes('题干 ?{42}。')); assert(out.includes('> [!answer]- 答案')); assert(out.indexOf('知识梳理')<out.indexOf(numberedQuestionHeading(1)));
  assert.equal(JSON.stringify(data),before);
 });
 test('generated course properties follow the plan and safely quote multiline content',async()=>{
@@ -84,7 +85,7 @@ test('legacy direct compilation uses the handout title and teacher fallback with
 });
 test('section and knowledge headings end question boundaries',async()=>{
  const out=await run([{markdown:'题干一。'},{kind:'section',title:'知识与训练'},{kind:'knowledge',markdown:'## 二级\n正文\n##### 五级\n正文尾'},{role:'训练',markdown:'题干二。'}]);
- assert(out.includes('## 知识与训练')); assert(out.includes('#### 五级')); assert(out.includes('##### 训练2'));
+ assert(out.includes('## 知识与训练')); assert(out.includes('#### 五级')); assert(out.includes(numberedQuestionHeading(2)));
  assert.equal((out.match(/^##### /gm)||[]).length,2);
 });
 test('code, quoted fences, inline math and display math remain literal',async()=>{
@@ -164,15 +165,15 @@ test('image nested inside a link resolves both destinations',async()=>{
  const out=await run([{markdown:'[![图](图.png)](note)'}],{resolveLink:resolver});
  assert(out.includes('[![图](../../%E9%A2%98%E5%BA%93/'));assert(out.includes(')](../../%E7%9F%A5%E8%AF%86/note.md)'));
 });
-test('an inherited role keeps the ordinary number while explicit overrides stay local',async()=>{
+test('the question output omits both inherited and explicitly assigned roles',async()=>{
  const {plan,resolved}=fixture([{markdown:'题干'}]);plan.entries[0].role='';resolved[0].item.role='训练';
  let out=await compileMarkdown(plan,resolved);assert(out.includes(numberedQuestionHeading(1)));assert(!out.includes('训练1'));
- plan.entries[0].role='变式';out=await compileMarkdown(plan,resolved);assert(out.includes('##### 变式1'));assert.equal(resolved[0].item.role,'训练');
+ plan.entries[0].role='变式';out=await compileMarkdown(plan,resolved);assert(!out.includes('变式'));assert(out.includes(numberedQuestionHeading(1)));assert.equal(resolved[0].item.role,'训练');
  plan.entries[0].role='';delete resolved[0].item.role;resolved[0].item.metadata={role:'example'};
  out=await compileMarkdown(plan,resolved);assert(out.includes(numberedQuestionHeading(1)));assert(!out.includes('例题1'));
 });
 
-test('whole question references contain one exact file link and only explicit occurrence labels',async()=>{
+test('whole question references keep a single exact link even with source and custom labels',async()=>{
   const data=fixture([
     {path:'题库/甲/同名.md',markdown:'\n> [!answer]-\n> 私有步骤'},
     {path:'题库/乙/同名.md',markdown:'# 源卡名\n\n##### 例 A\n\n第二题'},
@@ -183,10 +184,11 @@ test('whole question references contain one exact file link and only explicit oc
   const options={questionFormat:'reference',resolveLink:async path=>({path,extension:'md'})};
   const linked=await compileMarkdown(data.plan,data.resolved,options);
   assert.deepEqual(linked.split('\n').filter(l=>l.startsWith('![[')),data.resolved.map(r=>'![['+r.item.path+']]'));
-  assert.deepEqual(linked.split('\n').filter(l=>l.startsWith('##### ')),['##### 变式（口答）（3 分）']);
+  assert.deepEqual(linked.split('\n').filter(l=>l.startsWith('##### ')),[]);
   for (const inside of ['私有步骤','例 A','第二题','第三题','mwb-auto-question-number']) assert(!linked.includes(inside));
   const fixed=await compileMarkdown(data.plan,data.resolved);
-  for (const expected of [numberedQuestionHeading(1),'##### 例 A','##### 变式（口答）（3 分）','私有步骤','第三题']) assert(fixed.includes(expected));
+  for (const expected of [numberedQuestionHeading(1),numberedQuestionHeading(2),numberedQuestionHeading(3),'私有步骤','第三题']) assert(fixed.includes(expected));
+  for (const privateLabel of ['例 A','变式（口答）','3 分']) {assert(!fixed.includes(privateLabel));assert(!linked.includes(privateLabel));}
   assert(!fixed.includes('# 源卡名'));assert(!fixed.includes('![['));
 });
 
@@ -209,9 +211,75 @@ test('source question heading extraction keeps literal bodies and exact forced p
   assert.equal(selected.heading,'##### 例 6');assert(selected.body.includes('题目\n------\n'));assert(selected.body.includes('###### 说明'));
   const prose='第一行\n第二行\n---\n正文\n\n***\n方法\n---\n继续';
   assert.equal(splitQuestionHeading(prose).body,prose.replace('方法\n---','###### 方法\n'));
+  for (const first of ['（1）求 x','第2问 求定义域','第一小问 求和']) {
+    assert.equal(splitQuestionHeading('# 题卡名\n\n##### '+first+'\n\n## 后续条件').body.trim(),first+'\n\n###### 后续条件');
+  }
 });
 
-test('moving saved score-only question references renumbers both while retaining each original score',async()=>{
+test('the heading can contain the real prompt; an ordinary title containing math is omitted',async()=>{
+  for (const [label,stem] of [
+    ['【例1】 若 $x>0$，求 $x=?{2}$。','若 $x>0$，求 $x=?{2}$。'],
+    ['变式1-1 下列正确的是 !{B}。','下列正确的是 !{B}。'],
+    ['【转化 2】求出 $x^2=4$ 的所有根','求出 $x^2=4$ 的所有根'],
+    ['第1题 哪项符合条件？','哪项符合条件？'],
+    ['例1 请判断下列各组数能否组成三角形。','请判断下列各组数能否组成三角形。'],
+    ['例1 二次函数 $y=x^2$ 的图像（核心）',''],
+    ['计算公式 $S=ab$ 的整理（基础）','']
+  ]) {
+    const compiled=await run([{markdown:'# 卡片标题\n\n##### '+label+'\n\n正文附图说明。'}]);
+    assert(compiled.includes(numberedQuestionHeading(1)+'\n\n'+(stem?stem+'\n\n':'')+'正文附图说明。'));
+    assert(!compiled.includes('卡片标题'));assert(!compiled.includes('（核心）'));
+  }
+});
+
+test('leading hidden comments do not turn source titles into visible headings when rendering a saved link or frozen copy',async()=>{
+  const {expandHandoutEmbeds}=require('../src/handout-embeds.cjs');
+  for(const comment of ['<!-- 导入\n备注 -->','%%\n审校记录\n%%','<!-- 甲 --> %%乙%%']){
+    const path='题库/甲.md',note={path,extension:'md'};
+    const body=comment+'\n\n# 原卡标题\n\n'+comment+'\n\n##### 变式1 计算公式 $S=ab$ 的整理\n\n正文。\n\n'+
+      '<!-- 一个标签 --> 同行仍然可见。\n\n`%%字面量%%`\n\n> [!answer]-\n> 原答案';
+    const fixed=await run([{path,markdown:body}]);
+    const linked=await expandHandoutEmbeds('![['+path+']]','讲义/测试.md',{
+      resolveLink:async()=>note,readFile:async()=>body,isQuestionNote:()=>true
+    });
+    for(const rendered of [linked.markdown,fixed]){
+      assert(!rendered.includes('原卡标题'));assert(!rendered.includes('计算公式'));assert(!rendered.includes('审校记录'));
+      for(const visible of ['正文。','同行仍然可见。','`%%字面量%%`','原答案']) assert(rendered.includes(visible));
+    }
+  }
+});
+
+test('a historical question number can touch a parenthesized card source or an actual subquestion',async()=>{
+  const {expandHandoutEmbeds}=require('../src/handout-embeds.cjs');
+  const labels=['例 1（椭圆调和点列 · 深圳中学期中第 14 题）','变式2-1(深圳卷)','练习3【基础】','第4题[来源]','例5［拓展］','例6（1）求定义域'];
+  const source=labels.map(label=>'##### '+label+'\n\n已知椭圆').join('\n\n');
+  const {markdown}=await expandHandoutEmbeds(source,'讲义/定比点差法.md',{});
+  const expected=labels.map((_,i)=>numberedQuestionHeading(i+1)+'\n\n'+(i===5?'（1）求定义域\n\n':'')+'已知椭圆').join('\n\n');
+  assert.equal(markdown,expected);
+});
+
+test('original exam points before a stem are omitted, while points in the problem, subquestion and solution are preserved',async()=>{
+  const {expandHandoutEmbeds}=require('../src/handout-embeds.cjs');
+  const path='高考题卡/Q19.md',note={path,extension:'md'};
+  const later='（1）（5分）第一名得17分。\n\n> [!solution]-\n> 写出方程（3分）。';
+  for (const [first,expected] of [
+    ['**（17分）**已知函数','已知函数'],
+    ['(12.5 分) 如图，在三棱锥中','如图，在三棱锥中'],
+    ['__（15分）__\n\n某工厂抽取一批元件','某工厂抽取一批元件'],
+    ['**（17分）**是本次评分的满分。','**（17分）**是本次评分的满分。'],
+    ['（17分）\n是本次评分的满分。','（17分）\n是本次评分的满分。'],
+    ['一等奖得17分，二等奖得8分。','一等奖得17分，二等奖得8分。']
+  ]) {
+    const markdown='##### 【NCEE-Q19】\n\n'+first+'\n\n'+later;
+    const fixed=await run([{path,markdown}]);
+    const linked=await expandHandoutEmbeds('![['+path+']]','讲义/测试.md',{
+      resolveLink:async()=>note,readFile:async()=>markdown,isQuestionNote:()=>true
+    });
+    for(const output of [fixed,linked.markdown]) assert(output.split(numberedQuestionHeading(1))[1].trimStart().startsWith(expected+'\n\n'+later),first);
+  }
+});
+
+test('moving saved scored questions renumbers both without showing either score',async()=>{
   const {expandHandoutEmbeds}=require('../src/handout-embeds.cjs');
   const data=fixture([{path:'题库/甲.md',markdown:'甲题'},{path:'题库/乙.md',markdown:'乙题'}]);
   for(const {entry,item} of data.resolved) item.role=entry.role;
@@ -220,17 +288,15 @@ test('moving saved score-only question references renumbers both while retaining
   const resolveLink=async p=>files.get(p);
   const fixed=await compileMarkdown(data.plan,data.resolved);
   const linked=await compileMarkdown(data.plan,data.resolved,{questionFormat:'reference',resolveLink});
-  for(const output of [fixed,linked]) {
-    assert(output.includes(numberedQuestionHeading(1,4.5)));assert(output.includes(numberedQuestionHeading(2,0)));
-  }
-  const blocks=linked.split(/(?=^##### )/m);
+  for(const output of [fixed,linked]) assert(!/（(?:4\.5|0) 分）/.test(output));
+  const blocks=linked.split(/(?=^!\[\[)/m);
   assert.equal(blocks.length,3);
   const reordered=[blocks[0],blocks[2].trimEnd(),blocks[1]].join('\n\n');
   const result=await expandHandoutEmbeds(reordered,'成品/换序.md',{
     resolveLink,readFile:async file=>file.markdown,isQuestionNote:()=>true
   });
   assert.deepEqual(result.markdown.split('\n').filter(l=>l.startsWith('##### ')),[
-    numberedQuestionHeading(1,0),numberedQuestionHeading(2,4.5)
+    numberedQuestionHeading(1),numberedQuestionHeading(2)
   ]);
   assert(result.markdown.indexOf('乙题')<result.markdown.indexOf('甲题'));
 });
@@ -258,7 +324,8 @@ test('reopening a mixed reference handout preserves inline numbering, selected f
   })).markdown;
   for (const output of [fixed,reopened]) {
     const labels=output.split('\n').filter(l=>l.startsWith('##### '));
-    assert.deepEqual(labels,[numberedQuestionHeading(1),'##### 小测',numberedQuestionHeading(3)]);
+    assert.deepEqual(labels,[numberedQuestionHeading(1),numberedQuestionHeading(2),numberedQuestionHeading(3)]);
+    assert(!output.includes('小测'));
     for (const expected of ['第一题 ?{甲}','共用题干','第二题选中部分','知识选中部分','第三题 !{B}']) assert(output.includes(expected));
     assert(!output.includes('排除部分'));
   }
@@ -288,8 +355,8 @@ test('source mapping covers final mixed-entry blocks without changing Markdown o
   ]);
   const expected=[
     '## 知识 梳理\n\n### 定义\n说明一。\n\n```md\n##### 围栏中的题目\n\n末行\n```\n\n知识结束。',
-    '##### 训练1 训练题\n\n题干 ?{42}。\n\n![图](../%E9%A2%98%E5%BA%93/%E9%85%8D%E5%9B%BE/%E5%9B%BE%281%29.png "说明")\n\n$$\nx+1=2\n$$\n\n> [!answer]-\n> 完整答案。',
-    '##### 例题2 末题\n\n最后正文。'
+    numberedQuestionHeading(1)+'\n\n题干 ?{42}。\n\n![图](../%E9%A2%98%E5%BA%93/%E9%85%8D%E5%9B%BE/%E5%9B%BE%281%29.png "说明")\n\n$$\nx+1=2\n$$\n\n> [!answer]-\n> 完整答案。',
+    numberedQuestionHeading(2)+'\n\n最后正文。'
   ];
   for(let i=0;i<map.length;i++){
     const row=map[i];

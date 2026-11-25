@@ -108,7 +108,7 @@ test('detects cycles by resolved file and fragment and allows repetition outside
   await assert.rejects(expandHandoutEmbeds('![[a]]',entry,options), /循环嵌入.*bank\/a.md → bank\/b.md → bank\/a.md/);
 });
 
-test('whole question embeds use one ordinal per occurrence and respect outer and original H5 labels', async () => {
+test('whole question embeds use one ordinal per occurrence, remove both title layers and retain subheadings', async () => {
   const plain = '---\nobject_type: item\n---\n题干 $x$。\n\n## 题内提示\n内容';
   const named = '---\nobject_type: item\n---\n# 原题卡\n\n##### 【自设题标】\n已给题干\n\n##### 小问\n第二问';
   const options = host({'bank/A.md':plain,'bank/B.md':named,'bank/知识.md':'知识正文'});
@@ -116,9 +116,9 @@ test('whole question embeds use one ordinal per occurrence and respect outer and
   const source = ['![[bank/A.md]]','![[bank/知识.md]]','![[bank/B.md]]','##### 教师自设标题','',
     '![[bank/B.md]]','讲解仍在外层显式 H5 内。','![[bank/A.md]]','独立点评。'].join('\n');
   const result = await expandHandoutEmbeds(source,entry,options);
-  assert.deepEqual(result.markdown.match(/^##### .+$/gm),[
-    '##### <span class="mwb-auto-question-number">1.</span>', '##### 【自设题标】', '##### 教师自设标题',
-    '##### <span class="mwb-auto-question-number">4.</span>']);
+  assert.deepEqual(result.markdown.match(/^##### .+$/gm),[1,2,3,4].map(n=>
+    `##### <span class="mwb-auto-question-number">${n}.</span>`));
+  assert.doesNotMatch(result.markdown,/【自设题标】|教师自设标题/);
   assert.equal((result.markdown.match(/^###### 小问$/gm)||[]).length,2);
   assert.equal((result.markdown.match(/^###### 题内提示$/gm)||[]).length,2);
   assert.doesNotMatch(result.markdown,/^# 原题卡$/m);
@@ -151,17 +151,48 @@ test('expanded fragments and hand-written question labels share ordinals with fo
     '<!-- mathsemble:compiled-question -->','##### 我为片段起的题标','片段题干',
     '##### <span class="mwb-auto-question-number">9.</span>','固定片段','![[q.md]]',
     '##### 5.手工题标','','![[q.md]]','![[q.md]]'].join('\n'),entry,options);
-  assert.deepEqual(Array.from(result.markdown.matchAll(/class="mwb-auto-question-number">(\d+)\./g),m=>m[1]),['3','4','6']);
+  assert.deepEqual(Array.from(result.markdown.matchAll(/class="mwb-auto-question-number">(\d+)\./g),m=>m[1]),['1','2','3','4','5','6']);
+  assert.match(result.markdown,/##### 方法总结/);
+  assert.doesNotMatch(result.markdown,/我为片段起的题标|5\.手工题标/);
 });
 
-test('reordering whole and expanded questions updates automatic numbers while preserving per-question points',async () => {
+test('reordering whole and expanded questions keeps ordinals while removing old score labels',async () => {
   const options = host({'A.md':'第一题题干','B.md':'第二题题干'});
   options.isQuestionNote = () => true;
   const auto = (n, score) => `##### <span class="mwb-auto-question-number">${n}.</span>（${score} 分）`;
   const source = ['![[B]]',auto(7,4.5),'![[A]]',auto(1,0),'展开片段','##### 自定义题标（2 分）','![[B]]','![[A]]'].join('\n');
   const result = await expandHandoutEmbeds(source,entry,options);
-  assert.deepEqual(result.markdown.match(/^##### .+$/gm),['##### <span class="mwb-auto-question-number">1.</span>',
-    auto(2,4.5),auto(3,0),'##### 自定义题标（2 分）','##### <span class="mwb-auto-question-number">5.</span>']);
+  assert.deepEqual(result.markdown.match(/^##### .+$/gm),[1,2,3,4,5].map(n=>
+    `##### <span class="mwb-auto-question-number">${n}.</span>`));
+  assert.doesNotMatch(result.markdown,/分）|自定义题标/);
   const fixed = await expandHandoutEmbeds([auto(12,0),'已展开的题干'].join('\n'),entry,options);
-  assert.equal(fixed.markdown,[auto(1,0),'已展开的题干'].join('\n'));
+  assert.equal(fixed.markdown,'##### <span class="mwb-auto-question-number">1.</span>\n已展开的题干');
+});
+
+test('ordinal-only output preserves answer-bearing handwritten stems and independent knowledge blocks',async () => {
+  const options=host({'Q.md':'# 题库内标题\n\n##### 二次函数 $y=x^2$ 的图像〔核心〕\n\n取 $x=2$，求 $y$。'});
+  options.isQuestionNote=()=>true;
+  const source=['##### 【辨析 1】分清推出方向与反例〔基础〕','判断下列各项。',
+    '##### 【转化 1】把文字条件转成集合关系〔基础〕','将下列条件用集合写出。',
+    '##### 【变式 1-1】二次函数 $y=x^2$ 的图像〔核心〕','![[Q]]',
+    '##### 例4 填入 ?{12}，选择（!{B}）。','补充说明。','##### 方法总结','![[Q]]'].join('\n');
+  const result=await expandHandoutEmbeds(source,entry,options);
+  assert.deepEqual(Array.from(result.markdown.matchAll(/class="mwb-auto-question-number">(\d+)\./g),m=>m[1]),['1','2','3','4','5']);
+  assert.doesNotMatch(result.markdown,/辨析 1|转化 1|变式 1-1|图像|例4|题库内标题/);
+  assert.match(result.markdown,/^#### 方法总结$/m);
+  assert.match(result.markdown,/填入 \?\{12\}，选择（!\{B\}）。/);
+  assert.equal(result.rootLines[result.markdown.split('\n').indexOf('填入 ?{12}，选择（!{B}）。')],7);
+  assert.equal(result.rootLines.at(-1),source.split('\n').length);
+});
+
+test('a discarded card title cannot introduce a broken dependency into rendered output',async () => {
+  const original='# 原文件 ![[不存在的笔记]]\n\n##### 图题 ![不存在](失效.png)\n\n实际题干。\n\n![有效图](a.png)';
+  const options=host({'bank/Q.md':original,'bank/a.png':''});
+  options.isQuestionNote=()=>true;
+  const result=await expandHandoutEmbeds('![[bank/Q]]',entry,options);
+  assert.doesNotMatch(result.markdown,/不存在|失效/);
+  assert.match(result.markdown,/实际题干。/);
+  assert.match(result.markdown,/bank\/a\.png/);
+  assert.deepEqual(options.reads,['bank/Q.md']);
+  assert.equal(result.dependencies[0].markdown,original);
 });

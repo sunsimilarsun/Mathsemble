@@ -1,7 +1,7 @@
 'use strict';
 
 const {stripFrontmatter, makeProtector, protectLiterals, rewriteLinks, escapedAt, markdownLinkBounds,
-  splitQuestionHeading, numberedQuestionHeading} =
+  splitQuestionHeading, numberedQuestionHeading, questionPrefix, stemInHeading} =
   typeof mwbAssemblyMarkdown !== 'undefined' ? mwbAssemblyMarkdown : require('./assembly-markdown.cjs');
 
 function destination(text) {
@@ -11,6 +11,16 @@ function destination(text) {
 
 function decoded(value) {
   try { return decodeURIComponent(value); } catch { return value; }
+}
+
+function materialSection(label) {
+  return /^[【\[]?\s*(?:知识(?:点|模块|网络|回顾|梳理|总结)?|方法(?:总结|归纳|小结)|课堂小结|归纳总结|概念辨析|要点回顾|复习提要)(?:[】\]：:\s]|$)/.test(label);
+}
+function questionOutputSource(markdown) {
+  const body = stripFrontmatter(markdown);
+  const literal = makeProtector(body);
+  const protectedBody = protectLiterals(body,literal).replace(/%%[\s\S]*?(?:%%|$)/g, value=>literal.save(value));
+  return literal.restore(splitQuestionHeading(protectedBody,literal.restore).body);
 }
 
 function* lineEmbeds(line, protect) {
@@ -38,7 +48,7 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
   let occurrence = 0, questionNumber = 0, rootLines;
 
   async function visit(raw, path, file, chain, isRoot, excerpt = false) {
-    if (isRoot && !raw.includes('![') && !raw.includes('mwb-auto-question-number')) return raw;
+    if (isRoot && !raw.includes('![') && !/^#####(?:[ \t]|$)/m.test(raw)) return raw;
     const normalized = raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
     const body = excerpt ? normalized : stripFrontmatter(normalized);
     const frontmatter = isRoot ? normalized.slice(0, normalized.length - body.length) : '';
@@ -53,6 +63,14 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
     const lines = scanned.split('\n');
     const namespace = 'mwb-embed-' + ++occurrence;
     let previousContent = -1, lastHeading, listIndent = 0, renumbered = false;
+    const changedHeadings = new Set();
+    const setNumber = (index, stem = '') => {
+      const replacement = numberedQuestionHeading(questionNumber) + (stem ? '\n\n' + stem : '');
+      if (protect.restore(lines[index]) === replacement) return;
+      lines[index] = replacement;
+      changedHeadings.add(index);
+      renumbered = true;
+    };
 
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
@@ -68,14 +86,12 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
           const compiled = previous >= 0 && protect.restore(lines[previous]).trim() === '<!-- mathsemble:compiled-question -->';
           // "【例 1】求值" is the same explicit question label as "【例 1】 求值".
           const numberedTitle = label.replace(/^([【\[][^】\]]+[】\]])(?=\S)/, '$1 ');
-          const counted = auto || compiled || /^\d+[.．、](?!\d)/.test(label) || !!isQuestionTitle?.(numberedTitle);
-          if (counted) questionNumber++;
-          // A saved handout may interleave expanded fragments and live references.
-          if (auto) {
-            const heading = numberedQuestionHeading(questionNumber) + (auto[1] || '');
-            if (heading !== protect.restore(line)) { lines[index] = heading; renumbered = true; }
+          const counted = auto || compiled || questionPrefix(label) || !!isQuestionTitle?.(numberedTitle);
+          if (counted) {
+            questionNumber++;
+            setNumber(index, auto || compiled ? '' : stemInHeading(label));
           }
-          lastHeading = {index, counted, compiled, auto};
+          lastHeading = {index, counted, compiled, auto,label};
           continue;
         }
       }
@@ -114,18 +130,22 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
             throw new Error('无法定位嵌入的标题或块：' + where);
         }
         embeddedLinks.push({sourcePath:path, target:link+rawSubpath, ...(wiki ? {} : {syntax:match.syntax})});
-        let expanded = await visit(contents, target.path, target, [...chain,key], false, !!subpath);
         const wholeQuestion = isRoot && !prefix.trim() && !listIndent && !subpath && isQuestionNote?.(contents);
+        const visibleSource = wholeQuestion ? questionOutputSource(contents) : contents;
+        const linkCount = embeddedLinks.length;
+        let expanded = await visit(visibleSource,target.path,target,[...chain,key],false,!!subpath || !!wholeQuestion);
         let title = '', closeQuestion = false;
         if (wholeQuestion) {
-          const outer = lastHeading?.index === previous ? lastHeading : null;
+          const adjacent = lastHeading?.index === previous ? lastHeading : null;
+          const section = adjacent && !adjacent.counted && materialSection(adjacent.label);
+          // This header introduces the following card. Use a section level in
+          // the projection so two adjacent H5s do not create an empty strict block.
+          if (section) lines[adjacent.index] = lines[adjacent.index].replace(/^#####/, '####');
+          const outer = section ? null : adjacent;
           if (!outer?.counted) questionNumber++;
-          const literal = makeProtector(expanded);
-          const protectedBody = protectLiterals(expanded, literal)
-            .replace(/%%[\s\S]*?(?:%%|$)/g, value => literal.save(value));
-          const split = splitQuestionHeading(protectedBody);
-          if (!outer) title = split.heading ? literal.restore(split.heading) : numberedQuestionHeading(questionNumber);
-          expanded = literal.restore(split.body);
+          if (!outer) title = numberedQuestionHeading(questionNumber);
+          else setNumber(outer.index);
+          if (linkCount !== embeddedLinks.length) expanded=questionOutputSource(expanded);
           // Explicit hand-written H5 blocks can include teaching notes after the
           // embed. Preserve their existing scope; generated blocks end with the card.
           closeQuestion = !outer || outer.compiled || outer.auto;
@@ -149,14 +169,14 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
       let original = frontmatter.split('\n').length;
       rootLines = Array.from({length:original - 1}, (_, i) => i + 1);
       const replaced = new RegExp('^' + marker + '(\\d+)END$');
-      const restored = lines.map(line => {
+      const restored = lines.map((line, i) => {
         const index = replaced.exec(line);
         const value = index ? children[Number(index[1])] : protect.restore(line);
         for (const _ of value.split('\n')) {
           rootLines.push(original);
-          if (!index) original++;
+          if (!index && !changedHeadings.has(i)) original++;
         }
-        if (index) original++;
+        if (index || changedHeadings.has(i)) original++;
         return value;
       });
       return frontmatter + restored.join('\n');
@@ -175,4 +195,4 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
   return {markdown:expanded, dependencies:[...snapshots.values()], embeddedLinks, ...(rootLines ? {rootLines} : {})};
 }
 
-module.exports = {expandHandoutEmbeds};
+module.exports = {expandHandoutEmbeds,questionOutputSource};

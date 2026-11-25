@@ -418,11 +418,39 @@ async function rewriteLinks(source, path, prefix, options, protector) {
   return text;
 }
 
-function normalizeHeadings(text, kind, takeQuestionHeading) {
+function questionPrefix(label) {
+  const n = '[0-9０-９一二三四五六七八九十百零〇两]+(?:[-－–][0-9０-９]+)*';
+  const named = '(?:(?:例题?|变式|练习题?|检测题?|训练题?|辨析|转化|问题|题)\\s*' + n + '|第\\s*' + n + '\\s*题)';
+  const match = new RegExp('^(?:[【\\[]\\s*'+named+'\\s*[】\\]]|'+named+'(?=$|[\\s:：、.．—（(【［\\[-])|'+n+'[.．、](?![0-9０-９]))[ \\t:：、]*').exec(label);
+  return match ? match[0] : '';
+}
+
+function stemInHeading(label) {
+  const stem=label.slice(questionPrefix(label).length).trim();
+  if (/[?!]\\?\{|[？?][”」）)]?$/.test(stem) ||
+      /^(?:[（(]\s*[一二三四五六七八九十百\d]+\s*[）)]|第\s*[一二三四五六七八九十百\d]+\s*小?问)/.test(stem)) return stem;
+  if (/^(?:(?:请|试)(?:计算|证明|判断|选择|化简|比较|画出|作出|写出|说明|求|解)|(?:判断|比较|写出|画出|选择|计算|化简|解答|证明|求出)(?:下列|下式|下图|各组|以下))/.test(stem)) return stem;
+  if (/^(?:计算|证明|判断|化简|比较|作图|解题|求解)(?:方法|策略|技巧|公式|模型|步骤|专题|训练|练习|题型|法则)/.test(stem)) return '';
+  const math = /\$|\\[([]|[=<>≤≥≠∠△°\d]/.test(stem);
+  const asks = /^(?:求证|求出|计算|证明|化简|判断|比较|画出|作出|写出|求(?=[\s$函数方程数列])|解(?:方程|不等式))/.test(stem);
+  const conditions = /^(?:若|设|已知|如图|给定)/.test(stem) && /[，,；;。]|则|求|证明|判断/.test(stem);
+  return math && (asks || conditions) ? stem : '';
+}
+
+function normalizeHeadings(text, kind, takeQuestionHeading, restore = value => value) {
   const lines = text.split('\n');
   let firstContent = true, afterTitle = true, previousProse = false;
   for (let i=0;i<lines.length;i++) {
     if (!lines[i].trim()) { previousProse=false; continue; }
+    if (afterTitle && takeQuestionHeading) {
+      // Hidden comments may appear before either title. A comment and visible
+      // prose on the same line still form part of the question body.
+      const line=restore(lines[i]).trim();
+      if ((line.startsWith('<!--') || line.startsWith('%%')) &&
+          !line.replace(/<!--[\s\S]*?(?:-->|$)|%%[\s\S]*?(?:%%|$)/g,'').trim()) {
+        lines[i]=''; previousProse=false; continue;
+      }
+    }
     const atx = /^(#{1,6})[ \t]+(.*)$/.exec(lines[i]);
     const rule = /^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(lines[i]);
     const prose = !atx && !rule && !/^(?:[> \t]|MWBPROTECTEDTOKEN)/.test(lines[i]);
@@ -430,6 +458,12 @@ function normalizeHeadings(text, kind, takeQuestionHeading) {
     const setext = prose && !previousProse && i+1 < lines.length &&
       /^(?:=+|-+)[ \t]*$/.test(lines[i+1]) && lines[i+1] !== '------';
     previousProse = prose && !setext;
+    // Some original notes put a prompt, first subquestion or an answer slot
+    // inside the opening heading. Preserve the prompt in the numbered paragraph.
+    if (afterTitle && takeQuestionHeading && ['#','#####'].includes(atx?.[1]) && stemInHeading(restore(atx[2]))) {
+      lines[i]=atx[2].slice(questionPrefix(atx[2]).length).trim();
+      firstContent=false; afterTitle=false; previousProse=true; continue;
+    }
     if (firstContent && atx?.[1] === '#') { lines[i] = ''; firstContent = false; continue; }
     if (firstContent && setext && lines[i+1][0] === '=') { lines[i] = ''; lines[++i] = ''; firstContent = false; continue; }
     firstContent = false;
@@ -444,34 +478,24 @@ function normalizeHeadings(text, kind, takeQuestionHeading) {
   return lines.join('\n');
 }
 
-function splitQuestionHeading(protectedSource) {
+function splitQuestionHeading(protectedSource,restore) {
   let heading = '';
-  const body = normalizeHeadings(protectedSource, 'question', value => { heading = value; });
+  let body = normalizeHeadings(protectedSource, 'question', value => { heading = value; },restore);
+  // Some original exam papers put their total points directly before the stem.
+  // Require an independent question opening so a score used as data survives.
+  const score = /^((?:[ \t]*\n)*)(\*\*|__|)[（(][ \t]*\d+(?:\.\d+)?[ \t]*分[ \t]*[）)]\2[ \t\n]*/.exec(body);
+  if (score) {
+    const rest = body.slice(score[0].length);
+    const opening = restore ? restore(rest.split('\n',1)[0]) : rest;
+    if (/^(?:已知|设|若|如[图表]|在|某|给定|根据|对于|当|下列|现有|有一|求|计算|证明|判断|请|试|题干|[（(]\d+[）)])/.test(opening)) {
+      body = score[1] + rest;
+    }
+  }
   return {heading,body};
 }
 
-function numberedQuestionHeading(number,score) {
-  return `##### <span class="mwb-auto-question-number">${number}.</span>` + (score == null ? '' : '（' + score + ' 分）');
-}
-
-function occurrenceHeading(entry, item, number, sourceHeading) {
-  const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
-  const sourceRole = roles[item.role || item.metadata?.role] || '';
-  const changedRole = !!entry.role && roles[entry.role] !== sourceRole;
-  const changedTitle = !!entry.title && entry.title !== item.title;
-  let heading = sourceHeading;
-  if (changedRole || changedTitle) {
-    const parts = [];
-    if (changedRole) parts.push(roles[entry.role] + number);
-    if (entry.title) parts.push(plainTitle(entry.title));
-    heading = '##### ' + parts.join(' ');
-  }
-  return heading;
-}
-
-function headingWithScore(heading,number,score) {
-  if (score == null) return heading;
-  return heading ? heading + '（' + score + ' 分）' : numberedQuestionHeading(number,score);
+function numberedQuestionHeading(number) {
+  return `##### <span class="mwb-auto-question-number">${number}.</span>`;
 }
 
 async function questionEmbed(path, config) {
@@ -482,30 +506,6 @@ async function questionEmbed(path, config) {
   const resolved = await config.resolveLink(target, config.outputPath);
   if (resolved?.path !== path) throw new Error('无法从讲义准确引用题卡：' + path + '；请核对路径，或保存展开副本');
   return wiki ? '![[' + path + ']]' : '![](' + encodePath(target) + ')';
-}
-
-async function referenceQuestionBlock(entry,item,number,prefix,config) {
-  const embed = await questionEmbed(item.path,config);
-  const score = Object.hasOwn(entry,'score') ? fragments.validateScore(entry.score) : null;
-  let heading = occurrenceHeading(entry,item,number,'');
-  if (!heading && score != null) {
-    // Only a carried-over manual heading needs rebasing. The linked note's
-    // remaining media and nested note embeds belong to its later render.
-    const lines = stripFrontmatter(item.markdown).replace(/\r\n?/g,'\n').split('\n');
-    let first=lines.findIndex(line=>line.trim());
-    if (first>=0) {
-      if (/^#[ \t]+/.test(lines[first])) first++;
-      else if (!/^[> \t]/.test(lines[first]) && /^=+[ \t]*$/.test(lines[first+1]||'')) first+=2;
-      while (first<lines.length && !lines[first].trim()) first++;
-      if (/^#####[ \t]+/.test(lines[first]||'')) {
-        const protect = makeProtector(lines[first]);
-        const titled = protectLiterals(lines[first],protect);
-        heading = protect.restore(await rewriteLinks(titled,item.path,prefix,config,protect));
-      }
-    }
-  }
-  heading = headingWithScore(heading,number,score);
-  return heading ? heading + '\n\n' + embed : embed;
 }
 
 async function compileMarkdown(plan, resolved, options = {}) {
@@ -534,16 +534,15 @@ async function compileMarkdown(plan, resolved, options = {}) {
     const projected=entry.fragmentRef?fragments.resolveFragment(fragmentSource,entry.fragmentRef):null;
     if (entry.kind === 'question') questionNumber++;
     if (entry.kind === 'question' && !projected && config.questionFormat === 'reference') {
-      blocks.push(await referenceQuestionBlock(entry,item,questionNumber,`mwb-${i+1}`,config));
+      blocks.push(await questionEmbed(item.path,config));
     } else {
       const structural=projected?null:fragments.parseFragments(fragmentSource);
       const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
       const protector = makeProtector(source);
       let body = protectLiterals(source,protector);
-      body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
-      const question = entry.kind === 'question' ? splitQuestionHeading(body) : null;
-      const sourceHeading = question ? protector.restore(question.heading) : '';
-      body = protector.restore((question ? question.body : normalizeHeadings(body,entry.kind)).trim());
+      if (entry.kind === 'question') body=body.replace(/%%[\s\S]*?(?:%%|$)/g, value=>protector.save(value));
+      body = entry.kind === 'question' ? splitQuestionHeading(body,protector.restore).body : normalizeHeadings(body,entry.kind);
+      body = protector.restore((await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector)).trim());
       if (!body.trim()) throw new Error('来源正文为空：' + item.path);
       if (entry.kind === 'knowledge') {
         const display = plainTitle(entry.title || item.title || item.path.split('/').pop().replace(/\.md$/i,''));
@@ -551,10 +550,7 @@ async function compileMarkdown(plan, resolved, options = {}) {
       } else {
         const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
         if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
-        const heading = occurrenceHeading(entry,item,questionNumber,sourceHeading);
-        const boundary = headingWithScore(heading,questionNumber,score) || numberedQuestionHeading(questionNumber);
-        const hint = heading && config.questionFormat === 'reference' ? '<!-- mathsemble:compiled-question -->\n' : '';
-        blocks.push(hint + boundary + '\n\n' + body);
+        blocks.push(numberedQuestionHeading(questionNumber) + '\n\n' + body);
       }
     }
     const fragmentReference=projected?Object.freeze({...projected.reference,
@@ -581,4 +577,4 @@ async function compileMarkdown(plan, resolved, options = {}) {
   }
   return markdown;
 }
-module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds,splitQuestionHeading,numberedQuestionHeading};
+module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds,splitQuestionHeading,numberedQuestionHeading,questionPrefix,stemInHeading};

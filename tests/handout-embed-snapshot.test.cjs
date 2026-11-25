@@ -99,3 +99,15 @@ test('direct handout identifies legacy type: 题卡 from the saved file and boun
   const knowledge = await api.mwbReadSourceSnapshot(vault,scope);
   assert.doesNotMatch(knowledge.expandedMarkdown,/mwb-auto-question-number|mwb-embed-end/);
 });
+
+test('a method section directly before a card retains its title without an empty strict question group',async () => {
+  const {vault,file,card,scope}=fixture();
+  card.body='---\ntype: 题卡\n---\n题干。';
+  file.body='##### 方法总结\n\n![[Card]]';
+  const snapshot=await api.mwbReadSourceSnapshot(vault,scope);
+  const plan=api.mwbHandoutQuestionPlan(snapshot.expandedMarkdown);
+  assert.deepEqual(Array.from(plan.errors),[]);
+  assert.deepEqual(Array.from(plan.headings,h=>h.level),[4,5]);
+  assert.equal(plan.groups.length,1);
+  assert.match(snapshot.expandedMarkdown,/^#### 方法总结$/m);
+});
