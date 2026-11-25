@@ -34,9 +34,11 @@ async function browserCases(sources,css) {
     // Rendering content is irrelevant to ordering. Keep the real scheduler
     // and owners, with a deterministic observer and a minimal host renderer.
     win.IntersectionObserver=class{observe(){}unobserve(){}disconnect(){}};
-    const load=(source,core)=>{const module={exports:{}};new win.Function('module','mwbAssemblyCore',source)(module,core);return module.exports;};
+    let fragments;
+    const load=source=>{const module={exports:{}};new win.Function('module','MWB_ASSEMBLY_FRAGMENTS',source)(module,fragments);return module.exports;};
+    fragments=load(sources.fragments);
     const clone=value=>win.JSON.parse(JSON.stringify(value));
-    const core=load(sources.core),compiler=load(sources.markdown,core),index=core.buildIndex(clone(records));
+    const core=load(sources.core),compiler=load(sources.markdown),index=core.buildIndex(clone(records));
     const saved=[],previews=[],notices=[],opened=[];let stored=null;
     class Component{load(){}unload(){}}
     class ItemView extends Component{
@@ -184,7 +186,7 @@ async function browserCases(sources,css) {
 
 test('whole-section movement preserves boundaries through real arrangement actions',async t=>{
   if(!chrome){if(process.env.CI)throw Error('Chrome is required for section movement checks');t.skip('Set CHROME_PATH');return;}
-  const sources=Object.fromEntries(['core','view','markdown'].map(name=>[name,fs.readFileSync(path.join(root,'src/assembly-'+name+'.cjs'),'utf8')]));
+  const sources=Object.fromEntries(['fragments','core','view','markdown'].map(name=>[name,fs.readFileSync(path.join(root,'src/assembly-'+name+'.cjs'),'utf8')]));
   const css=hostCss+fs.readFileSync(path.join(root,'styles/assembly.css'),'utf8'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'mathsemble-section-move-'));
   try{
     const script='('+browserCases.toString()+')('+JSON.stringify(sources)+','+JSON.stringify(css)+').catch(error=>{const out=document.createElement("pre");out.id="mwb-test-results";out.textContent=JSON.stringify([{name:"fixture initialization",ok:false,error:String(error.stack||error)}]);document.body.append(out);});';

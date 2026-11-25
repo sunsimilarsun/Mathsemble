@@ -2,7 +2,7 @@
 
 // Host adapter: source notes are read-only. Only explicit plans and generated
 // handouts are written, under dedicated output folders.
-module.exports = function createAssemblyService(plugin, {core, compileMarkdown, collectMediaDependencies, blueprintEngine, familyEngine, parseYaml, previewFile}) {
+module.exports = function createAssemblyService(plugin, {core, compileMarkdown, collectMediaDependencies, blueprintEngine, familyEngine, similarityEngine, parseYaml, previewFile}) {
   const app = plugin.app, vault = app.vault;
   const planFolder = 'Mathsemble/组题方案', outputFolder = 'Mathsemble/讲义';
   const blueprintFolder = 'Mathsemble/组卷蓝图', runFolder = 'Mathsemble/组卷记录';
@@ -80,12 +80,13 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     };
     return {check,run,close:() => {closed=true;for (const cancel of [...pending]) cancel();}};
   }
-  function beginSourceCheck(raw,onChange) {
+  function beginSourceCheck(raw,onChange,extraPaths=[]) {
     const config = normalizeSettings(raw), roots = [...config.questionRoots,...config.knowledgeRoots];
     let changed = false, disposed = false;
     const refs = [];
     const relevant = (path,folder) => {
       if (typeof path !== 'string') return false;
+      if(extraPaths.some(extra=>extra===path||folder&&extra.startsWith(path+'/')))return true;
       if (folder && roots.some(root => root === path || root.startsWith(path + '/'))) return true;
       if (excluded(path) || !folder && !/\.md$/i.test(path)) return false;
       return roots.some(root => path.startsWith(root + '/') &&
@@ -195,6 +196,8 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
           if (file) {
             if (!knownPlanContents.has(target)) throw new Error('请先打开该方案再保存，或另存为新方案');
             if (await vault.read(file) !== knownPlanContents.get(target)) throw new Error('方案文件已被外部修改，请重新打开后再保存');
+            if(plan.schemaVersion===4&&JSON.parse(knownPlanContents.get(target)).schemaVersion<4)
+              throw Object.assign(new Error('分值或稳定片段需要方案 v4，请另存为新方案；原方案保留，旧插件不能读取 v4'),{code:'PLAN_V4_SAVE_AS_REQUIRED'});
             await vault.modify(file,text);
           } else await vault.create(target,text);
           knownPlanContents.set(target,text);
@@ -484,12 +487,81 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       return {run,index,bindings:plainData(run.assignments)};
     } finally {guard?.dispose();io.close();}
   }
-  const familyCandidates=new WeakMap();
+  const replacementCandidates=new WeakMap();
   const familyApi=()=>{
     if(!familyEngine || typeof familyEngine.prepareReplacement!=='function' || typeof familyEngine.applyReplacement!=='function')
       throw new Error('同族换题引擎未配置');
     return familyEngine;
   };
+  const similarityApi=()=>{
+    if(!similarityEngine||typeof similarityEngine.search!=='function')throw new Error('相似题引擎未配置');
+    return similarityEngine;
+  };
+  function replacementApi(kind) {
+    const api=familyApi();
+    if(kind==='family')return {prepare:api.prepareReplacement,apply:api.applyReplacement,algorithmVersion:api.algorithmVersion};
+    if(typeof api.prepareConstrainedReplacement!=='function'||typeof api.applyConstrainedReplacement!=='function')
+      throw new Error('公共换题约束引擎未配置');
+    return {prepare:api.prepareConstrainedReplacement,apply:api.applyConstrainedReplacement,algorithmVersion:api.constrainedAlgorithmVersion};
+  }
+  function taxonomyProbes(config) {
+    const groups=[];
+    for(const root of config.questionRoots) {
+      const ancestors=[],parts=root.split('/');
+      for(let n=parts.length;n>=0;n--)ancestors.push(parts.slice(0,n).join('/'));
+      for(const [dimension,name]of [['knowledge','知识点'],['methods','方法']])groups.push({dimension,
+        paths:ancestors.flatMap(parent=>['模板&规范/公共规范/数学标签库/','_system/规范/数学标签库/']
+          .map(directory=>(parent?parent+'/':'')+directory+name+'.json'))});
+    }
+    return {groups,paths:[...new Set(groups.flatMap(group=>group.paths))].sort()};
+  }
+  async function readTaxonomy(config,io) {
+    const probes=taxonomyProbes(config),snapshots=new Map();
+    for(const path of probes.paths) {
+      io.check();const file=vault.getAbstractFileByPath(path);
+      if(!file){snapshots.set(path,null);continue;}
+      if(Array.isArray(file.children))throw new Error('标签词表路径应为文件：'+path);
+      const source=await io.run(()=>vault.read(file),'读取标签词表 '+path);
+      if(typeof source!=='string'||source.length>8*1024*1024)throw new Error('标签词表过大或内容无效：'+path);
+      if(file.path!==path||vault.getAbstractFileByPath(path)!==file)throw new Error('标签词表在读取时已变化，请刷新候选');
+      snapshots.set(path,source);
+    }
+    const taxonomy={},chosen={knowledge:new Set(),methods:new Set()};
+    for(const group of probes.groups){const path=group.paths.find(value=>snapshots.get(value)!==null);if(path)chosen[group.dimension].add(path);}
+    for(const [dimension,paths]of Object.entries(chosen)) {
+      if(!paths.size)continue;
+      const tags=[],seen=new Set();
+      for(const path of [...paths].sort()) {
+        let value;try{value=plainData(JSON.parse(snapshots.get(path)));}catch(error){throw new Error('标签词表不能解析：'+path+'（'+error.message+'）');}
+        const rows=Array.isArray(value)?value:value?.tags;
+        if(!Array.isArray(rows))throw new Error('标签词表缺少 tags 列表：'+path);
+        for(const tag of rows){const key=strongDigest(tag);if(!seen.has(key)){seen.add(key);tags.push(tag);}}
+      }
+      taxonomy[dimension]={tags};
+    }
+    return {taxonomy,digest:strongDigest([...snapshots])};
+  }
+  async function recheckTaxonomy(config,snapshot,io,guard) {
+    const current=await readTaxonomy(config,io);guard.assertCurrent();
+    if(current.digest!==snapshot.digest)throw new Error('标签词表已变化，请刷新相似题候选');
+  }
+  async function findSimilarQuestions(input,options={}) {
+    const api=similarityApi(),sourceKey=boundedText(input.sourceKey,'原题标识',4096),mode=input.mode??'knowledge';
+    const filters=plainData(input.filters||{}),excludedKeys=plainData(input.excludedKeys||[]);
+    const io=readContext(options);let guard;
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config||await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config,undefined,taxonomyProbes(config).paths);
+      const taxonomy=await readTaxonomy(config,io),index=await scan(config,{io}),sources=sourcesFromIndex(index);
+      const result=api.search({index,sourceKey,mode,filters,excludedKeys,taxonomy:taxonomy.taxonomy});
+      await recheckSources(sources,io,guard);await recheckTaxonomy(config,taxonomy,io,guard);
+      const current=normalizeSettings(options.config||await io.run(loadSettings,'核对素材目录'));
+      if(JSON.stringify(current)!==JSON.stringify(config))throw new Error('素材目录设置已变化，请刷新相似题候选');
+      originCheck(options);io.check();guard.assertCurrent();
+      return {...plainData(result),index,taxonomyDigest:taxonomy.digest};
+    } finally {guard?.dispose();io.close();}
+  }
   function familyConstraints(run,entryId,unlock) {
     const binding=run?.assignments.find(row=>row.entryId===entryId),lock=binding&&run.locks.find(row=>row.slotId===binding.slotId);
     return {rowFilters:binding?run.blueprintSnapshot.rows.find(row=>row.rowId===binding.rowId).filters:{},
@@ -499,12 +571,13 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
   async function checkFamilyOrigin(rawPlan,digest,config,options,io,guard) {
     originCheck(options);io.check();guard.assertCurrent();
     const current=normalizeSettings(options.config || await io.run(loadSettings,'核对素材目录'));
-    if(JSON.stringify(current)!==JSON.stringify(config)) throw new Error('素材目录设置已变化，请重新查看同族题');
-    if(planDigest(rawPlan)!==digest) throw new Error('方案已变化，请重新查看同族题');
+    if(JSON.stringify(current)!==JSON.stringify(config)) throw new Error('素材目录设置已变化，请刷新换题候选');
+    if(planDigest(rawPlan)!==digest) throw new Error('方案已变化，请刷新换题候选');
     originCheck(options);io.check();guard.assertCurrent();
   }
-  async function prepareFamilyReplacement(input,options={}) {
-    const api=familyApi(),plan=core.validatePlan(input.plan),basePlanSnapshotDigest=planDigest(plan);
+  async function prepareQuestionReplacement(kind,input,options={}) {
+    const api=replacementApi(kind),search=kind==='similarity'?similarityApi():null;
+    const plan=core.validatePlan(input.plan),basePlanSnapshotDigest=planDigest(plan),mode=input.mode??'knowledge';
     const entryId=boundedText(input.entryId,'编排 ID',512),filters=plainData(input.filters||{});
     if(input.unlock!==undefined&&typeof input.unlock!=='boolean') throw new Error('解除锁定选择无效');
     const unlock=input.unlock===true,run=input.run===undefined?null:validateBlueprintRun(input.run);
@@ -512,36 +585,53 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     const io=readContext(options);let guard;
     try {
       originCheck(options);io.check();
-      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));guard=beginSourceCheck(config);
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config,undefined,search?taxonomyProbes(config).paths:[]);
+      const taxonomy=search?await readTaxonomy(config,io):null;
       const index=await scan(config,{io}),sources=sourcesFromIndex(index),sourceSnapshotDigest=indexDigest(index);
       if(run)verifyRunOnIndex(run,plan,index,options);
       const constraints=familyConstraints(run,entryId,unlock);
-      const prepared=api.prepareReplacement({index,plan,entryId,filters,...constraints});
+      const prepared=api.prepare({index,plan,entryId,filters,...constraints});
+      let ranked=null;
+      if(search&&prepared.status==='ready') {
+        const source=core.resolvePlan(plan,index).entries.find(row=>row.entry.entryId===entryId).item;
+        const eligible=new Set(prepared.candidates.map(item=>item.key));
+        ranked=search.search({index,sourceKey:source.key,mode,filters,taxonomy:taxonomy.taxonomy});
+        ranked={...ranked,candidates:(ranked.candidates||[]).filter(item=>eligible.has(item.key))};
+      }
+      if(taxonomy)await recheckTaxonomy(config,taxonomy,io,guard);
       await recheckSources(sources,io,guard);await checkFamilyOrigin(input.plan,basePlanSnapshotDigest,config,options,io,guard);
-      const wrapper={schemaVersion:1,status:prepared.status,candidates:plainData(prepared.candidates||[]),context:prepared.context||null,
-        issues:plainData(prepared.issues||[]),index,entryId,filters:plainData(filters),unlock,run:run?plainData(run):null,
-        config:plainData(config),basePlanSnapshotDigest,sourceSnapshotDigest};
+      const status=ranked?.status||prepared.status,candidates=ranked?.candidates||prepared.candidates||[];
+      const issues=[...(prepared.issues||[]),...(ranked?.issues||[])];
+      if(search&&status==='ready'&&!candidates.length&&!issues.length)issues.push({code:'SIMILARITY_NO_CANDIDATES',message:'没有同时满足相似依据和换题约束的候选题'});
+      const algorithmVersion=ranked?.algorithmVersion||api.algorithmVersion;
+      const wrapper={schemaVersion:1,status,candidates:plainData(candidates),context:prepared.context||null,
+        issues:plainData(issues),index,entryId,filters:plainData(filters),unlock,run:run?plainData(run):null,
+        config:plainData(config),basePlanSnapshotDigest,sourceSnapshotDigest,
+        ...(search?{mode,algorithmVersion,taxonomyDigest:taxonomy.digest}:{})};
       // UI fields are display data. Captured constraints cannot be removed or
       // weakened by clearing a wrapper.run, changing filters or toggling unlock.
-      familyCandidates.set(wrapper,{status:prepared.status,entryId,filters,unlock,run,config,context:prepared.context,
-        basePlanSnapshotDigest,sourceSnapshotDigest,constraints});
+      replacementCandidates.set(wrapper,{kind,status,entryId,filters,unlock,run,config,context:prepared.context,
+        basePlanSnapshotDigest,sourceSnapshotDigest,constraints,mode,taxonomy,algorithmVersion,
+        candidateKeys:new Set(candidates.map(candidate=>candidate.key))});
       return wrapper;
     } finally {guard?.dispose();io.close();}
   }
-  async function applyFamilyReplacement(rawPlan,candidate,candidateKey,options={}) {
-    const state=familyCandidates.get(candidate);
-    if(!state||state.status!=='ready') throw new Error('同族候选无效，请重新查看同族题');
-    const api=familyApi(),plan=core.validatePlan(rawPlan),io=readContext(options);let guard;
+  async function applyQuestionReplacement(kind,rawPlan,candidate,candidateKey,options={}) {
+    const state=replacementCandidates.get(candidate);
+    if(!state||state.kind!==kind||state.status!=='ready'||!state.candidateKeys.has(candidateKey)) throw new Error('换题候选无效，请重新查看候选题');
+    const api=replacementApi(kind),plan=core.validatePlan(rawPlan),io=readContext(options);let guard;
     try {
-      if(planDigest(plan)!==state.basePlanSnapshotDigest) throw new Error('方案已变化，请重新查看同族题');
+      if(planDigest(plan)!==state.basePlanSnapshotDigest) throw new Error('方案已变化，请刷新换题候选');
       originCheck(options);io.check();
       const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
-      if(JSON.stringify(config)!==JSON.stringify(state.config)) throw new Error('素材目录设置已变化，请重新查看同族题');
-      guard=beginSourceCheck(config);
+      if(JSON.stringify(config)!==JSON.stringify(state.config)) throw new Error('素材目录设置已变化，请刷新换题候选');
+      guard=beginSourceCheck(config,undefined,state.taxonomy?taxonomyProbes(config).paths:[]);
+      if(state.taxonomy)await recheckTaxonomy(config,state.taxonomy,io,guard);
       const index=await scan(config,{io}),sources=sourcesFromIndex(index),sourceSnapshotDigest=indexDigest(index);
-      if(sourceSnapshotDigest!==state.sourceSnapshotDigest) throw new Error('来源内容或题库身份已变化，请重新查看同族题');
+      if(sourceSnapshotDigest!==state.sourceSnapshotDigest) throw new Error('来源内容或题库身份已变化，请刷新换题候选');
       if(state.run)verifyRunOnIndex(state.run,plan,index,options);
-      const result=api.applyReplacement({freshIndex:index,plan,entryId:state.entryId,candidateKey,expectedContext:state.context,
+      const result=api.apply({freshIndex:index,plan,entryId:state.entryId,candidateKey,expectedContext:state.context,
         filters:state.filters,...state.constraints});
       const next=core.validatePlan(result.plan);let run;
       if(state.run) {
@@ -549,28 +639,33 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
         const reference={sourceId:entry.sourceId,sourcePath:entry.sourcePath,sourceFingerprint:entry.sourceFingerprint};
         run=validateBlueprintRun({...previous,runId:newId(),createdAt:new Date().toISOString(),planPathHint:null,
           basePlanSnapshotDigest:state.basePlanSnapshotDigest,resultPlanDigest:planDigest(next),sourceSnapshotDigest,
-          algorithmVersion:api.algorithmVersion||'family-replacement-v1',
+          algorithmVersion:state.algorithmVersion||'family-replacement-v1',
           assignments:previous.assignments.map(row=>row.entryId===state.entryId?{...row,...reference}:row),
           locks:previous.locks.filter(lock=>!(state.unlock&&lock.slotId===state.constraints.targetSlotId))});
         verifyRunOnIndex(run,next,index,options);
       }
+      if(state.taxonomy)await recheckTaxonomy(config,state.taxonomy,io,guard);
       await recheckSources(sources,io,guard);await checkFamilyOrigin(rawPlan,state.basePlanSnapshotDigest,config,options,io,guard);
       return {plan:next,index,...(run?{run}:{})};
     } finally {guard?.dispose();io.close();}
   }
+  const prepareFamilyReplacement=(input,options={})=>prepareQuestionReplacement('family',input,options);
+  const applyFamilyReplacement=(plan,candidate,key,options={})=>applyQuestionReplacement('family',plan,candidate,key,options);
+  const prepareSimilarityReplacement=(input,options={})=>prepareQuestionReplacement('similarity',input,options);
+  const applySimilarityReplacement=(plan,candidate,key,options={})=>applyQuestionReplacement('similarity',plan,candidate,key,options);
   async function readResolvedSources(plan,config,io) {
     const fresh = await scan(config,{io});
     const result = core.resolvePlan(plan,fresh);
     const invalid = result.entries.filter(row=>row.status !== 'ok');
     if (invalid.length) throw new Error('来源已变化、缺失或存在身份冲突，请刷新素材并在“预览编排”核对，再接受来源更新：' +
-      invalid.map(row=>row.entry.title || row.entry.sourcePath).slice(0,5).join('、'));
+      invalid.map(row=>result.issues.find(issue=>issue.entryId===row.entry.entryId)?.message || row.entry.title || row.entry.sourcePath).slice(0,5).join('、'));
     const sources = Object.freeze(result.entries.filter(row=>row.item).map(({item}) => {
       const live = vault.getAbstractFileByPath(item.path);
       if (!live || live.extension !== 'md') throw new Error('来源已删除或替换：'+item.path);
       // Freeze the evidence, never the host's live TFile instance.
       return Object.freeze({path:item.path,live,markdown:item.markdown});
     }));
-    return {result,sources};
+    return {result,sources,index:fresh};
   }
   async function recheckSources(sources,io,guard) {
     for (const source of sources) {
@@ -666,8 +761,60 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     if (!file || file.extension !== 'md') throw new Error('源文件不存在');
     await app.workspace.getLeaf('tab').openFile(file);
   }
+  async function updateEntryContent(rawPlan,entryId,patch,options={}) {
+    // UI edits use the same source-wide guard as preview; never acknowledge a
+    // changed source or publish a partial score/selection update implicitly.
+    const plan=core.validatePlan(rawPlan),baseline=planDigest(plan),next=core.updateEntry(plan,entryId,patch),io=readContext(options);let guard;
+    if(Reflect.ownKeys(patch).some(key=>!['score','fragmentRef'].includes(key))) {io.close();throw new Error('此操作仅修改分值和片段引用');}
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config);
+      let previous=null,savedRecord=null,matchingPaths=null;
+      if(options.run!=null) {
+        previous=validateBlueprintRun(options.run);matchRunPlan(previous,plan);
+      } else if(listSidecars(runFolder).length) {
+        engine();
+        const matches=await io.run(()=>listMatchingBlueprintRuns(plan,options),'查找已有配额记录');
+        matchingPaths=matches.map(row=>row.path).sort();
+        if(matches.length>1)throw Object.assign(new Error('当前方案有多份匹配的配额记录，请明确选择记录后再修改分值或片段'),{code:'BLUEPRINT_RUN_SELECTION_REQUIRED'});
+        if(matches.length===1) {
+          const path=matches[0].path,file=vault.getAbstractFileByPath(path);
+          if(!file||file.extension!=='json')throw new Error('已有配额记录已被移除');
+          const content=await io.run(()=>vault.read(file),'读取已有配额记录');
+          previous=validateBlueprintRun(parseSidecar(content));matchRunPlan(previous,plan);
+          if(file.path!==path||vault.getAbstractFileByPath(path)!==file)throw new Error('已有配额记录已被替换');
+          savedRecord={path,file,content};
+        }
+      } else matchingPaths=[];
+      if(previous?.assignments.some(row=>row.entryId===entryId)&&next.entries.find(entry=>entry.entryId===entryId)?.fragmentRef)
+        throw Object.assign(new Error('此题已归属整题配额，不能改为部分小问；请先明确重新编排配额'),{code:'BLUEPRINT_FRAGMENT_BINDING_CONFLICT'});
+      const {sources,index}=await readResolvedSources(next,config,io);
+      let run;
+      if(previous) {
+        verifyRunOnIndex(previous,plan,index,options);
+        run=validateBlueprintRun({...previous,runId:newId(),createdAt:new Date().toISOString(),planPathHint:null,
+          basePlanSnapshotDigest:baseline,resultPlanDigest:planDigest(next),sourceSnapshotDigest:indexDigest(index),algorithmVersion:'entry-content-edit-v1'});
+        verifyRunOnIndex(run,next,index,options);
+      }
+      await recheckSources(previous?sourcesFromIndex(index):sources,io,guard);originCheck(options);
+      if(matchingPaths) {
+        const current=(await io.run(()=>listMatchingBlueprintRuns(plan,options),'复核已有配额记录')).map(row=>row.path).sort();
+        if(JSON.stringify(current)!==JSON.stringify(matchingPaths))throw new Error('修改期间配额记录发生变化，请重新核对后重试');
+      }
+      if(savedRecord) {
+        const {path,file,content}=savedRecord;
+        if(file.path!==path||vault.getAbstractFileByPath(path)!==file||await io.run(()=>vault.read(file),'复核原配额记录')!==content)
+          throw new Error('修改期间原配额记录已被更改，未应用任何编排修改');
+      }
+      await checkFamilyOrigin(rawPlan,baseline,config,options,io,guard);
+      if(planDigest(rawPlan)!==baseline)throw new Error('编排已变化，分值或片段修改未应用');
+      return {plan:next,index,...(run?{run}:{})};
+    } finally {guard?.dispose();io.close();}
+  }
   return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
     listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
     replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
-    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement};
+    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,findSimilarQuestions,
+    prepareSimilarityReplacement,applySimilarityReplacement,updateEntryContent};
 };

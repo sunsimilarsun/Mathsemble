@@ -21,12 +21,21 @@ async function scenario(name,config={}) {
     MarkdownView:class{},MarkdownRenderer:{},parseYaml:()=>({})};
   const context=vm.createContext({module:{exports:{}},require:name=>name==='obsidian'?obsidian:require(name),
     console,Buffer,Uint8Array,ArrayBuffer,TextEncoder,URL,AbortController,setTimeout,clearTimeout});
-  vm.runInContext(source+'\nglobalThis.qa={PreviewModal,clone:x=>JSON.parse(JSON.stringify(x))};',context);
+  vm.runInContext(source+'\nglobalThis.qa={PreviewModal,core:mwbAssemblyCore,clone:x=>JSON.parse(JSON.stringify(x))};',context);
   const session={manifest:()=>context.qa.clone({schemaVersion:1,resources:[],omissions:session.omissions,warnings:config.warning?[{code:'SVG_EXTERNAL_REFERENCE'}]:[]}),
     omissions:[],read:async()=>{throw Error('unexpected resource read');},recordOmission(value){this.omissions.push(context.qa.clone(value));},
     readBlob(){throw Error('unexpected blob read');},dispose(){}};
   modal=new context.qa.PreviewModal({vault,metadataCache:{getFirstLinkpathDest:()=>null}},
     {manifest:{version:'audit'}},sourceFile,sourceFile.content,null,{documentMode:!!config.document,mediaSession:session});
+  let expectedPlan;
+  if(config.v4) {
+    const core=context.qa.core,item=core.buildIndex(context.qa.clone([{kind:'question',path:sourceFile.path,metadata:{id:'Q-v4'},markdown:sourceFile.content}])).items[0];
+    let plan=core.addItem(core.createPlan('带分值的方案'),item);plan=core.updateEntry(plan,plan.entries[0].entryId,context.qa.clone({score:7.25}));
+    expectedPlan=JSON.parse(JSON.stringify(plan));
+    modal.assemblyPreview={getEvidence:()=>context.qa.clone({planSnapshot:plan,compiledMarkdown:sourceFile.content,compiledPathContext:'Mathsemble/__preview__.md',
+      sourceMap:[{entryId:plan.entries[0].entryId,path:sourceFile.path,kind:'question',score:7.25,startLine:1,endLine:1}],
+      sources:[{path:sourceFile.path,markdown:sourceFile.content}],declaredDependencies:[]})};
+  }
   modal.status={setText(value){this.value=value;}};modal.ready=true;modal.archiveRequested=config.archive!==false;
   modal.ensureMediaSession=()=>session;modal.setExportBusy=()=>{};
   modal.assertSourceCurrent=async()=>true;modal.showDualExportReport=()=>{};
@@ -42,6 +51,12 @@ async function scenario(name,config={}) {
   const record=result.record.state==='saved'?JSON.parse(nodes.get(result.record.path).content):null;
   const manifest=result.archive.manifestPath?JSON.parse(nodes.get(result.archive.manifestPath).content):null;
   assert.equal(modal.exportJob,null,'export mutex not released');
+  if(config.v4) {
+    assert.equal(record.origin,'assembly');assert.equal(record.inputs.planSnapshot.schemaVersion,4);
+    assert.equal(manifest.inputs.planSnapshot.schemaVersion,4);assert.equal(manifest.inputs.planSnapshot.archivePath,'plan.v4.json');
+    assert.deepEqual(JSON.parse(nodes.get(result.archive.path+'/plan.v4.json').content),expectedPlan);
+    assert(!nodes.has(result.archive.path+'/plan.v3.json'));
+  }
   if(config.rejectSecond) {
     assert.equal(report.outcome,'partial');assert.deepEqual(record.artifacts.map(x=>x.state),['saved','unverified']);
     assert.equal(manifest.artifacts[1].state,'unverified');assert.equal(pdfWrites,2);
@@ -73,4 +88,5 @@ for(const [name,options] of [
   ['resource warning is partial',{warning:true}],
   ['hidden unsupported declaration is omitted',{markdown:'正文\n\n![[video.mp4]]'}],
   ['lightweight without archive',{archive:false}],
+  ['v4 assembly plan retains score and actual archive version',{v4:true}],
 ]) test('export evidence integration: '+name,()=>scenario(name,options));

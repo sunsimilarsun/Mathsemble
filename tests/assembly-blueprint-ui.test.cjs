@@ -15,7 +15,9 @@ async function browserCases(sources) {
   const pause=(ms=0)=>new Promise(resolve=>setTimeout(resolve,ms));
   const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
   const until=async(fn,message)=>{const end=Date.now()+3000;while(!fn()&&Date.now()<end)await pause(10);ok(fn(),message);};
-  const load=source=>{const module={exports:{}};new Function('module',source)(module);return module.exports;};
+  let fragmentApi;
+  const load=source=>{const module={exports:{}};new Function('module','MWB_ASSEMBLY_FRAGMENTS',source)(module,fragmentApi);return module.exports;};
+  fragmentApi=load(sources.fragments);
   const core=load(sources.core),engine=load(sources.engine).createBlueprintEngine({core});
   const createModal=load(sources.ui),createView=load(sources.view);
   const button=(node,label)=>[...node.querySelectorAll('button')].find(el=>el.textContent===label);
@@ -269,7 +271,7 @@ async function browserCases(sources) {
 
 test('blueprint modal quotas, lifecycle and native AssemblyView persistence in Chromium',async t=>{
   if(!chrome){if(process.env.CI)throw Error('Chrome is required for blueprint UI tests');t.skip('Set CHROME_PATH');return;}
-  const sources=Object.fromEntries([['core','assembly-core.cjs'],['engine','assembly-blueprint.cjs'],['ui','assembly-blueprint-ui.cjs'],['view','assembly-view.cjs']].map(([key,file])=>[key,fs.readFileSync(path.join(root,'src',file),'utf8')]));
+  const sources=Object.fromEntries([['fragments','assembly-fragments.cjs'],['core','assembly-core.cjs'],['engine','assembly-blueprint.cjs'],['ui','assembly-blueprint-ui.cjs'],['view','assembly-view.cjs']].map(([key,file])=>[key,fs.readFileSync(path.join(root,'src',file),'utf8')]));
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mathsemble-blueprint-ui-'));
   try{
     const script='('+browserCases.toString()+')('+JSON.stringify(sources)+').catch(error=>{const out=document.createElement("pre");out.id="mwb-test-results";out.textContent=JSON.stringify([{name:"fixture initialization",ok:false,error:String(error.stack||error)}]);document.body.append(out);});';

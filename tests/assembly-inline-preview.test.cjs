@@ -60,7 +60,9 @@ async function browserCases(sources,css) {
     }
     if(manual)win.IntersectionObserver=Observer;
     if(noObserver)win.IntersectionObserver=undefined;
-    const load=source=>{const module={exports:{}};new win.Function('module',source)(module);return module.exports;};
+    let fragmentApi;
+    const load=source=>{const module={exports:{}};new win.Function('module','MWB_ASSEMBLY_FRAGMENTS',source)(module,fragmentApi);return module.exports;};
+    fragmentApi=load(sources.fragments);
     const core=load(sources.core),owners=[],calls=[],pending=[];let active=0,maxActive=0,index=core.buildIndex(sourceRecords);
     class Component {
       constructor(){this.loaded=false;this.unloadCount=0;owners.push(this);}
@@ -257,7 +259,7 @@ async function browserCases(sources,css) {
 
 test('assembly cards preview before clicking and release asynchronous render work safely',async t=>{
   if(!chrome){if(process.env.CI)throw Error('Chrome is required for inline preview regression tests');t.skip('Set CHROME_PATH');return;}
-  const sources={core:fs.readFileSync(path.join(root,'src/assembly-core.cjs'),'utf8'),view:fs.readFileSync(path.join(root,'src/assembly-view.cjs'),'utf8')};
+  const sources={fragments:fs.readFileSync(path.join(root,'src/assembly-fragments.cjs'),'utf8'),core:fs.readFileSync(path.join(root,'src/assembly-core.cjs'),'utf8'),view:fs.readFileSync(path.join(root,'src/assembly-view.cjs'),'utf8')};
   const css=hostCss+fs.readFileSync(path.join(root,'styles/assembly.css'),'utf8');
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mathsemble-inline-preview-'));
   try {

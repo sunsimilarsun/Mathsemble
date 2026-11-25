@@ -115,8 +115,8 @@ function createExportArchiveService({vault,validatePlan,now = ()=>new Date(),
     if (captured.planSnapshot != null) {
       if (!validatePlan) throw failure('ARCHIVE_PLAN_INVALID','归档方案需要现行校验器');
       captured.planSnapshot=plain(validatePlan(captured.planSnapshot),'方案快照');
-      if (captured.planSnapshot?.schemaVersion !== 3)
-        throw failure('ARCHIVE_PLAN_INVALID','材料归档仅接收校验后的 v3 方案');
+      if (![3,4].includes(captured.planSnapshot?.schemaVersion))
+        throw failure('ARCHIVE_PLAN_INVALID','材料归档仅接收校验后的 v3 或 v4 方案');
     }
     const id=newId();
     if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/.test(id) || ids.has(id))
@@ -133,7 +133,7 @@ function createExportArchiveService({vault,validatePlan,now = ()=>new Date(),
     }
     if (captured.compiledPathContext !== undefined) inputSummary.compiledPathContext=captured.compiledPathContext;
     for (const key of ['planSnapshot','sourceMap']) if (captured[key] != null)
-      inputSummary[key]={...descriptor(json(captured[key])),...(key==='planSnapshot' ? {schemaVersion:3} : {})};
+      inputSummary[key]={...descriptor(json(captured[key])),...(key==='planSnapshot' ? {schemaVersion:captured.planSnapshot.schemaVersion} : {})};
     const configuration={};
     for (const key of ['settings','options','runtime']) if (captured[key] !== undefined) configuration[key]=captured[key];
     const archiveInput=archive ? captured : null;
@@ -215,8 +215,11 @@ function createExportArchiveService({vault,validatePlan,now = ()=>new Date(),
               inputSummary.sources[index].archivePath=archivePath;
             }
             if (archiveInput.compiledMarkdown !== undefined) await write('compiled.md',archiveInput.compiledMarkdown);
-            for (const key of ['planSnapshot','sourceMap']) if (archiveInput[key] != null)
-              await write(key==='planSnapshot' ? 'plan.v3.json' : 'source-map.json',json(archiveInput[key]));
+            for (const key of ['planSnapshot','sourceMap']) if (archiveInput[key] != null) {
+              const relative=key==='planSnapshot' ? 'plan.v'+archiveInput.planSnapshot.schemaVersion+'.json' : 'source-map.json';
+              await write(relative,json(archiveInput[key]));
+              inputSummary[key].archivePath=relative;
+            }
             await write('input.json',json({...inputSummary,...configuration,origin}));
             const blobs=new Map(),writtenHashes=new Set();
             for (const resource of resources?.resources || []) {

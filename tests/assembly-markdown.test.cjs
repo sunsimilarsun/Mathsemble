@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {compileMarkdown} = require('../src/assembly-markdown.cjs');
+const core = require('../src/assembly-core.cjs');
 function fixture(contents) {
   const entries = contents.map((o,i)=>({entryId:'e'+i,kind:o.kind||'question',title:o.title||'测试 '+i,role:o.role||'例题',sourcePath:o.path||'题库/q'+i+'.md'}));
   const plan = {title:'集合讲义',entries};
@@ -15,6 +16,38 @@ function outputProperties(markdown) {
     const separator=line.indexOf(':');return [line.slice(0,separator),JSON.parse(line.slice(separator+1).trim())];
   }));
 }
+test('v4 whole-question score appears in both-mode source heading without modifying source',async()=>{
+  const data=fixture([{markdown:'题干 ?{42}\n\n> [!answer]- 答案\n> 满分解答'}]);
+  data.plan.entries[0].score=12.5;const before=JSON.stringify(data);
+  const out=await compileMarkdown(data.plan,data.resolved);assert.match(out,/##### 例题1 测试 0（12.5 分）/);
+  assert.equal(JSON.stringify(data),before);
+});
+test('selected parts compile shared resources and answers with total and per-part scores',async()=>{
+  const block=(type,id,body)=>`<!-- mathsemble:${type}${id?' '+id:''} -->\n\n${body}\n\n<!-- mathsemble:end -->`;
+  const markdown='# 原题名\n\n'+block('stem','','共用题干 ![图](stem.png)')+'\n\n'+
+    block('part','p-a','## 小问甲\n\n输入 ?{1}\n\n> [!answer]- 答案\n> 甲步骤 ![图](answer.png)')+'\n\n'+
+    block('part','p-b','## 小问乙\n\n未选输入 ?{2}\n\n> [!solution]- 解析\n> 未选解析 ![图](hidden.png)');
+  const index=core.buildIndex([{kind:'question',path:'题库/题.md',metadata:{id:'Q1'},markdown}]);
+  let plan=core.addItem(core.createPlan(),index.items[0]);plan=core.updateEntry(plan,plan.entries[0].entryId,
+    {fragmentRef:{kind:'question-part',ids:['p-a'],scores:{'p-a':4.25}}});
+  const calls=[],sourceMaps=[];const before=JSON.stringify({plan,index});
+  const out=await compileMarkdown(plan,core.resolvePlan(plan,index).entries,{resolveLink:async target=>{calls.push(target);return{path:'图/'+target,extension:'png'};},onSourceMap:rows=>sourceMaps.push(rows)});
+  assert.match(out,/##### 题1 .*（4.25 分）/);assert.match(out,/###### 小问甲（4.25 分）/);assert.match(out,/甲步骤/);
+  assert(!out.includes('未选'));assert(!out.includes('mathsemble:'));assert.deepEqual(calls,['stem.png','answer.png']);
+  assert.deepEqual(sourceMaps[0][0].fragmentRef,plan.entries[0].fragmentRef);assert.equal(sourceMaps[0][0].score,4.25);
+  assert.throws(()=>sourceMaps[0][0].fragmentRef.ids.push('p-b'),TypeError);
+  assert.throws(()=>{sourceMaps[0][0].fragmentRef.scores['p-a']=999;},TypeError);
+  assert.equal(sourceMaps[0][0].path,'题库/题.md');assert.equal(JSON.stringify({plan,index}),before);
+});
+test('whole-source optional structural markers stay invisible while all parts compile',async()=>{
+  const markdown='# 标题\n\n<!-- mathsemble:stem -->\n\n共同题干\n\n<!-- mathsemble:end -->\n\n<!-- mathsemble:part p1 -->\n\n第一问\n\n<!-- mathsemble:end -->\n\n<!-- mathsemble:part p2 -->\n\n第二问\n\n<!-- mathsemble:end -->';
+  const out=await run([{markdown}]);assert.match(out,/共同题干/);assert.match(out,/第一问/);assert.match(out,/第二问/);
+  assert(!out.includes('mathsemble:'));assert(!out.includes('###### 标题'));
+});
+test('fragment compilation never falls back to whole source for a missing anchor',async()=>{
+  const data=fixture([{markdown:'整题原文与答案'}]);data.plan.entries[0].fragmentRef={kind:'question-part',ids:['missing']};
+  await assert.rejects(()=>compileMarkdown(data.plan,data.resolved),/稳定片段锚点/);
+});
 const resolver=async(target,path)=>{
   if(target==='图.png')return{path:'题库/配图/图(1).png',extension:'png'};
   if(target==='note')return{path:'知识/note.md',extension:'md'};
