@@ -79,7 +79,7 @@ ID 使用英文字母开头的 1–64 位字母、数字、下划线或连字符
 
 每个 `part` 内放齐该小问的输入、答案槽、answer、solution 与专属图片；共用条件和共用图放在 `stem`。除可选的文档 H1 标题和空行，所有正文都必须归入这些区域，否则片段选择被拒绝，避免静默丢失题干或答案。选填判断保留现行题干答案槽约定；计算、证明等的 answer 仍须包含完整得分步骤，不因支持片段而改变答案规范。
 
-图片和链接继续按原笔记路径解析。引用式图片、链接、脚注的定义必须随选中内容保留：题卡可将共用定义放入 `stem`；若定义只在未选小问中，编译明确拒绝。不会为补依赖偷偷带入另一问的答案。未选小问的正文、专属答案与图像不进入生成讲义；教师归档仍可能保留完整原文和声明资源，其隐私边界不变。
+图片和链接继续按原笔记路径解析。引用式图片、链接、脚注的定义必须随选中内容保留，且所用标签在整篇来源中只有一个定义：题卡可将共用定义放入 `stem`；若定义只在未选小问中，或同一标签在不同位置重复定义，编译明确拒绝，避免选择片段改变引用目标。不会为补依赖偷偷带入另一问的答案。未选小问的正文、专属答案与图像不进入生成讲义；教师归档仍可能保留完整原文和声明资源，其隐私边界不变。
 
 ## 知识小节
 
@@ -120,7 +120,8 @@ ID 使用英文字母开头的 1–64 位字母、数字、下划线或连字符
 - `core.listFragments(item)` 返回 `{supported, valid, kind, fragments:[{id,title,kind}], issues}`，不自动写锚点。
 - `core.resolveFragment(item, fragmentRef)` 返回选定 Markdown、选中片段、共用题干与分值合计；无锚点或不完整依赖抛出明确错误。
 - `core.updateEntry(plan, entryId, {score?,fragmentRef?})` 为不可变纯修改；`null` 删除对应可选字段。`core.validatePlan` 严格验证并返回 v3/v4 的规范对象。
-- `service.updateEntryContent(plan, entryId, patch, options)` 在真实来源检查后返回 `{plan,index}`；允许的 patch 仅为 `score`、`fragmentRef`。`options` 支持既有 `signal`、`isCurrent`、配置与超时。调用方只在成功返回后替换当前方案。
+- `service.updateEntryContent(plan, entryId, patch, options)` 在真实来源检查后返回 `{plan,index,run?}`；允许的 patch 仅为 `score`、`fragmentRef`。`options` 支持既有 `signal`、`isCurrent`、配置与超时，以及显式选择的 `run`。调用方只在成功返回后替换当前方案，并将返回的派生 `run` 保留为待保存记录。
+- 若存在精确匹配的配额记录，修改分值会保留原蓝图、逐槽归属与真实锁，派生新的记录 ID 和方案摘要，不覆盖旧记录。多份匹配记录必须明确选择，不能悄悄退回无配额模式。已归属整题配额的条目不能直接改成小问片段；未归属的其他条目仍可选片段，但既有配额、来源去重和题族上限继续核对。方案和派生记录仍分别保存。
 - 覆盖旧方案时错误码 `PLAN_V4_SAVE_AS_REQUIRED` 表示必须另存，不能据此自动覆盖旧文件。
 - 编译沿用双版管线，在题标题显示总分、有完整小问分值时在对应小问标题显示分值；`sourceMap` 可选携带 `fragmentRef`、`score`，原始来源快照保持全文。
 - `assembly-fragments.cjs` 为纯函数模块；内嵌包先提供 `MWB_ASSEMBLY_FRAGMENTS`，Node 测试使用正常 CommonJS 加载。没有新增题卡 YAML 必填字段。

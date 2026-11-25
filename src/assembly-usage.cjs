@@ -27,7 +27,11 @@ function contextOf(raw) {
 }
 const contextKey=context=>sha(canonical(contextOf(context)));
 function pathOf(value) {text(value,'库内路径',4096);if(value.includes('\\')||value.includes(':')||value.startsWith('/')||value.split('/').some(part=>!part||part==='.'||part==='..'))throw bad('USAGE_INVALID','库内路径无效');return value;}
-function dateOf(value,label='使用时间') {text(value,label,80);if(!/^\d{4}-\d\d-\d\dT/.test(value)||!Number.isFinite(Date.parse(value)))throw bad('USAGE_INVALID',label+'无效');return new Date(value).toISOString();}
+function dateOf(value,label='使用时间') {
+  text(value,label,80);const day=value.slice(0,10),midnight=Date.parse(day+'T00:00:00.000Z');
+  if(!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(value)||!Number.isFinite(Date.parse(value))||!Number.isFinite(midnight)||new Date(midnight).toISOString().slice(0,10)!==day)
+    throw bad('USAGE_INVALID',label+'无效');return new Date(value).toISOString();
+}
 const identity=item=>`${item.kind}:${item.itemId!=null?'id:'+item.itemId:'path:'+item.path}`;
 const itemIdentity=item=>identity({kind:item.kind,itemId:item.id?String(item.id).trim():null,path:item.path});
 function commandOf(event) {
@@ -112,6 +116,7 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
   });
   const serial=fn=>{const previous=queues.get(vault)||Promise.resolve(),task=previous.catch(()=>{}).then(fn);queues.set(vault,task);return task;};
   const folderFor=context=>root+'/'+contextKey(context);
+  const touchesLedger=(context,file,oldPath)=>[file?.path,oldPath].some(path=>typeof path==='string'&&(path===folderFor(context)||path.startsWith(folderFor(context)+'/')));
   function watch(predicate) {
     let changed=false;const refs=[];
     if(vault.on&&vault.offref)for(const event of ['create','modify','delete','rename'])refs.push(vault.on(event,(file,oldPath)=>{if(predicate(file,oldPath))changed=true;}));
@@ -190,7 +195,7 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
       check(options);await loadUsage({context:state.context},options);const existing=vault.getAbstractFileByPath(folderFor(state.context)+'/'+event.eventId+'.json');
       if(existing)return append(event,options); // Retry of a verified commit does not reinterpret a later source revision.
       await ensureFolder(folderFor(state.context));
-      const guard=watch((file,oldPath)=>/\.md$/i.test(file?.path||'')||/\.md$/i.test(oldPath||'')||Array.isArray(file?.children));
+      const guard=watch((file,oldPath)=>/\.md$/i.test(file?.path||'')||/\.md$/i.test(oldPath||'')||Array.isArray(file?.children)||touchesLedger(state.context,file,oldPath));
       const guarded={...options,isCurrent:()=>{check(options);guard.check();return true;}};
       try {
       const fresh=await capture(state.plan,state.selected,options);
@@ -203,12 +208,17 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
     context=contextOf(context);text(reason,'撤销说明',1000,true);
     if(!/^[a-f0-9]{64}$/.test(eventId))throw bad('USAGE_INVALID','撤销目标无效');
     return serial(async()=>{
+      const guard=watch((file,oldPath)=>touchesLedger(context,file,oldPath));
+      const guarded={...options,isCurrent:()=>{check(options);guard.check();return true;}};
+      try {
       check(options);const ledger=await loadUsage({context},options),target=ledger.events.find(event=>event.eventId===eventId);
+      guard.check();
       if(!target||target.action==='revoke')throw bad('USAGE_INVALID','只能撤销当前班级课程中的原始登记');
       const same=ledger.events.find(event=>event.actionId===actionId);
       if(same){if(same.action!=='revoke'||same.supersedes!==eventId||same.reason!==reason)throw bad('USAGE_ACTION_CONFLICT','动作 ID 已用于其他登记');return {event:same,path:folderFor(context)+'/'+same.eventId+'.json',state:'saved',idempotent:true};}
       if(ledger.revokedEventIds.includes(eventId))throw bad('USAGE_ALREADY_REVOKED','这次登记已经撤销');
-      return append(makeEvent({context,action:'revoke',occurredAt:dateOf(now()),supersedes:eventId,reason},actionId),options);
+      return await append(makeEvent({context,action:'revoke',occurredAt:dateOf(now()),supersedes:eventId,reason},actionId),guarded);
+      } finally {guard.dispose();}
     });
   }
   return {newActionId:()=>text(newId(),'动作 ID',200),preparePlanUsage,recordPlanUsage,revokeUsage,loadUsage,listUsage:loadUsage,

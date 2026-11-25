@@ -54,6 +54,30 @@ function sourceBody(markdown) {
   if (!match) throw fail('FRAGMENT_INVALID','源笔记 frontmatter 未闭合');
   return {body:source.slice(match[0].length),offset:match[0].split('\n').length-1};
 }
+function maskLinkLiterals(source) {
+  const blank=value=>value.replace(/[^\n]/g,' '),escaped=index=>{let count=0;while(index>0&&source[--index]==='\\')count++;return count%2===1;};
+  let out='',cursor=0;
+  for(let i=0;i<source.length;i++) {
+    if(source[i]!=='['||escaped(i))continue;
+    if(source[i+1]==='['){const end=source.indexOf(']]',i+2);if(end>=0&&!source.slice(i,end).includes('\n')){out+=source.slice(cursor,i)+blank(source.slice(i,end+2));cursor=end+2;i=end+1;continue;}}
+    let close=i+1,depth=1;
+    for(;close<source.length;close++){if(escaped(close))continue;if(source[close]==='[')depth++;else if(source[close]===']'&&--depth===0)break;}
+    if(source[close+1]!=='(')continue;
+    let end=close+2,nesting=1,angle=false,quote='';
+    for(;end<source.length;end++){
+      if(escaped(end))continue;const c=source[end];
+      if(quote){if(c===quote)quote='';continue;}
+      if(c==='<'&&!source.slice(close+2,end).trim())angle=true;
+      else if(c==='>'&&angle)angle=false;
+      else if(!angle&&(c==='"'||c==="'")&&/\s/.test(source[end-1]||''))quote=c;
+      else if(!angle&&c==='(')nesting++;
+      else if(!angle&&c===')'&&--nesting===0)break;
+    }
+    if(end>=source.length)continue;
+    out+=source.slice(cursor,i)+blank(source.slice(i,end+1));cursor=end+1;i=end;
+  }
+  return out+source.slice(cursor);
+}
 
 // Mask literal contexts before recognizing full-line, unindented markers.
 // Structural comments inside fences, math, comments or HTML never become IDs.
@@ -82,8 +106,9 @@ function htmlEndLine(lines,start,tag) {
 }
 function markerLines(lines) {
   const markers=new Map();let fence=null,math=null,code=0,comment=false;
+  const contextLines=maskLinkLiterals(lines.join('\n')).split('\n');
   for (let i=0;i<lines.length;i++) {
-    const line=lines[i];
+    const line=contextLines[i];
     if (fence) {const close=/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);if(close&&close[1][0]===fence[0]&&close[1].length>=fence.length)fence=null;continue;}
     if (!comment&&!math&&!code) {
       const opening=/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
@@ -95,6 +120,7 @@ function markerLines(lines) {
       if(/^<!--\s*mathsemble:/.test(line)){markers.set(i,{type:'invalid',id:''});continue;}
     }
     if (/^(?: {4}|\t| {0,3}>)/.test(line) && !comment&&!math&&!code) continue;
+    if (/^ {0,3}\[(?!\^)[^\]\n]+\]:/.test(line) && !comment&&!math&&!code) continue;
     for(let j=0;j<line.length;j++) {
       if(comment){const end=line.indexOf('-->',j);if(end<0)break;comment=false;j=end+2;continue;}
       if(code){if(line[j]==='`'){const n=/^`+/.exec(line.slice(j))[0].length;if(n===code)code=0;j+=n-1;}continue;}
@@ -121,13 +147,16 @@ function referenceText(markdown) {
     if(/^(?: {4}|\t)/.test(line))return '';
     return line;
   }).join('\n');
-  return visible.replace(/<!--[\s\S]*?(?:-->|$)/g,'').replace(/<(pre|code|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'')
+  return maskLinkLiterals(visible).replace(/^((?: {0,3}>[ \t]?)* {0,3}\[(?!\^)[^\]\n]+\]:)[^\n]*/gm,'$1')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g,'').replace(/<(pre|code|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'')
     .replace(/(`+)([^`]|(?!\1)`)*?\1/g,'').replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]/g,'').replace(/(?<!\\)\$(?:\\.|[^$])*?\$/g,'');
 }
 const normalizedReference=label=>label.trim().replace(/\s+/g,' ').toLowerCase();
 function referenceDefinitions(markdown) {
-  const result=new Set();
-  for(const match of referenceText(markdown).matchAll(/^(?: {0,3}>[ \t]?)* {0,3}\[([^\]\n]+)\]:/gm))result.add(normalizedReference(match[1]));
+  const result=new Map();
+  for(const match of referenceText(markdown).matchAll(/^(?: {0,3}>[ \t]?)* {0,3}\[([^\]\n]+)\]:/gm)) {
+    const label=normalizedReference(match[1]);result.set(label,(result.get(label)||0)+1);
+  }
   return result;
 }
 function assertReferenceClosure(selected,complete) {
@@ -141,8 +170,11 @@ function assertReferenceClosure(selected,complete) {
     const label=normalizedReference(match[2]||match[1]);
     if(match[2]!==undefined||match[1].startsWith('^')||all.has(label))used.add(label);
   }
-  for(const label of used)if(!available.has(label))throw fail('FRAGMENT_DEPENDENCY_MISSING',
-    '所选片段缺少图片、链接或脚注定义：'+label+'；请将共用定义放入 stem，知识小节须自行包含依赖');
+  for(const label of used) {
+    if((all.get(label)||0)>1)throw fail('FRAGMENT_DEPENDENCY_AMBIGUOUS','来源含重复图片、链接或脚注定义：'+label+'；请明确依赖后再选片段');
+    if(!available.has(label))throw fail('FRAGMENT_DEPENDENCY_MISSING',
+      '所选片段缺少图片、链接或脚注定义：'+label+'；请将共用定义放入 stem，知识小节须自行包含依赖');
+  }
 }
 function parseFragments(item) {
   if(!item||!['question','knowledge'].includes(item.kind)||typeof item.markdown!=='string') throw fail('FRAGMENT_INVALID','片段来源无效');

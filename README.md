@@ -2,9 +2,11 @@
 
 Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作讲义、题卡和试卷，预览并导出 A4 学生版／教师版 PDF、打印稿及 HTML。
 
-**当前版本：[0.3.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.3.0)。** 新增[导出记录与媒体归档](docs/EXPORT_ARCHIVE.md)、[配额组卷](docs/BLUEPRINTS.md)及[题族筛选与换题](docs/FAMILIES.md)，补充 Windows 原生验收并修复阅读答案槽问题。完整流程与保存范围见[产品设计](docs/PRODUCT_DESIGN.md)，升级及回退说明见 [0.3.0 说明](docs/RELEASE_NOTES_0.3.0.md)。
+**当前已发布版本：[0.3.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.3.0)。** 该版本新增[导出记录与媒体归档](docs/EXPORT_ARCHIVE.md)、[配额组卷](docs/BLUEPRINTS.md)及[题族筛选与换题](docs/FAMILIES.md)，补充 Windows 原生验收并修复阅读答案槽问题。完整流程与保存范围见[产品设计](docs/PRODUCT_DESIGN.md)，升级及回退说明见 [0.3.0 说明](docs/RELEASE_NOTES_0.3.0.md)。
 
-完整自动检查 **811 项通过、0 失败、0 跳过**；分阶段原生操作、截图和 PDF 范围见 [P0／P1 实施验收](docs/research/question-banks-2026-11-17/IMPLEMENTATION_ACCEPTANCE.md)，本版本构建与发布检查见 [0.3.0 测试记录](docs/TESTING_0.3.0.md)。历史发布数据仍保留原范围。
+0.3.0 的完整自动检查为 **811 项通过、0 失败、0 跳过**；分阶段原生操作、截图和 PDF 范围见 [P0／P1 实施验收](docs/research/question-banks-2026-11-17/IMPLEMENTATION_ACCEPTANCE.md)，发布检查见 [0.3.0 测试记录](docs/TESTING_0.3.0.md)。这些数字仅适用于当时版本。
+
+**当前工作分支还包含未发布的 P2 增量**：实际使用账本、题库诊断与确认入库、卷内分值和稳定片段、可校验材料包、逐题投影。流程及独立验收状态见 [P2 实施记录](docs/P2_IMPLEMENTATION.md)；下述标明 P2 的能力尚不属于下载的 0.3.0。
 
 ## 选材与编排
 
@@ -19,7 +21,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 选材页显示“内容筛选／选材与预览”两栏，窄分栏通过“筛选／选材”切换；排序和修改集中在独立的预览编排页。结果与候选均每行一道题，占满列表宽度；预览高度随内容增长，最长显示 320px，短题不留大块空白，长题可点击“查看全文”。界面跟随 Obsidian 的浅色或深色主题，标题、模式切换、保存和 A4 预览集中在顶部，已选数量入口同时区分题目、知识和分区。
 
-知识正文按整篇加入，暂不提供小节截取或自动修改知识标签。题目可通过“按配额组卷”按题型、难度、教学层次等条件分配到多行配额。Markdown 笔记嵌入需先展开为正文，否则阻止生成以避免学生投影遗漏；图片按原文件位置重新解析。
+0.3.0 按整题和整篇知识加入。P2 可对具有显式稳定锚点的材料选择小问或知识小节，旧卡保持整篇使用，不自动补锚点或修改知识标签。题目可通过“按配额组卷”按题型、难度、教学层次等条件分配到多行配额。Markdown 笔记嵌入需先展开为正文，否则阻止生成以避免学生投影遗漏；图片按原文件位置重新解析。
 
 ### 预览编排
 
@@ -47,7 +49,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 在 A4 界面调整后，点击“设置 → 应用到编排方案”，再返回工作区保存方案。本次调整不会自动回写；若编排已更换或修改，旧 A4 窗口会拒绝应用，需从当前方案重新打开。源题卡与已生成的讲义副本均不改写。
 
-本版读取 v1／v2／v3 方案，旧格式只在内存补默认值或转换旧解析选项，显式保存后写为 v3。正式 0.2.4 不能读取 v3；回退时须使用升级前备份，不能只修改 JSON 版本号。
+0.3.0 读取 v1／v2／v3 方案，旧格式只在内存补默认值或转换旧解析选项，显式保存后写为 v3。P2 延续旧方案读取；未设置分值或片段引用时仍保存 v3，启用这些字段后才使用 v4，原 v1–v3 文件须另存并保留。**0.3.0 不能读取 v4**，正式 0.2.4 也不能读取 v3。回退或交换文件时使用兼容副本，不能只修改 JSON 版本号；详见[稳定片段与方案兼容](docs/ASSEMBLY_FRAGMENTS.md)。
 
 ### 条件抽题
 
@@ -57,11 +59,21 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 抽取覆盖全部符合条件的题目，排除编排中已有题和身份冲突项。数量不足或方案容量不足时显示实际可加入数量，不自动放宽筛选。筛选、扫描或编排变化后需重新生成候选；应用时发现源文变化则保留原编排并提示重新抽取。源题卡保持原样。
 
-“按配额组卷”支持保存蓝图、多行条件、锁定后重抽、逐题替换和每个题族的题数上限；只有全部配额满足后才能应用。方案仍保存为 v3，配额归属与锁定单独保存在 `Mathsemble/组卷记录/`。题族筛选使用已有 `family_id`；编排项“更多 → 同族换题”保留位置、卷内标题和角色，若匹配到配额记录，则继续核对原行条件、锁定和题族上限。
+“按配额组卷”支持保存蓝图、多行条件、锁定后重抽、逐题替换和每个题族的题数上限；只有全部配额满足后才能应用。配额归属与锁定单独保存在 `Mathsemble/组卷记录/`，不因使用蓝图就升级方案格式。题族筛选使用已有 `family_id`；编排项“更多 → 同族换题”保留位置、卷内标题和角色，若匹配到配额记录，则继续核对原行条件、锁定和题族上限。
+
+### P2 开发增量：使用、入库与课堂展示
+
+- **实际使用账本**：从“方案操作 → 实际使用账本”填写班级／课程代号与实际时间，核对当前方案后明确登记“已讲授”或“已布置”。选材可查看上次使用时间，筛选本班近期未用或最近已讲而尚未布置的材料。部分小问使用会保留所选范围，整题筛选保守计为已用。重复提交同一动作不重复计数；撤销追加更正，保留原始历史。导出、保存和投影均不自动登记使用。
+- **题库诊断与入库**：先查看身份、元信息、资源和疑似重复问题；通过 Markdown 或明确的结构化 JSON profile 暂存原件与候选，核对路径、ID 映射及损耗报告后再确认创建。不会自动合并同题或覆盖已有文件。撤销仅处理该批有明确创建记录且内容未变的文件，用户后改、替换或归属不明的材料保留。
+- **内容范围与分值**：在预览编排中按条目选择稳定小问／知识小节，或设置本次题目分值。共用题干与所选内容的答案、解析和图片归属须明确；缺失锚点或依赖时拒绝片段输出。此项按需启用 v4；语法与另存规则见[稳定片段说明](docs/ASSEMBLY_FRAGMENTS.md)。
+- **材料包**：在题库管理的“材料包”页封装当前方案、源文和已捕获本地资源，必要时另携带历史旁车与归档；回导先进入待入库批次。未捕获外链、SVG 内部依赖等缺口明确标为 `partial`，原件、候选和映射分别保留。历史旁车的内部路径不自动转成当前可执行记录；该格式不是 QTI。
+- **逐题投影**：从当前编排逐项展示，大字号翻页、显式揭示当前项答案，换页重新隐藏。源文或方案变化后重新打开；翻页或揭示答案不代表实际讲授，也不推断学生掌握度。
+
+使用账本保存当时原文和版本摘要；入库原件、映射、提交／撤销日志以及导出归档也都是持久资产，须随题库备份，不能按缓存清理。它们可能含完整教师答案和隐藏资源；对外分发应使用已核对的学生输出，详见[隐私与保存范围](docs/PRIVACY.md)。本轮完整构建及原生验收以 [P2 实施记录](docs/P2_IMPLEMENTATION.md)为准，不沿用 0.3.0 的通过结论。
 
 源码基线恢复与版本差异见 [0.2.0 开发基线](docs/BASELINE_0.2.0.md)。
 
-本轮验证见 [0.3.0 测试记录](docs/TESTING_0.3.0.md)。历史外观与宿主验证见 [0.2.3 外观测试记录](docs/TESTING_APPEARANCE_20261109.md)，知识属性历史验证见 [0.2.1 测试说明](docs/TESTING_0.2.1.md)，首版试用流程见 [0.2.0 测试说明](docs/TESTING_0.2.0.md)；各报告中的测试数字仅适用于当时的代码与环境。
+发布基线验证见 [0.3.0 测试记录](docs/TESTING_0.3.0.md)，当前增量见 [P2 实施记录](docs/P2_IMPLEMENTATION.md)。历史外观与宿主验证见 [0.2.3 外观测试记录](docs/TESTING_APPEARANCE_20261109.md)，知识属性历史验证见 [0.2.1 测试说明](docs/TESTING_0.2.1.md)，首版试用流程见 [0.2.0 测试说明](docs/TESTING_0.2.0.md)；各报告中的测试数字仅适用于当时的代码与环境。
 
 ## 快速使用
 
@@ -127,11 +139,11 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 ## 安装
 
-从 [0.2.5 Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.2.5) 下载三个独立文件：`main.js`、`manifest.json`、`styles.css`。安装前保留旧三件套及方案备份；升级后的 Callout 契约与 v3 方案兼容性按本页核对。
+从 [0.3.0 Release](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.3.0) 下载三个独立文件：`main.js`、`manifest.json`、`styles.css`。安装前保留旧三件套、方案与持久旁车备份；下载的 0.3.0 不包含本页标注的 P2 开发增量，也不读取 v4 方案。
 
 1. 将三个同版本文件放入 `<vault>/.obsidian/plugins/mathsemble/`。
 2. 重启 Obsidian，在社区插件设置中启用 Mathsemble。
-3. 安装后核对当前模板与学生／教师双版本输出；本轮自动化与真实宿主验收的范围见[测试记录](docs/TESTING_0.2.5.md)。
+3. 安装后核对当前模板与学生／教师双版本输出；发布版本的自动化与真实宿主验收范围见[测试记录](docs/TESTING_0.3.0.md)。
 
 插件 ID 为 `mathsemble`，要求桌面版 Obsidian 1.5.0 及以上。社区目录审核／上架状态以实际审核结果为准。
 
@@ -141,9 +153,9 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 - 题目丢失、留白高度异常、版心越界或无法安全分页会阻断导出。
 - 资源准备已有单项超时、总截止时间、取消与单次任务缓存；关闭或切换预览会取消过期任务。取消不撤回已经保存的文件；具体失败以诊断为准。
 - `$x=?{2}$` 仅隐藏公式中的数值，`?{$x=2$}` 隐藏整个等式。公式内部槽保留 A4 导出支持，原生 Reading View／Live Preview 的全面适配尚未验收。
-- Reading View 对混合转义答案标记的区块仍采用保守跳过策略。复杂 HTML、懒续行、第三方 Markdown 扩展、TikZ、跨主题样式需要真实宿主检查。
+- Reading View 中转义示例与真实槽具有相同可见拼写、无法可靠区分时，仅对歧义候选保守处理。复杂 HTML、懒续行、第三方 Markdown 扩展、TikZ、跨主题样式需要真实宿主检查。
 - “查看诊断”中的可定位问题提供“定位预览”和“定位原文”。临时 A4 指向原题卡或知识笔记，可靠匹配时定位到行，否则打开对应文件；普通文档定位本次读取的文件。原文或未保存编辑已变化时，需保存修改后重新读取；临时预览需返回编排核对来源并重新预览，避免使用旧行号。
-- 手动搜索、题篮、知识混编及条件抽题已加入；题型配额和题族驱动组卷仍待后续开发，见[功能矩阵](docs/FEATURE_MATRIX.md)与[路线图](docs/ROADMAP.md)。
+- 题型配额、题族筛选与受约束换题已在 0.3.0 发布；P2 增量与后续范围分别记录在[功能矩阵](docs/FEATURE_MATRIX.md)与[路线图](docs/ROADMAP.md)。
 
 ## 开发与验证
 
@@ -170,7 +182,7 @@ CI 配置覆盖 Linux 和 Windows；CI 缺少浏览器时应失败。本地未�
 
 ## Network access and files outside the vault
 
-Mathsemble is a desktop-only, local-first Obsidian plugin with no built-in telemetry or account service. Exporting notes that reference remote HTTP(S) images or fonts can make network requests. Explicit `file://` references can read resources **outside the vault**. The PDF exporter writes temporary HTML in the operating system's temporary directory and attempts cleanup. Exports are saved locally in `ExamExports/`; the plugin does not automatically share them. See [Privacy details](docs/PRIVACY.md).
+Mathsemble is a desktop-only, local-first Obsidian plugin with no built-in telemetry or account service. Rendering notes that reference remote HTTP(S) images or fonts can make network requests. Explicit `file://` references can read resources **outside the vault**. The PDF exporter writes temporary HTML in the operating system's temporary directory and attempts cleanup. Exports are saved locally in `ExamExports/`; the plugin does not automatically share them. Records and optional archives are persistent teacher materials. The unreleased P2 usage ledger, import staging and transfer packages also retain source snapshots and history that may contain answers. See [Privacy details](docs/PRIVACY.md).
 
 导出读取文档引用的资源；使用保密讲义时需核对远程资源。源笔记只会在用户主动执行设置教学角色或转换当前题标命令时修改。项目采用 [MIT License](LICENSE)。
 

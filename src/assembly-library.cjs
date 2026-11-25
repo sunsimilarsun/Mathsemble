@@ -115,7 +115,7 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
   async function listBatches(){const rows=[];for(const folder of vault.getAbstractFileByPath(ROOT)?.children||[]){if(!Array.isArray(folder.children)||!/^batch-/.test(folder.name))continue;try{const batch=await loadBatch(folder.name);rows.push({batchId:batch.batchId,profile:batch.profile,createdAt:batch.createdAt,status:batchStatus(batch,await events(batch.batchId)),count:batch.files.length});}catch(_){rows.push({batchId:folder.name,status:'incomplete',count:0});}}return rows;}
   function unknown(value,known,path,loss){for(const key of Object.keys(value))if(!known.includes(key))loss.push({code:'unknown-field-preserved',path,field:key,disposition:'原件完整保留；不自动映射该字段'});}
   async function stageImport(raw,options={}) {return serial(async()=>{
-    check(options);const input=plain(raw),targetRoot=pathOf(input.targetRoot||'导入题库');if(targetRoot.startsWith('Mathsemble/'))throw fail('LIBRARY_PATH','源卡目标不能位于插件侧车目录');
+    check(options);const input=plain(raw),targetRoot=pathOf(input.targetRoot||'导入题库');if(targetRoot.split('/').some(part=>part.startsWith('.')||part.toLowerCase()==='mathsemble'))throw fail('LIBRARY_PATH','源卡目标不能位于隐藏配置或插件侧车目录');
     const profile=input.profile,originals=(input.files||[]).map((row,i)=>fileRecord(pathOf(row.path||'input-'+i),row.base64!==undefined?decode(row.base64):binary(row.text),'asset'));
     checkedFiles(originals);const idMap=plain(input.idMap||{});for(const [from,to]of Object.entries(idMap))if(!from||typeof to!=='string'||!to.trim()||/[\x00-\x1f]/.test(to))throw fail('LIBRARY_ID','ID 映射无效');
     const digest=objectHash({profile,targetRoot,originals,idMap}),batchId='batch-'+digest.slice(0,24),base=batchPath(batchId);
@@ -179,12 +179,12 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
   async function event(batchId,type,data){const log=await events(batchId),sequence=(log.at(-1)?.sequence||0)+1,row={schemaVersion:1,batchId,eventId:newId(),sequence,time:timestamp(),type,...plain(data)};await create(batchPath(batchId)+'/events/'+String(sequence).padStart(8,'0')+'.json',json(row));return row;}
   async function preflight(batch,options={}){const issues=[],log=await events(batch.batchId),owned=new Map(log.filter(row=>row.type==='created').map(row=>[row.path,row]));
     for(const row of log.filter(row=>row.type==='removed'))owned.delete(row.path);
-    const ids=new Map();for(const file of vault.getMarkdownFiles()){check(options);if(file.path.startsWith('Mathsemble/'))continue;try{const meta=metadataOf(utf8(await readBytes(file,options)),parseYaml);if(typeof meta.id==='string'&&meta.id){if(!ids.has(meta.id))ids.set(meta.id,[]);ids.get(meta.id).push(file.path);}}catch(error){if(error.name==='AbortError'||error.code==='LIBRARY_TIMEOUT')throw error;}}
+    const ids=new Map();for(const file of vault.getMarkdownFiles()){check(options);if(file.path.startsWith('Mathsemble/'))continue;try{const meta=metadataOf(utf8(await readBytes(file,options)),parseYaml),id=typeof meta.id==='string'?meta.id.trim():'';if(id){if(!ids.has(id))ids.set(id,[]);ids.get(id).push(file.path);}}catch(error){if(error.name==='AbortError'||error.code==='LIBRARY_TIMEOUT')throw error;}}
     const existingPaths=new Map((vault.getFiles?.()||vault.getMarkdownFiles()).map(file=>[file.path.toLowerCase(),file.path]));
     const newIds=new Map();for(const row of batch.files){const existing=vault.getAbstractFileByPath(row.targetPath),receipt=owned.get(row.targetPath);if(receipt&&receipt.sha256!==row.sha256)issues.push(issue('receipt-mismatch','创建日志与暂存候选摘要不符',row.targetPath,'error'));if(existing){if(!receipt||sha(await readBytes(existing))!==receipt.sha256)issues.push(issue('target-exists','目标已存在或本批文件已被编辑：'+row.targetPath,row.targetPath,'error'));}
       else if(existingPaths.has(row.targetPath.toLowerCase()))issues.push(issue('target-case-conflict','目标存在仅大小写不同的文件',row.targetPath,'error'));
       else if(receipt)issues.push(issue('created-file-missing','本批已创建文件后来被删除：'+row.targetPath,row.targetPath,'error'));
-      if(row.kind==='source')try{const meta=metadataOf(utf8(decode(row.base64)),parseYaml);if(typeof meta.id==='string'&&meta.id){const same=(ids.get(meta.id)||[]).filter(path=>path!==row.targetPath||!receipt);if(same.length||newIds.has(meta.id))issues.push(issue('id-conflict','题目 ID 已存在或批内重复：'+meta.id,row.targetPath,'error',{relatedPaths:[...same,...(newIds.has(meta.id)?[newIds.get(meta.id)]:[])]}));newIds.set(meta.id,row.targetPath);}}catch(error){issues.push(issue('metadata-invalid',error.message,row.targetPath,'error'));}}
+      if(row.kind==='source')try{const meta=metadataOf(utf8(decode(row.base64)),parseYaml),id=typeof meta.id==='string'?meta.id.trim():'';if(id){const same=(ids.get(id)||[]).filter(path=>path!==row.targetPath||!receipt);if(same.length||newIds.has(id))issues.push(issue('id-conflict','题目 ID 已存在或批内重复：'+id,row.targetPath,'error',{relatedPaths:[...same,...(newIds.has(id)?[newIds.get(id)]:[])]}));newIds.set(id,row.targetPath);}}catch(error){issues.push(issue('metadata-invalid',error.message,row.targetPath,'error'));}}
     return {issues,owned};}
   async function inspectBatch(batchId,options={}){const batch=await loadBatch(batchId),state=await preflight(batch,options),commitLog=await events(batchId);return {...batch,status:batchStatus(batch,commitLog),issues:[...batch.issues,...state.issues],commitLog};}
   async function commitBatch(batchId,{confirmed=false,...options}={}) {if(confirmed!==true)throw fail('LIBRARY_CONFIRM','核对批次后须明确确认入库');return serial(async()=>{
@@ -209,8 +209,14 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
     const batch=await loadBatch(batchId),state=await preflight(batch,options),removed=[],issues=[];
     for(const [path,receipt]of state.owned){check(options);if(!batch.files.some(row=>row.targetPath===path&&row.sha256===receipt.sha256)){issues.push(issue('undo-ownership','日志与批次不匹配，未删除',path,'error'));continue;}
       const file=vault.getAbstractFileByPath(path);if(!file){await event(batchId,'removed',{path,sha256:receipt.sha256});continue;}
-      if(sha(await readBytes(file))!==receipt.sha256||vault.getAbstractFileByPath(path)!==file||sha(await readBytes(file))!==receipt.sha256){issues.push(issue('undo-edited','本批文件已被编辑或替换，未删除',path,'error'));continue;}
-      check(options);try{await vault.delete(file,true);await event(batchId,'removed',{path,sha256:receipt.sha256});removed.push(path);}catch(error){issues.push(issue('undo-unverified','删除结果需核对：'+error.message,path,'error'));}
+      if(!vault.on||!vault.offref)throw fail('LIBRARY_ADAPTER','撤销需要文件变化监听器，未删除');
+      let changed=false;const refs=['create','modify','delete','rename'].map(type=>vault.on(type,(node,oldPath)=>{if(node?.path===path||oldPath===path)changed=true;}));
+      try {
+        const first=sha(await readBytes(file,options)),second=sha(await readBytes(file,options));
+        if(first!==receipt.sha256||second!==receipt.sha256||changed||vault.getAbstractFileByPath(path)!==file){issues.push(issue('undo-edited','本批文件已被编辑或替换，未删除',path,'error'));continue;}
+        check(options);
+        try{await vault.delete(file,true);await event(batchId,'removed',{path,sha256:receipt.sha256});removed.push(path);}catch(error){issues.push(issue('undo-unverified','删除结果需核对：'+error.message,path,'error'));}
+      }finally{for(const ref of refs)vault.offref(ref);}
     }
     return {status:issues.length?'partial':'complete',batchId,removed,issues};
   });}
@@ -218,11 +224,19 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
     check(options);const files=[],references=[],issues=[],seen=new Set();let totalBytes=0;
     async function capture(path,kind){pathOf(path);if(seen.has(path))return;seen.add(path);const file=vault.getAbstractFileByPath(path);if(!file||Array.isArray(file.children)){issues.push(issue('missing-file','缺少待封装文件',path,'error'));return;}
       const bytes=await readBytes(file,options);check(options);totalBytes+=bytes.length;if(totalBytes>MAX_BYTES||files.length>=MAX_FILES)throw fail('LIBRARY_BUDGET','材料超过文件数或 64 MiB 字节预算');if(vault.getAbstractFileByPath(path)!==file||sha(await readBytes(file,options))!==sha(bytes))throw fail('LIBRARY_CHANGED','封装期间文件变化：'+path);files.push(fileRecord(path,bytes,kind));
-      if(kind==='asset'&&/\.svg$/i.test(path)&&/(?:href\s*=\s*["']\s*(?:https?:|\/\/)|url\(\s*["']?(?:https?:|\/\/))/i.test(bytes.toString('utf8')))issues.push(issue('svg-external-dependency','SVG 含未封装外部引用',path,'warning'));
+      if(kind==='asset'&&/\.svg$/i.test(path)){
+        const svg=bytes.toString('utf8'),targets=[];
+        for(const match of svg.matchAll(/\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))|url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s)]+))\s*\)|@import\s+(?:"([^"]*)"|'([^']*)')/gi))targets.push(match.slice(1).find(value=>value!==undefined)||'');
+        if(targets.some(target=>target.trim()&&!/^(?:#|data:)/i.test(target.trim())))issues.push(issue('svg-external-dependency','SVG 含未封装的相对或外部引用（含图片／字体／样式）',path,'warning'));
+      }
       if(kind==='source')for(const dep of await declarations(utf8(bytes),path)){references.push({sourcePath:path,target:dep.target,resolvedPath:dep.resolvedPath,syntax:dep.syntax,status:dep.status});if(dep.resolvedPath&&dep.status!=='unsupported')await capture(dep.resolvedPath,/\.md$/i.test(dep.resolvedPath)?'source':'asset');else issues.push(issue('unpacked-dependency','未封装依赖：'+(dep.target||dep.reasonCode),path,'warning'));}}
     const plans=[];if(plan)plans.push({path:'plans/current.plan.json',plan:core.validatePlan(plan)});
     for(const path of planPaths){await capture(path,'plan');const row=files.find(row=>row.path===path);if(row)plans.push({path,plan:core.validatePlan(JSON.parse(utf8(decode(row.base64))))});}
-    for(const row of plans){if(!seen.has(row.path)){files.push(fileRecord(row.path,json(row.plan),'plan'));seen.add(row.path);}for(const entry of row.plan.entries)if(entry.kind!=='section'){await capture(entry.sourcePath,'source');const source=files.find(file=>file.path===entry.sourcePath);if(source)source.sourceKind=entry.kind;}}
+    const freshIndex=plans.length?await assemblyService.scan(options.config,options):null;
+    for(const row of plans){if(!seen.has(row.path)){files.push(fileRecord(row.path,json(row.plan),'plan'));seen.add(row.path);}for(const resolved of core.resolvePlan(row.plan,freshIndex).entries){const {entry,item,status}=resolved;if(entry.kind==='section')continue;
+      if(status!=='ok'){issues.push(issue('stale-plan-reference','方案来源需要核对，未自动接受：'+status,entry.sourcePath,'error'));continue;}
+      references.push({sourcePath:row.path,target:entry.sourcePath,resolvedPath:item.path,syntax:'plan-source',status:'ok',sourceId:entry.sourceId});
+      await capture(item.path,'source');const source=files.find(file=>file.path===item.path);if(source)source.sourceKind=entry.kind;}}
     for(const path of sourcePaths)await capture(path,'source');for(const path of sidecarPaths)await capture(path,'sidecar');
     for(const path of archivePaths){const node=vault.getAbstractFileByPath(path);if(Array.isArray(node?.children)){const walk=async folder=>{for(const child of folder.children){if(Array.isArray(child.children))await walk(child);else await capture(child.path,'archive');}};await walk(node);}else await capture(path,'archive');}
     const records=[];for(const row of files.filter(file=>file.kind==='source'))try{const markdown=utf8(decode(row.base64)),metadata=metadataOf(markdown,parseYaml);records.push({path:row.path,kind:row.sourceKind||sourceKind(metadata),markdown,metadata});}catch(error){issues.push(issue('source-metadata',error.message,row.path,'error'));}

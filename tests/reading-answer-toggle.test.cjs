@@ -10,7 +10,7 @@ test('reading answer controls preserve native folds, virtualized math, per-view 
   if(!chrome){if(process.env.CI)throw Error('Chrome required in CI');t.skip('Set CHROME_PATH');return;}
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mathsemble-reading-toggle-'));
   const stub=`const module={exports:{}};class BasePlugin{constructor(app){this.app=app;this.commands=[];this.cleanups=[];}register(fn){this.cleanups.push(fn);}registerEvent(){}registerView(){}addRibbonIcon(){}registerMarkdownPostProcessor(){}registerEditorExtension(){}addCommand(command){this.commands.push(command);}}
-  const obsidian={Plugin:BasePlugin,ItemView:class{},Component:class{},Modal:class{},Notice:class{},MarkdownView:class{},MarkdownRenderer:{},finishRenderMath:async()=>{}};
+  const obsidian={Plugin:BasePlugin,ItemView:class{},Component:class{},Modal:class{},Notice:class{},MarkdownView:class{},MarkdownRenderer:{},parseYaml:JSON.parse,finishRenderMath:async()=>{}};
   function require(name){return name==='obsidian'?obsidian:{WidgetType:class{},ViewPlugin:{fromClass(){return {}}},Decoration:{}};}`;
   const script=stub+'\n'+source+'\nglobalThis.api={Controller:MwbReadingAnswerController,Plugin:module.exports,decorate:mwbDecorateReadingTypedSlots};\n('+browserCases.toString()+')();';
   const input=path.join(dir,'reading.html');
@@ -175,8 +175,8 @@ async function browserCases(){
   await check('plugin command follows active view, removes closed views and unloads every action',async()=>{
     const first=newView('甲.md'),second=newView('乙.md'),events=new Map();let views=[first.view,second.view],active=first.view;
     const emitter={on:(event,callback)=>{if(!events.has(event))events.set(event,[]);events.get(event).push(callback);return {event,callback};}};
-    const app={metadataCache:{...emitter,getFileCache:()=>({frontmatter:{}})},workspace:{...emitter,
-      getLeavesOfType:()=>views.map(view=>({view})),getActiveViewOfType:()=>active,onLayoutReady:callback=>callback()}};
+    const app={vault:{...emitter},metadataCache:{...emitter,getFileCache:()=>({frontmatter:{}})},workspace:{...emitter,
+      getLeavesOfType:type=>type==='markdown'?views.map(view=>({view})):[],getActiveViewOfType:()=>active,onLayoutReady:callback=>callback()}};
     const plugin=new api.Plugin(app);await plugin.onload();
     const command=plugin.commands.find(entry=>entry.id==='toggle-reading-answers');ok(command&&command.checkCallback(true),'reading command is not discoverable');
     command.checkCallback(false);ok(first.reading.classList.contains('mwb-reading-show-answers')&&!second.reading.classList.contains('mwb-reading-show-answers'),'command ignored active view');

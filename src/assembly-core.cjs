@@ -378,7 +378,8 @@ function validatePlan(raw) {
   const course = raw.schemaVersion === 1 ? defaultCourse() : validateCourse(raw.course);
   const output = raw.schemaVersion === 1 ? defaultOutputSettings() : validateOutputSettings(raw.output);
   if (!Array.isArray(raw.entries) || raw.entries.length > MAX_ENTRIES) throw new Error(`组题方案最多 ${MAX_ENTRIES} 项`);
-  if (Object.getPrototypeOf(raw.entries) !== Array.prototype ||
+  if (Object.getPrototypeOf(raw.entries) !== Array.prototype || Object.keys(raw.entries).length!==raw.entries.length ||
+    Reflect.ownKeys(raw.entries).some(key=>typeof key!=='string' || key!=='length'&&!/^(0|[1-9]\d*)$/.test(key)) ||
     Object.entries(Object.getOwnPropertyDescriptors(raw.entries)).some(([key, descriptor]) =>
       FORBIDDEN.has(key) || descriptor.get || descriptor.set || key !== 'length' && !/^\d+$/.test(key))) {
     throw new TypeError('编排列表含不允许的属性');

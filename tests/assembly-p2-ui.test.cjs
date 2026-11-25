@@ -67,6 +67,15 @@ async function browserCases(sources,css) {
     const plan=core.addItem(core.createPlan(),f.view.index.items[0]);const candidate=await f.usage.preparePlanUsage({plan,context,action:'assigned'});await f.usage.recordPlanUsage(candidate,{actionId:'new-use'});
     await f.view.applySelection();ok(f.view.plan.entries.length===0,'stale usage candidates were applied');ok(f.view.statusEl.classList.contains('is-error'),'stale selection not explained');
   });
+  await check('knowledge remains available for tag resolution but its own result list honors usage',async f=>{
+    await f.view.app.vault.createFolder('知识');await f.view.app.vault.create('知识/K.md','---\n'+JSON.stringify({id:'K',subject:'初中数学'})+'\n---\n知识正文');
+    f.view.settings={...f.view.settings,knowledgeRoots:['知识']};await f.service.saveSettings(f.view.settings);await f.view.scan();
+    const item=f.view.index.items.find(x=>x.id==='K'),plan=core.addItem(core.createPlan(),item),context={classId:'知识班',courseId:''};
+    const candidate=await f.usage.preparePlanUsage({plan,context,action:'taught'},{config:f.view.settings});await f.usage.recordPlanUsage(candidate,{actionId:'knowledge-use'},{config:f.view.settings});
+    f.view.filters.kind='knowledge';f.view.usageFilter={...context,mode:'unused',days:30};await f.view.refreshUsage();
+    ok(f.view.usageIndex().items.some(x=>x.id==='K'),'knowledge removed before normal knowledge-ref resolution');
+    ok(!f.view.results.querySelector('[data-source-path]'),'used knowledge remained in final displayed results');
+  });
   return results;
 }
 test('P2 real service and view integration in Chromium',{skip:!chrome&&!process.env.CI},async()=>{
@@ -78,6 +87,6 @@ test('P2 real service and view integration in Chromium',{skip:!chrome&&!process.
     const html='<!doctype html><body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>';
     server=http.createServer((req,res)=>{if(req.method==='POST'){const chunks=[];req.on('data',c=>chunks.push(c));req.on('end',()=>res.end(crypto.createHash('sha256').update(Buffer.concat(chunks)).digest('hex')));}else{res.setHeader('Content-Type','text/html; charset=utf-8');res.end(html);}});
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const result=await runChromeDocument(chrome,null,path.join(dir,'profile'),{url:'http://127.0.0.1:'+server.address().port});
-    assert.deepEqual(result.filter(row=>!row.ok),[]);assert.equal(result.length,4);
+    assert.deepEqual(result.filter(row=>!row.ok),[]);assert.equal(result.length,5);
   }finally{await new Promise(resolve=>server?server.close(resolve):resolve());fs.rmSync(dir,{recursive:true,force:true,maxRetries:20,retryDelay:100});}
 });

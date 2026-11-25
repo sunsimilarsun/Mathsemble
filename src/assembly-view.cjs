@@ -2,7 +2,7 @@
 
 // Native Obsidian view. UI state belongs to the workspace; content writes are
 // delegated to explicit service actions. No source Markdown is mutated here.
-module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily,
+module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily,openSimilarity,
   usageService,openUsage,openLibrary,openPresentation}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
@@ -182,6 +182,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.app.workspace.requestSaveLayout?.();
     }
     stateChanged() {
+      this.similarityModal?.invalidate('编排已变化，请刷新候选。');
       if(this.presentationModal&&!this.presentationModal.closed)this.presentationModal.fail(new Error('编排已变化，请重新打开逐题投影'));
       this.clearArrangementDrag();
       this.clearSelection('编排已变化，请重新生成候选。');
@@ -425,6 +426,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.closed = true;
       this.blueprintModal?.close();
       this.familyModal?.close();
+      this.similarityModal?.close();
       this.usageModal?.close();this.libraryModal?.close();this.presentationModal?.close();
       this.usageGeneration++;
       this.clearArrangementDrag();
@@ -715,10 +717,10 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }catch(error){if(!this.closed&&generation===this.usageGeneration){this.usageState='error';this.usageError=errorText(error);}}
       if(!this.closed&&generation===this.usageGeneration)this.renderResults();
     }
-    usageIndex(index=this.index,ledger=this.usageLedger) {
+    usageIndex(index=this.index,ledger=this.usageLedger,now=this.usageNow) {
       if(!usageService||this.usageFilter.mode==='all')return index;
       if(!ledger||this.usageState!=='ready')throw new Error(this.usageState==='loading'?'正在读取使用记录，请稍候':this.usageError||'请先填写班级或课程并刷新使用记录');
-      const eligible=new Set(usageService.filterUsage(index.items,ledger,{context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days}));
+      const eligible=new Set(usageService.filterUsage(index.items,ledger,{context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now}));
       // Keep knowledge nodes for normal knowledge-tag resolution. Filtering the
       // question pool must not change the meaning of a shared knowledge tag.
       return {...index,items:index.items.filter(item=>item.kind==='knowledge'||eligible.has(item))};
@@ -817,6 +819,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
     }
     renderResults() {
+      this.similarityModal?.checkWorkspace();
       if(!this.results) return;
       if(this.selectedItem){
         const current=this.index.items.find(item=>item.path===this.selectedItem.path&&item.kind===this.selectedItem.kind&&item.fingerprint===this.selectedItem.fingerprint);
@@ -829,7 +832,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const previews=this.beginInlinePreviews('results');
       this.results.replaceChildren();
       let items=[];
-      try{items=core.filterItems(this.usageIndex(),this.filters);}
+      try{
+        items=core.filterItems(this.usageIndex(),this.filters);
+        if(usageService&&this.usageFilter.mode!=='all')items=usageService.filterUsage(items,this.usageLedger,
+          {context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now:this.usageNow});
+      }
       catch(error){this.resultsSummary.textContent='使用筛选未就绪';this.emptyState(this.results,'使用记录待核对',errorText(error));return;}
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
       if(this.filters.familyId&&core.familyGroups){
@@ -862,6 +869,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         if(item.kind==='question'&&item.familyState==='classified')this.button(footer,'查看题族',()=>{
           this.filters={kind:'question',query:'',familyId:item.familyId};this.limit=100;if(this.searchInput)this.searchInput.value='';this.populateFilters();this.renderResults();
         },'mwb-assembly-card-family').title='查看题族 '+item.familyId;
+        if(item.kind==='question'&&openSimilarity)this.button(footer,'找相似题',()=>openSimilarity(this,{sourceKey:item.key}),'mwb-assembly-card-similarity').title='按题族、考点或方法查找候选题';
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
@@ -1004,7 +1012,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
             throw new Error('筛选或编排已变化，请重新生成候选');
           sourceCheck.assertCurrent();
           const count=selection.items.length;
-          const next=core.addSelectedQuestions(this.plan,this.usageIndex(latest,usageLedger),this.filters,selection.items);
+          const next=core.addSelectedQuestions(this.plan,this.usageIndex(latest,usageLedger,new Date().toISOString()),this.filters,selection.items);
           this.index=latest;this.indexState='ready';this.selection=null;
           this.selectionNotice=`已将 ${count} 道题加入编排，可在“预览编排”调整顺序和角色。`;
           this.populateFilters();this.renderTree();this.setPlan(next);
@@ -1220,6 +1228,17 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const panel=this.el('details',parent,'mwb-assembly-part-settings');
       this.el('summary',panel,'',entry.kind==='question'?'内容范围与本次分值':'知识小节范围');
       this.el('p',panel,'mwb-assembly-muted','只保存本次编排的选择；启用分值或片段后为 v4 方案，旧方案请另存。');
+      const runChoice=this.el('div',panel);runChoice.hidden=true;
+      const runSelect=this.field(runChoice,'采用配额记录','select');runSelect.dataset.arrangementMutate='true';let runsRead=false;
+      panel.addEventListener('toggle',()=>{
+        if(!panel.open||runsRead||this.pendingBlueprintRun||!service.listMatchingBlueprintRuns)return;runsRead=true;
+        const snapshot=this.plan;
+        void service.listMatchingBlueprintRuns(snapshot,{isCurrent:()=>!this.closed&&panel.isConnected&&this.plan===snapshot}).then(matches=>{
+          if(this.closed||!panel.isConnected||this.plan!==snapshot)return;
+          if(matches.length>1){runChoice.hidden=false;this.el('option',runSelect,'多份配额记录匹配，请选择').value='';
+            for(const match of matches)this.el('option',runSelect,[match.title,match.createdAt,match.path.split('/').pop()].filter(Boolean).join(' · ')).value=match.path;}
+        }).catch(error=>{if(panel.isConnected&&!this.closed)this.setStatus(errorText(error),true);});
+      });
       let total;
       if(entry.kind==='question'){
         total=this.field(panel,'本次总分（可留空）');total.type='number';total.min='0';total.max='1000000';total.step='0.01';
@@ -1258,21 +1277,23 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           if(scored.length&&scored.length!==selected.length)throw new Error('请填写所有已选小问分值，或将小问分值全部留空');
           if(scored.length){fragmentRef.scores=Object.fromEntries(scored.map(choice=>[choice.id,Number(choice.score.value)]));delete patch.score;}
         }
-        await this.applyEntryContent(entry.entryId,patch,row);
+        if(!runChoice.hidden&&!runSelect.value)throw new Error('多份配额记录匹配，请先选择本次采用的记录');
+        await this.applyEntryContent(entry.entryId,patch,row,runSelect.value);
       });apply.dataset.arrangementMutate='true';apply.dataset.boundary=String(status!=='ok'||parsed?.supported&&!parsed.valid);
       if(entry.fragmentRef){
-        const whole=this.button(panel,'恢复整题／整篇',()=>this.applyEntryContent(entry.entryId,{fragmentRef:null,...(total?{score:null}:{})},row));
+        const whole=this.button(panel,'恢复整题／整篇',()=>this.applyEntryContent(entry.entryId,{fragmentRef:null,...(total?{score:null}:{})},row,runSelect.value));
         whole.dataset.arrangementMutate='true';
       }
     }
-    async applyEntryContent(entryId,patch,row) {
+    async applyEntryContent(entryId,patch,row,runPath) {
       if(this.closed||!row.isConnected||this.actionBusy||this.scanBusy)return;
       const plan=this.plan,config=JSON.stringify(this.settings);
       await this.runAction('核对内容范围与分值',async()=>{
-        const result=await service.updateEntryContent(plan,entryId,patch,{config:this.settings,
-          isCurrent:()=>!this.closed&&this.plan===plan&&JSON.stringify(this.settings)===config});
+        const options={config:this.settings,isCurrent:()=>!this.closed&&this.plan===plan&&JSON.stringify(this.settings)===config};
+        const run=this.pendingBlueprintRun||(runPath?await service.loadBlueprintRun(runPath,plan):undefined);
+        const result=await service.updateEntryContent(plan,entryId,patch,{...options,...(run?{run}:{})});
         if(this.closed||this.plan!==plan)return;
-        this.index=result.index;this.indexState='ready';this.setPlan(result.plan);
+        this.index=result.index;this.indexState='ready';this.setPlan(result.plan);this.pendingBlueprintRun=result.run||null;
         this.setStatus('已更新本次内容范围与分值；原题卡保持不变。');
       });
     }
@@ -1399,6 +1420,10 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           const replace=action(actions,'同族换题','family',()=>{if(row.isConnected)openFamily(this,entry.entryId);});
           replace.dataset.arrangementMutate='true';
           replace.title=item?.familyState==='classified'?'选择同族题，保留位置、卷内标题和角色':'需有效 family_id；打开后可查看不能换题的原因';
+        }
+        if(entry.kind==='question'&&openSimilarity){
+          const replace=action(actions,'相似换题','similarity',()=>{if(row.isConnected)openSimilarity(this,{entryId:entry.entryId});});
+          replace.dataset.arrangementMutate='true';replace.title='按题族、考点或方法选择候选，并核对配额与来源';
         }
         const remove=action(actions,entry.kind==='section'?'移除分区标题':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
         remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');

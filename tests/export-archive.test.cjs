@@ -77,6 +77,7 @@ test('archive preserves raw Markdown, v3 plan, source map, runtime and copied ar
   assert.equal(f.nodes.get(folder+'/compiled.md').content,'完整讲义\r\n');
   assert.equal(f.readJson(folder+'/plan.v3.json').schemaVersion,3);
   assert.equal(f.readJson(folder+'/plan.v3.json').title,'原方案');
+  assert.equal(manifest.inputs.planSnapshot.schemaVersion,3);assert.equal(manifest.inputs.planSnapshot.archivePath,'plan.v3.json');
   assert.equal(f.readJson(folder+'/source-map.json')[0].to,4);
   assert.deepEqual(f.nodes.get(folder+'/artifacts/0001.pdf').content,Buffer.from([0,1,2,255]));
   assert.equal(manifest.inputs.sources[0].archivePath,'sources/0001.md');
@@ -85,6 +86,38 @@ test('archive preserves raw Markdown, v3 plan, source map, runtime and copied ar
   assert.equal(f.readJson(folder+'/input.json').options.paper,'A4');
   assert.equal(f.writes.filter(([,path])=>path.startsWith(folder+'/')).at(-1)[1],folder+'/manifest.json');
   assert.deepEqual(plan.entries,[],'the source plan is never rewritten');
+});
+
+test('v4 archive preserves selected-part scores and source map under the actual versioned filename',async()=>{
+  const f=fixture(),input=origin(),item=core.buildIndex([{kind:'question',path:'课程/原文.md',metadata:{id:'Q1'},markdown:input.sources[0].markdown}]).items[0];
+  let plan=core.addItem(core.createPlan('片段方案'),item);
+  plan=core.updateEntry(plan,plan.entries[0].entryId,{fragmentRef:{kind:'question-part',ids:['part-a','part-b'],scores:{'part-a':2.25,'part-b':5}}});
+  const sourceMap=[{entryId:plan.entries[0].entryId,path:item.path,kind:'question',fragmentRef:plan.entries[0].fragmentRef,score:7.25,startLine:10,endLine:20}];
+  Object.assign(input,{origin:'assembly',planSnapshot:plan,sourceMap,compiledMarkdown:'选定内容'});
+  const snapshot=JSON.parse(JSON.stringify(plan)),run=f.service.beginRun(input,{archive:true});setEmpty(run);
+  plan.entries[0].fragmentRef.scores['part-a']=999;sourceMap[0].fragmentRef.ids.reverse();
+  const result=await run.finalize({outcome:'complete'}),folder=result.archive.path,manifest=f.readJson(result.archive.manifestPath);
+  assert.equal(result.archive.state,'complete');assert(!f.nodes.has(folder+'/plan.v3.json'));
+  assert.deepEqual(f.readJson(folder+'/plan.v4.json'),snapshot);assert.deepEqual(core.validatePlan(f.readJson(folder+'/plan.v4.json')),snapshot);
+  assert.equal(manifest.inputs.planSnapshot.schemaVersion,4);assert.equal(manifest.inputs.planSnapshot.archivePath,'plan.v4.json');
+  assert.equal(manifest.inputs.planSnapshot.sha256,hash(f.nodes.get(folder+'/plan.v4.json').content));
+  assert.equal(f.readJson(folder+'/input.json').planSnapshot.schemaVersion,4);
+  assert.equal(f.readJson(result.record.path).inputs.planSnapshot.schemaVersion,4);
+  assert.deepEqual(f.readJson(folder+'/source-map.json')[0].fragmentRef,snapshot.entries[0].fragmentRef);
+  const descriptor=manifest.files.find(file=>file.path==='plan.v4.json');assert.equal(descriptor.sha256,hash(f.nodes.get(folder+'/plan.v4.json').content));
+});
+test('lightweight v4 evidence reports actual schema without copying a plan or downgrading it',async()=>{
+  const f=fixture(),item=core.buildIndex([{kind:'question',path:'题库/题.md',metadata:{},markdown:'题目'}]).items[0];
+  let plan=core.addItem(core.createPlan(),item);plan=core.updateEntry(plan,plan.entries[0].entryId,{score:0});
+  const run=f.service.beginRun({...origin(),origin:'assembly',planSnapshot:plan});setEmpty(run);
+  const result=await run.finalize(),record=f.readJson(result.record.path);
+  assert.equal(record.inputs.planSnapshot.schemaVersion,4);assert.equal(record.inputs.planSnapshot.archivePath,undefined);
+  assert.equal(result.archive.state,'not-requested');assert(![...f.nodes.keys()].some(path=>/plan\.v[34]\.json$/.test(path)));
+});
+test('unknown normalized archive plan versions are rejected before any output is written',()=>{
+  const f=fixture(),api=createExportArchiveService({...f.options,validatePlan:plan=>plan});
+  for(const schemaVersion of [0,2,5,'4'])assert.throws(()=>api.beginRun({...origin(),planSnapshot:{schemaVersion}},{archive:true}),error=>error.code==='ARCHIVE_PLAN_INVALID');
+  assert.equal(f.writes.length,0);
 });
 
 test('resource bytes come only from the frozen reader and repeated observations store one blob',async()=>{

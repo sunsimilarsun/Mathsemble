@@ -172,9 +172,21 @@ test('missing correction targets and mutation while reading are never silently i
   const f=fixture(),saved=await register(f);await f.usage.revokeUsage(saved.event.eventId,{context:A,actionId:'undo'});f.remove(saved.path);await assert.rejects(f.usage.loadUsage({context:A}),{code:'USAGE_CORRUPT'});
   const g=fixture();await register(g);g.state.readHook=file=>{if(file.extension==='json')g.emit('modify',file);};await assert.rejects(g.usage.loadUsage({context:A}),{code:'USAGE_STALE'});assert.equal(g.listeners.size,0);
 });
+test('corrupt log appearing after final validation but before create blocks a new teaching event',async()=>{
+  const f=fixture();await register(f);const candidate=await f.usage.preparePlanUsage({plan:f.plan,context:A,action:'assigned'});let sourceReads=0,injected=false;
+  f.state.readHook=file=>{if(file.extension==='md')sourceReads++;};const original=f.vault.getAbstractFileByPath;
+  f.vault.getAbstractFileByPath=path=>{const value=original(path);if(!injected&&sourceReads>=4&&path.startsWith('Mathsemble/使用账本/')&&path.endsWith('.json')&&!value){injected=true;queueMicrotask(()=>f.put('Mathsemble/使用账本/'+f.usage.contextKey(A)+'/'+'0'.repeat(64)+'.json','{'));}return value;};
+  await assert.rejects(f.usage.recordPlanUsage(candidate,{actionId:'new-after-check'}),{code:'USAGE_STALE'});assert(injected);assert.equal(f.writes.filter(row=>row[0]==='create').length,1);assert.equal(f.listeners.size,0);
+});
+test('deleting the original event in the pre-create gap cannot append an orphan revocation',async()=>{
+  const f=fixture(),saved=await register(f);let injected=false;const original=f.vault.getAbstractFileByPath;
+  f.vault.getAbstractFileByPath=path=>{const value=original(path);if(!injected&&path.startsWith('Mathsemble/使用账本/')&&path.endsWith('.json')&&!value){injected=true;queueMicrotask(()=>f.remove(saved.path));}return value;};
+  await assert.rejects(f.usage.revokeUsage(saved.event.eventId,{context:A,actionId:'undo-gap'}),{code:'USAGE_STALE'});assert(injected);assert.equal(f.writes.filter(row=>row[0]==='create').length,1);assert.equal((await active(f)).length,0);assert.equal(f.listeners.size,0);
+});
 test('invalid shapes, unsafe roots, getters and future activity times fail closed',async()=>{
   const f=fixture();assert.throws(()=>createUsageService({vault:f.vault,core,scanIndex:()=>f.index(),root:'../outside'}));
   await assert.rejects(f.usage.preparePlanUsage({plan:f.plan,context:A,action:'taught',occurredAt:'2027-01-01T00:00:00.000Z'}));
+  await assert.rejects(f.usage.preparePlanUsage({plan:f.plan,context:A,action:'taught',occurredAt:'2026-02-30T00:00:00.000Z'}),{code:'USAGE_INVALID'});
   const getter={};Object.defineProperty(getter,'classId',{get(){throw Error('must not invoke');},enumerable:true});await assert.rejects(f.usage.loadUsage({context:getter}),/非法属性/);
   await assert.rejects(f.usage.preparePlanUsage({plan:f.plan,context:A,action:'taught',entryIds:[f.plan.entries[0].entryId]}));assert.equal(f.writes.length,0);
 });

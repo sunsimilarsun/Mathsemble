@@ -107,6 +107,12 @@ test('tampered stage bytes, batch manifest and traversal paths are rejected',asy
   const manifest=f.nodes.get('Mathsemble/待入库/'+batch.batchId+'/manifest.json');const edited=JSON.parse(manifest.bytes);edited.files[0].targetPath='escape.md';manifest.bytes=Buffer.from(JSON.stringify(edited));await assert.rejects(f.service.loadBatch(batch.batchId),/摘要/);
 });
 
+test('source target roots cannot address hidden configuration or case-insensitive plugin sidecar directories',async()=>{
+  const f=fixture();for(const targetRoot of ['Mathsemble','MATHSEMBLE','mathsemble/anything','.obsidian','.git/objects','题库/.obsidian','题库/Mathsemble'])await assert.rejects(stage(f,undefined,{targetRoot}),/隐藏配置或插件侧车/);
+  assert.equal(f.writes.length,0);const batch=await stage(f,[{path:'.obsidian/original.json',text:'{"preserved":true}'}]);assert.equal(batch.files[0].targetPath,'导入题库/.obsidian/original.json');
+  assert.equal((await f.service.commitBatch(batch.batchId,{confirmed:true})).status,'complete');assert(!f.nodes.has('.obsidian/original.json'));
+});
+
 test('source edits during commit invalidate the batch before any new target is published',async()=>{
   const f=fixture({'题库/old.md':question('OLD')}),batch=await stage(f),read=f.vault.readBinary;let changed=false;
   f.vault.readBinary=async file=>{const result=await read(file);if(!changed&&file.path==='题库/old.md'){changed=true;await f.vault.modify(file,question('A'));}return result;};
@@ -127,6 +133,16 @@ test('Mathsemble source cards, binary images and a plan round-trip to an empty V
 test('remote dependencies and SVG external links are partial and never silently complete',async()=>{
   const f=fixture({'题库/A.md':question('A','![remote](https://example.invalid/private.png)\n![svg](../assets/a.svg)'),'assets/a.svg':'<svg><image href="https://example.invalid/a.png"/></svg>'});
   const result=await f.service.exportTransfer({sourcePaths:['题库/A.md']});assert.equal(result.status,'partial');assert(result.issues.some(i=>i.code==='unpacked-dependency'));assert(result.issues.some(i=>i.code==='svg-external-dependency'));assert.equal(result.package.files.length,2);
+});
+
+test('plan packaging follows a stable renamed ID but never accepts changed source fingerprints',async()=>{
+  const f=fixture({'题库/A.md':question('A')}),index=await f.assemblyService.scan(),plan=core.addItem(core.createPlan('原方案'),index.items[0]);
+  const old=f.nodes.get('题库/A.md');f.nodes.delete(old.path);old.parent.children=old.parent.children.filter(n=>n!==old);f.file('题库/renamed.md',old.bytes);
+  const moved=await f.service.exportTransfer({plan});assert.equal(moved.status,'complete');assert(moved.package.files.some(row=>row.path==='题库/renamed.md'));assert(moved.package.references.some(row=>row.target==='题库/A.md'&&row.resolvedPath==='题库/renamed.md'));
+  const g=fixture(),batch=await g.service.stageTransfer(moved.package);assert.equal(batch.status,'staged');assert.equal((await g.service.commitBatch(batch.batchId,{confirmed:true})).status,'complete');
+  const restored=JSON.parse(g.text(batch.files.find(row=>row.kind==='plan').targetPath));assert.equal(restored.entries[0].sourcePath,'导入题库/题库/renamed.md');
+  await f.vault.modify(f.nodes.get('题库/renamed.md'),question('A','后来改题'));const changed=await f.service.exportTransfer({plan});assert.equal(changed.status,'partial');assert(changed.issues.some(row=>row.code==='stale-plan-reference'&&row.severity==='error'));
+  const rejected=await fixture().service.stageTransfer(changed.package);assert.equal(rejected.status,'blocked');assert.equal(plan.entries[0].sourcePath,'题库/A.md');
 });
 
 test('existing sidecars and archives preserve exact bytes and disclose opaque historical reference semantics',async()=>{

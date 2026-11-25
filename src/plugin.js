@@ -955,14 +955,18 @@ function mwbHandoutQuestionPlan(markdown) {
     // This spelling is an explicit print boundary, including after prose;
     // it must not become a Setext H2 or end the current question's scope.
     if(pageBreakLines.has(i))continue;
-    // Setext H1/H2 still close a question. Inject on the preceding text line
-    // without introducing a new paragraph or changing reference scope.
-    if(/^(?:=+|-+)[ \t]*$/.test(line) && eligible[i-1] && lines[i-1].trim()) {
-      let start=i-1;
-      while(start>0&&eligible[start-1]&&lines[start-1].trim()) start--;
-      register(start,line[0]==='='?1:2,lines.slice(start,i).join(' '),i-1);
+    // Obsidian recognizes single-line Setext titles, but renders a multi-line
+    // paragraph followed by --- as prose + a rule (unlike CommonMark). Only
+    // mark a complete one-line paragraph; a marker inside prose cannot map to
+    // a heading. Keep original line identities and single-line H1/H2 support.
+    if(/^(?:=+|-+)[ \t]*$/.test(line) && eligible[i-1] && lines[i-1].trim() &&
+        !(eligible[i-2] && lines[i-2].trim())) {
+      register(i-1,line[0]==='='?1:2,lines[i-1].trim());
       continue;
     }
+    // A thematic break ends a paragraph. It is never title text for the next
+    // Setext underline, including the rules surrounding inline metadata.
+    if(/^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line))continue;
     eligible[i]=true;
     const possible=line.trim().replace(/^\*\*(.*?)\*\*(.*)$/,'$1$2');
     // Explicit heading-conversion command can promote ordinary top-level prose
@@ -5303,25 +5307,73 @@ function sourceBody(markdown) {
   if (!match) throw fail('FRAGMENT_INVALID','源笔记 frontmatter 未闭合');
   return {body:source.slice(match[0].length),offset:match[0].split('\n').length-1};
 }
+function maskLinkLiterals(source) {
+  const blank=value=>value.replace(/[^\n]/g,' '),escaped=index=>{let count=0;while(index>0&&source[--index]==='\\')count++;return count%2===1;};
+  let out='',cursor=0;
+  for(let i=0;i<source.length;i++) {
+    if(source[i]!=='['||escaped(i))continue;
+    if(source[i+1]==='['){const end=source.indexOf(']]',i+2);if(end>=0&&!source.slice(i,end).includes('\n')){out+=source.slice(cursor,i)+blank(source.slice(i,end+2));cursor=end+2;i=end+1;continue;}}
+    let close=i+1,depth=1;
+    for(;close<source.length;close++){if(escaped(close))continue;if(source[close]==='[')depth++;else if(source[close]===']'&&--depth===0)break;}
+    if(source[close+1]!=='(')continue;
+    let end=close+2,nesting=1,angle=false,quote='';
+    for(;end<source.length;end++){
+      if(escaped(end))continue;const c=source[end];
+      if(quote){if(c===quote)quote='';continue;}
+      if(c==='<'&&!source.slice(close+2,end).trim())angle=true;
+      else if(c==='>'&&angle)angle=false;
+      else if(!angle&&(c==='"'||c==="'")&&/\s/.test(source[end-1]||''))quote=c;
+      else if(!angle&&c==='(')nesting++;
+      else if(!angle&&c===')'&&--nesting===0)break;
+    }
+    if(end>=source.length)continue;
+    out+=source.slice(cursor,i)+blank(source.slice(i,end+1));cursor=end+1;i=end;
+  }
+  return out+source.slice(cursor);
+}
 
 // Mask literal contexts before recognizing full-line, unindented markers.
 // Structural comments inside fences, math, comments or HTML never become IDs.
+function htmlEndLine(lines,start,tag) {
+  const source=lines.slice(start).join('\n'),voidTags=new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  let depth=0,cursor=0;
+  while(cursor<source.length) {
+    const opening=source.indexOf('<',cursor);if(opening<0)break;
+    if(source.startsWith('<!--',opening)){const end=source.indexOf('-->',opening+4);if(end<0)break;cursor=end+3;continue;}
+    const match=/^<(\/?)\s*([A-Za-z][A-Za-z0-9:-]*)\b/.exec(source.slice(opening));
+    if(!match){cursor=opening+1;continue;}
+    let end=opening+match[0].length,quote='';
+    for(;end<source.length;end++){const c=source[end];if(quote){if(c===quote)quote='';}else if(c==='"'||c==="'")quote=c;else if(c==='>')break;}
+    if(end>=source.length)break;
+    const name=match[2].toLowerCase(),closing=!!match[1],selfClosing=/\/\s*>$/.test(source.slice(opening,end+1))||voidTags.has(name);
+    if(name===tag){if(closing)depth--;else if(!selfClosing)depth++;if(depth===0)return start+source.slice(0,end).split('\n').length-1;}
+    cursor=end+1;
+    if(!closing&&!selfClosing&&['script','style','textarea','pre','code'].includes(name)) {
+      const close=new RegExp('</'+name+'\\s*>','ig');close.lastIndex=cursor;const found=close.exec(source);
+      if(!found)break;
+      cursor=found.index+found[0].length;
+      if(name===tag){depth--;if(depth===0)return start+source.slice(0,cursor).split('\n').length-1;}
+    }
+  }
+  return lines.length-1;
+}
 function markerLines(lines) {
-  const markers=new Map();let fence=null,math=null,code=0,comment=false,html=null;
+  const markers=new Map();let fence=null,math=null,code=0,comment=false;
+  const contextLines=maskLinkLiterals(lines.join('\n')).split('\n');
   for (let i=0;i<lines.length;i++) {
-    const line=lines[i];
+    const line=contextLines[i];
     if (fence) {const close=/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);if(close&&close[1][0]===fence[0]&&close[1].length>=fence.length)fence=null;continue;}
-    if (html) {if(new RegExp('</'+html+'\\s*>','i').test(line))html=null;continue;}
     if (!comment&&!math&&!code) {
       const opening=/^(?: {0,3}>[ \t]?)* {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
       if(opening&&!(opening[1][0]==='`'&&opening[2].includes('`'))){fence=opening[1];continue;}
-      const tag=/^ {0,3}<(pre|code|script|style|textarea|div|table|section|details)\b/i.exec(line);
-      if(tag){if(!new RegExp('</'+tag[1]+'\\s*>','i').test(line.slice(tag[0].length)))html=tag[1];continue;}
+      const tag=/^ {0,3}<([A-Za-z][A-Za-z0-9:-]*)\b/i.exec(line);
+      if(tag){i=htmlEndLine(lines,i,tag[1].toLowerCase());continue;}
       const marker=/^<!-- mathsemble:(stem|part|section|end)(?: ([A-Za-z][A-Za-z0-9_-]{0,63}))? -->[ \t]*$/.exec(line);
       if(marker){markers.set(i,{type:marker[1],id:marker[2]||''});continue;}
       if(/^<!--\s*mathsemble:/.test(line)){markers.set(i,{type:'invalid',id:''});continue;}
     }
     if (/^(?: {4}|\t| {0,3}>)/.test(line) && !comment&&!math&&!code) continue;
+    if (/^ {0,3}\[(?!\^)[^\]\n]+\]:/.test(line) && !comment&&!math&&!code) continue;
     for(let j=0;j<line.length;j++) {
       if(comment){const end=line.indexOf('-->',j);if(end<0)break;comment=false;j=end+2;continue;}
       if(code){if(line[j]==='`'){const n=/^`+/.exec(line.slice(j))[0].length;if(n===code)code=0;j+=n-1;}continue;}
@@ -5348,13 +5400,16 @@ function referenceText(markdown) {
     if(/^(?: {4}|\t)/.test(line))return '';
     return line;
   }).join('\n');
-  return visible.replace(/<!--[\s\S]*?(?:-->|$)/g,'').replace(/<(pre|code|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'')
+  return maskLinkLiterals(visible).replace(/^((?: {0,3}>[ \t]?)* {0,3}\[(?!\^)[^\]\n]+\]:)[^\n]*/gm,'$1')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g,'').replace(/<(pre|code|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'')
     .replace(/(`+)([^`]|(?!\1)`)*?\1/g,'').replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]/g,'').replace(/(?<!\\)\$(?:\\.|[^$])*?\$/g,'');
 }
 const normalizedReference=label=>label.trim().replace(/\s+/g,' ').toLowerCase();
 function referenceDefinitions(markdown) {
-  const result=new Set();
-  for(const match of referenceText(markdown).matchAll(/^(?: {0,3}>[ \t]?)* {0,3}\[([^\]\n]+)\]:/gm))result.add(normalizedReference(match[1]));
+  const result=new Map();
+  for(const match of referenceText(markdown).matchAll(/^(?: {0,3}>[ \t]?)* {0,3}\[([^\]\n]+)\]:/gm)) {
+    const label=normalizedReference(match[1]);result.set(label,(result.get(label)||0)+1);
+  }
   return result;
 }
 function assertReferenceClosure(selected,complete) {
@@ -5368,8 +5423,11 @@ function assertReferenceClosure(selected,complete) {
     const label=normalizedReference(match[2]||match[1]);
     if(match[2]!==undefined||match[1].startsWith('^')||all.has(label))used.add(label);
   }
-  for(const label of used)if(!available.has(label))throw fail('FRAGMENT_DEPENDENCY_MISSING',
-    '所选片段缺少图片、链接或脚注定义：'+label+'；请将共用定义放入 stem，知识小节须自行包含依赖');
+  for(const label of used) {
+    if((all.get(label)||0)>1)throw fail('FRAGMENT_DEPENDENCY_AMBIGUOUS','来源含重复图片、链接或脚注定义：'+label+'；请明确依赖后再选片段');
+    if(!available.has(label))throw fail('FRAGMENT_DEPENDENCY_MISSING',
+      '所选片段缺少图片、链接或脚注定义：'+label+'；请将共用定义放入 stem，知识小节须自行包含依赖');
+  }
 }
 function parseFragments(item) {
   if(!item||!['question','knowledge'].includes(item.kind)||typeof item.markdown!=='string') throw fail('FRAGMENT_INVALID','片段来源无效');
@@ -5814,7 +5872,8 @@ function validatePlan(raw) {
   const course = raw.schemaVersion === 1 ? defaultCourse() : validateCourse(raw.course);
   const output = raw.schemaVersion === 1 ? defaultOutputSettings() : validateOutputSettings(raw.output);
   if (!Array.isArray(raw.entries) || raw.entries.length > MAX_ENTRIES) throw new Error(`组题方案最多 ${MAX_ENTRIES} 项`);
-  if (Object.getPrototypeOf(raw.entries) !== Array.prototype ||
+  if (Object.getPrototypeOf(raw.entries) !== Array.prototype || Object.keys(raw.entries).length!==raw.entries.length ||
+    Reflect.ownKeys(raw.entries).some(key=>typeof key!=='string' || key!=='length'&&!/^(0|[1-9]\d*)$/.test(key)) ||
     Object.entries(Object.getOwnPropertyDescriptors(raw.entries)).some(([key, descriptor]) =>
       FORBIDDEN.has(key) || descriptor.get || descriptor.set || key !== 'length' && !/^\d+$/.test(key))) {
     throw new TypeError('编排列表含不允许的属性');
@@ -6438,9 +6497,12 @@ async function compileMarkdown(plan, resolved, options = {}) {
       if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
       blocks.push(`##### ${role}${++questionNumber} ${display}${score!=null?'（'+score+' 分）':''}\n\n${body}`);
     }
+    const fragmentReference=projected?Object.freeze({...projected.reference,
+      ids:Object.freeze([...projected.reference.ids]),
+      ...(projected.reference.scores?{scores:Object.freeze({...projected.reference.scores})}:{})}):null;
     origins.push(typeof item.path === 'string' && item.path ?
       {entryId:entry.entryId,kind:entry.kind,path:item.path,
-        ...(projected?{fragmentRef:JSON.parse(JSON.stringify(projected.reference))}:{}),
+        ...(fragmentReference?{fragmentRef:fragmentReference}:{}),
         ...(Object.hasOwn(entry,'score')?{score:entry.score}:{})} : null);
   }
   const markdown = blocks.join('\n\n') + '\n';
@@ -6632,6 +6694,7 @@ function createBlueprintEngine({core}={}) {
       occupiedSlots.add(lock.slotId);lockedPaths.add(lock.sourcePath);if(lock.sourceId)lockedIds.add(lock.sourceId);
       if(lock.origin==='plan') {
         const value=resolvedMap.get(lock.existingEntryId);
+        if(value?.entry.fragmentRef)fail('LOCK_PARTIAL_QUESTION','已选小问不能充抵整题配额；请先在编排中恢复整题');
         if(entryIds.has(lock.existingEntryId))fail('LOCK_DUPLICATE','已有编排项只能归属一行');entryIds.add(lock.existingEntryId);
         if(!value||value.entry.kind!=='question'||value.status!=='ok'||!sameSource(lock,sourceOf(value.item||{})))fail('LOCK_SOURCE_CHANGED','锁定的已有题缺失、冲突或来源已变化');
         else if(!safe(value.item)||!matches.get(value.item)?.has(lock.rowId)||exclude.has(identity(value.item)))fail('LOCK_FILTER_MISMATCH','锁定的已有题不满足本行条件');
@@ -6792,6 +6855,7 @@ const mwbAssemblyFamily = (() => { const module = {exports:{}};
 // Pure same-family replacement. Fresh source reads, strong digests, recovered
 // blueprint records and persistence belong to the service, never this module.
 const ALGORITHM='family-replacement-v1';
+const CONSTRAINED_ALGORITHM='constrained-replacement-v1';
 const FILTERS=new Set(['kind','query','subject','questionType','difficulty','tier','role','method','source','knowledge','familyId','familyState']);
 const forbidden=new Set(['__proto__','prototype','constructor']);
 const compare=(a,b)=>a<b?-1:a>b?1:0;
@@ -6832,7 +6896,9 @@ const sourceOf=item=>({sourceId:item.id||'',sourcePath:item.path,sourceFingerpri
 function createFamilyEngine({core}={}) {
   if(!core||['validatePlan','resolvePlan','filterItems','normalizeFamilyMetadata','updateEntry'].some(name=>typeof core[name]!=='function'))
     throw new TypeError('题族换题引擎需要现行 assembly core');
-  function prepareReplacement({index,plan,entryId,filters={},rowFilters={},maxPerFamily=null,locked=false}) {
+  // Both candidate strategies share identity, quota, locking and source checks.
+  // Only the explicit same-family strategy requires a classified source family.
+  function prepare({index,plan,entryId,filters={},rowFilters={},maxPerFamily=null,locked=false},sameFamily) {
     const current=core.validatePlan(jsonData(plan,'组题方案')),currentFilters=filtersOf(filters),requiredFilters=filtersOf(rowFilters);
     if(typeof entryId!=='string'||!entryId.trim()||entryId.length>512)throw error('FAMILY_INVALID','待换编排项 ID 无效');
     if(typeof locked!=='boolean'||maxPerFamily!==null&&(!Number.isSafeInteger(maxPerFamily)||maxPerFamily<1||maxPerFamily>1000))
@@ -6849,7 +6915,8 @@ function createFamilyEngine({core}={}) {
     const safe=item=>item?.kind==='question'&&!item.identityConflict&&paths.get(item.path)===1&&(!item.id||ids.get(item.id)===1);
     if(target.status!=='ok'||!safe(target.item))return conflict('FAMILY_SOURCE_CHANGED','待换题来源缺失、冲突或已变化，请先核对来源',{sourceStatus:target.status});
     const family=core.normalizeFamilyMetadata(target.item.metadata);
-    if(!family.familyValid||!family.familyId)return conflict('FAMILY_UNKNOWN','待换题未分类或题族字段无效，不能推断同族关系');
+    if(sameFamily&&(!family.familyValid||!family.familyId))return conflict('FAMILY_UNKNOWN','待换题未分类或题族字段无效，不能推断同族关系');
+    if(!family.familyValid)return conflict('FAMILY_FIELD_INVALID','待换题的题族字段无效，请先核对原文');
     const usedIds=new Set(),usedPaths=new Set(),counts=new Map(),familySources=[];
     for(const value of resolved.entries) {
       if(value.entry.entryId===entryId)continue;
@@ -6865,9 +6932,10 @@ function createFamilyEngine({core}={}) {
       }
     }
     if(maxPerFamily!==null) {
-      const withTarget=new Map(counts);withTarget.set(family.familyId,(withTarget.get(family.familyId)||0)+1);
+      const withTarget=new Map(counts);
+      if(sameFamily)withTarget.set(family.familyId,(withTarget.get(family.familyId)||0)+1);
       for(const [familyId,count]of withTarget)if(count>maxPerFamily)
-        return conflict('FAMILY_LIMIT','整个方案已超过题族上限，同族换题不能放宽约束',{familyId,count,limit:maxPerFamily});
+        return conflict('FAMILY_LIMIT','整个方案已超过题族上限，换题不能放宽约束',{familyId,count,limit:maxPerFamily});
     }
     // Evaluate both sets against the FULL index: filtering away knowledge notes
     // first would change resolved/shared-tag semantics. Same fields remain AND.
@@ -6877,31 +6945,335 @@ function createFamilyEngine({core}={}) {
       if(!safe(item)||identity(item)===identity(target.item)||usedPaths.has(item.path)||item.id&&usedIds.has(item.id)||
           !visible.has(item)||!required.has(item))continue;
       const other=core.normalizeFamilyMetadata(item.metadata);
-      if(!other.familyValid||other.familyId!==family.familyId)continue;
+      if(!other.familyValid||sameFamily&&other.familyId!==family.familyId)continue;
+      // The target was removed from counts above. A cross-family candidate now
+      // consumes one slot in its own family; unknown families stay independent.
+      if(maxPerFamily!==null&&other.familyId&&(counts.get(other.familyId)||0)+1>maxPerFamily)continue;
       candidates.push({key:identity(item),id:item.id||'',path:item.path,fingerprint:item.fingerprint,title:item.title,role:item.role,
         familyId:other.familyId,subject:item.subject,questionType:item.questionType,difficulty:item.difficulty,tiers:[...(item.tiers||[])]});
     }
     candidates.sort((a,b)=>compare(a.key,b.key)||compare(a.path,b.path));
-    const context=JSON.stringify({algorithmVersion:ALGORITHM,plan:current,entryId,target:{...sourceOf(target.item),familyId:family.familyId},
+    const context=JSON.stringify({algorithmVersion:sameFamily?ALGORITHM:CONSTRAINED_ALGORITHM,plan:current,entryId,target:{...sourceOf(target.item),familyId:family.familyId},
       filters:currentFilters,rowFilters:requiredFilters,maxPerFamily,locked,candidates,
       familySources:familySources.sort((a,b)=>compare(a.entryId,b.entryId))});
-    return {status:'ready',candidates,context,issues:candidates.length?[]:[issue('FAMILY_NO_CANDIDATES','没有同时满足当前筛选、原配额行和同族条件的替代题',{entryId,familyId:family.familyId})]};
+    return {status:'ready',candidates,context,issues:candidates.length?[]:[issue(sameFamily?'FAMILY_NO_CANDIDATES':'REPLACEMENT_NO_CANDIDATES',
+      sameFamily?'没有同时满足当前筛选、原配额行和同族条件的替代题':'没有同时满足当前筛选、原配额行与题族上限的替代题',{entryId,familyId:family.familyId})]};
   }
-  function applyReplacement({freshIndex,plan,entryId,candidateKey,expectedContext,filters={},rowFilters={},maxPerFamily=null,locked=false}) {
+  function apply({freshIndex,plan,entryId,candidateKey,expectedContext,filters={},rowFilters={},maxPerFamily=null,locked=false},sameFamily) {
     if(typeof candidateKey!=='string'||!candidateKey||typeof expectedContext!=='string')throw error('FAMILY_INVALID','换题候选或上下文无效');
-    const prepared=prepareReplacement({index:freshIndex,plan,entryId,filters,rowFilters,maxPerFamily,locked});
+    const prepared=prepare({index:freshIndex,plan,entryId,filters,rowFilters,maxPerFamily,locked},sameFamily);
     if(prepared.status!=='ready'||prepared.context!==expectedContext)
       throw error('FAMILY_STALE','换题来源、方案或约束已变化，请重新选择',prepared.issues);
     const candidate=prepared.candidates.find(item=>item.key===candidateKey);
-    if(!candidate)throw error('FAMILY_STALE','替代题不在当前受约束的同族候选中');
+    if(!candidate)throw error('FAMILY_STALE','替代题不在当前受约束的候选中');
     const current=core.validatePlan(plan),entry=current.entries.find(value=>value.entryId===entryId);
     const previous={sourceId:entry.sourceId,sourcePath:entry.sourcePath,sourceFingerprint:entry.sourceFingerprint},next=sourceOf(candidate);
     return {plan:core.updateEntry(current,entryId,next),replacement:{entryId,previous,next}};
   }
-  return {prepareReplacement,applyReplacement,algorithmVersion:ALGORITHM};
+  return {prepareReplacement:input=>prepare(input,true),applyReplacement:input=>apply(input,true),
+    prepareConstrainedReplacement:input=>prepare(input,false),applyConstrainedReplacement:input=>apply(input,false),
+    algorithmVersion:ALGORITHM,constrainedAlgorithmVersion:CONSTRAINED_ALGORITHM};
 }
 
 module.exports={createFamilyEngine};
+
+return module.exports; })();
+const mwbAssemblySimilarityText = (() => { const module = {exports:{}};
+'use strict';
+
+function removeImages(value,onImage) {
+  let result='';
+  for(let i=0;i<value.length;i++) {
+    if(value[i]!=='!'||value[i+1]!=='['||i>0&&value[i-1]==='\\'){result+=value[i];continue;}
+    if(value[i+2]==='[') {
+      const end=value.indexOf(']]',i+3);if(end>=0){onImage();result+=' ';i=end+1;continue;}
+    }
+    let end=i+2;
+    for(;end<value.length;end++){if(value[end]==='\\'){end++;continue;}if(value[end]===']')break;}
+    const opener=value[end+1],closer=opener==='('?')':opener==='['?']':'';
+    if(!closer){result+=value[i];continue;}
+    let depth=1,j=end+2;
+    for(;j<value.length&&depth;j++){if(value[j]==='\\'){j++;continue;}if(value[j]===opener)depth++;else if(value[j]===closer)depth--;}
+    if(depth){result+=value[i];continue;}
+    onImage();result+=' ';i=j-1;
+  }
+  return result;
+}
+
+// Retrieval text only: never rewrite the source or infer missing diagram content.
+function extractStem(markdown) {
+  let value=String(markdown ?? '').replace(/^\uFEFF/,'');
+  const issues=[];let hasVisual=false;
+  if (/^---\r?\n/.test(value)) {
+    const front=value.match(/^---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/);
+    if(!front)return {text:'',hasVisual:false,issues:['元信息未闭合，未提取题干']};
+    value=value.slice(front[0].length);
+  }
+  value=value.replace(/<!--[\s\S]*?-->/g,' ').replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,' ');
+  const output=[];let fence=null,skipDepth=0,blankAfterSkip=false,sectionDepth=0;
+  for(const line of value.split(/\r?\n/)) {
+    const fenced=line.match(/^\s*(`{3,}|~{3,})(.*)$/);
+    if(fence) {
+      if(fenced&&fenced[1][0]===fence[0]&&fenced[1].length>=fence.length)fence=null;
+      continue;
+    }
+    if(fenced) {fence=fenced[1];if(/tikz|mermaid|svg|diagram/i.test(fenced[2]))hasVisual=true;continue;}
+    const prefix=line.match(/^\s*((?:>\s*)+)/),depth=prefix?(prefix[1].match(/>/g)||[]).length:0;
+    const body=prefix?line.slice(prefix[0].length):line;
+    const callout=body.match(/^\[!([\w-]+)\]([+-])?(?:\s|$)/i);
+    if(skipDepth) {
+      if(callout&&depth<=skipDepth || depth>0&&depth<skipDepth || !depth&&line.trim()&&blankAfterSkip) {
+        skipDepth=0;blankAfterSkip=false;
+      } else {if(!line.trim())blankAfterSkip=true;continue;}
+    }
+    if(callout&&(callout[2]==='-'||/^(?:answer|solution|teacher|teacher-only)$/i.test(callout[1]))) {
+      skipDepth=depth||1;blankAfterSkip=false;continue;
+    }
+    const heading=body.match(/^\s*(#{1,6})\s+(.+)$/);
+    if(sectionDepth) {if(heading&&heading[1].length<=sectionDepth)sectionDepth=0;else continue;}
+    if(heading&&/^(?:参考|标准|详细)?(?:答案|解析|解答|解题过程|教师用|教师提示)(?:(?:与|及|和)?(?:详细)?(?:答案|解析|解答))?(?:\s|[：:（(]|$)/.test(heading[2].replace(/[*_`]/g,'').trim())) {
+      sectionDepth=heading[1].length;continue;
+    }
+    output.push(callout?body.slice(callout[0].length):body);
+  }
+  value=output.join('\n');
+  value=value.replace(/\\begin\{tikzpicture\}[\s\S]*?\\end\{tikzpicture\}/g,()=>{hasVisual=true;return ' ';});
+  value=value.replace(/<svg\b[\s\S]*?<\/svg\s*>/gi,()=>{hasVisual=true;return ' ';});
+  value=removeImages(value,()=>{hasVisual=true;}).replace(/<img\b[^>]*>/gi,()=>{hasVisual=true;return ' ';})
+    .replace(/^\s{0,3}\[[^\]]+\]:[^\n]*$/gm,' ');
+  // Slots can contain nested TeX braces. A regex stopping at the first } leaks answers.
+  let clean='';
+  for(let i=0;i<value.length;i++) {
+    if((value[i]==='?'||value[i]==='!')&&value[i+1]==='{'&&(i===0||value[i-1]!=='\\')) {
+      let depth=1,j=i+2;
+      for(;j<value.length&&depth;j++) {
+        if(value[j]==='\\'&&(value[j+1]==='{'||value[j+1]==='}')) {j++;continue;}
+        if(value[j]==='{')depth++;else if(value[j]==='}')depth--;
+      }
+      if(depth){issues.push('答案槽未闭合，已省略其后文字');break;}
+      clean+=' ';i=j-1;
+    } else clean+=value[i];
+  }
+  clean=clean.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,(_,target,label)=>label||target)
+    .replace(/\[([^\]]+)\]\([^\n]*?\)/g,'$1').replace(/<\/?(?:span|div|p|br|table|thead|tbody|tr|td|th|strong|em|details|summary|section|aside|sup|sub)\b[^>]*>/gi,' ')
+    .replace(/^\s*#{1,6}\s+/gm,'').replace(/\s+/g,' ').trim();
+  if(hasVisual)issues.push('含图片或图形，当前只比较可提取文字');
+  return {text:clean,hasVisual,issues};
+}
+
+function tokenize(text) {
+  const counts=new Map(),add=token=>counts.set(token,(counts.get(token)||0)+1);let previousMath=null;
+  for(const value of String(text||'').match(/\\[A-Za-z]+|\d+(?:\.\d+)?|[A-Za-z]+|[\p{Script=Han}]+|[^\s]/gu)||[]) {
+    if(/^[\p{Script=Han}]+$/u.test(value)) {
+      previousMath=null;
+      const chars=Array.from(value);for(const char of chars)add('c:'+char);
+      for(let i=0;i<chars.length-1;i++)add('b:'+chars[i]+chars[i+1]);
+    } else if(!/^[$.;：，。；、`#]$/.test(value)) {
+      add('t:'+value);if(previousMath!==null)add('s:'+JSON.stringify([previousMath,value]));previousMath=value;
+    } else if(value!=='$')previousMath=null;
+  }
+  return counts;
+}
+
+function termFrequencies(documents) {
+  const df=new Map();for(const tokens of documents)for(const key of tokens.keys())df.set(key,(df.get(key)||0)+1);
+  return {df,count:documents.length};
+}
+const idf=(stats,key)=>1+Math.log((stats.count+1)/((stats.df.get(key)||0)+1));
+function sparseCosine(a,b,stats) {
+  if(!a.size||!b.size)return 0;
+  let dot=0,aa=0,bb=0;
+  for(const [key,count]of a){const v=(1+Math.log(count))*idf(stats,key);aa+=v*v;if(b.has(key))dot+=v*(1+Math.log(b.get(key)))*idf(stats,key);}
+  for(const [key,count]of b){const v=(1+Math.log(count))*idf(stats,key);bb+=v*v;}
+  return aa&&bb?Math.max(0,Math.min(1,dot/Math.sqrt(aa*bb))):0;
+}
+
+module.exports={extractStem,tokenize,termFrequencies,sparseCosine};
+
+return module.exports; })();
+const MWB_ASSEMBLY_SIMILARITY_TEXT = mwbAssemblySimilarityText;
+const mwbAssemblySimilarity = (() => { const module = {exports:{}};
+'use strict';
+
+const textFeatures=typeof MWB_ASSEMBLY_SIMILARITY_TEXT!=='undefined'?MWB_ASSEMBLY_SIMILARITY_TEXT:require('./assembly-similarity-text.cjs');
+const ALGORITHM='similarity-local-v1';
+const compare=(a,b)=>a<b?-1:a>b?1:0;
+const text=value=>typeof value==='string'?value.trim():'';
+const fold=value=>text(value).normalize('NFKC').toLowerCase();
+const list=value=>Array.isArray(value)?value.filter(x=>typeof x==='string'&&x.trim()):typeof value==='string'&&value.trim()?[value]:[];
+const broadMethods=new Set(['分类讨论','分类讨论法','数形结合','数形结合法','转化与化归','转化法','化归法','代数法','几何法','综合法','分析法','直接法','计算法','方程思想','函数思想','数学建模']);
+const compatible=(a,b)=>!text(a)||!text(b)||fold(a)===fold(b);
+function normalizePath(path) {
+  const parts=[];for(const part of path.replace(/\\/g,'/').split('/')) {
+    if(!part||part==='.')continue;
+    if(part==='..'){if(!parts.length)return '';parts.pop();}else parts.push(part);
+  }
+  return parts.join('/').replace(/\.md$/i,'');
+}
+function parseRef(raw) {
+  const value=text(raw),wiki=/^\[\[[\s\S]*\]\]$/.test(value),body=wiki?value.slice(2,-2):value;
+  const target=body.split('|')[0].trim(),pos=target.indexOf('#');
+  return {raw:value,wiki,target:pos<0?target:target.slice(0,pos).trim(),anchor:pos<0?'':target.slice(pos+1).trim()};
+}
+function allowedScope(tag,subject) {
+  const explicit=list(tag.subjects||tag.subject);if(explicit.length)return explicit.some(x=>fold(x)===fold(subject));
+  const scope=text(tag.scope),stages=['初中','高中','小学','大学'].filter(stage=>scope.includes(stage));
+  return !stages.length||stages.some(stage=>text(subject).includes(stage));
+}
+function vocabulary(raw,dimension,subject) {
+  const tags=Array.isArray(raw)?raw:Array.isArray(raw?.tags)?raw.tags:[];
+  const terms=new Map(),definitions=new Map();
+  for(const tag of tags) {
+    if(!tag||!text(tag.id)||!text(tag.name)||tag.status&&tag.status!=='approved'||!allowedScope(tag,subject))continue;
+    const signature=JSON.stringify([tag.id,tag.name,list(tag.aliases).sort(compare),tag.broad===true,tag.specificity||'']);
+    if(!definitions.has(tag.id))definitions.set(tag.id,new Set());definitions.get(tag.id).add(signature);
+    for(const label of [tag.id,tag.name,...list(tag.aliases)]) {
+      const key=fold(label);if(!terms.has(key))terms.set(key,new Map());
+      terms.get(key).set(signature,tag);
+    }
+  }
+  return raw=>{
+    const matches=terms.get(fold(raw));
+    if(!matches)return {status:'unknown'};
+    if(matches.size!==1||[...matches.values()].some(tag=>definitions.get(tag.id).size>1))return {status:'ambiguous'};
+    const tag=[...matches.values()][0];
+    return {status:'resolved',key:dimension+':tag:'+tag.id,label:tag.name,
+      broad:dimension==='method'&&(tag.broad===true||tag.specificity==='broad'||broadMethods.has(tag.name))};
+  };
+}
+function createNormalizer(index,taxonomy) {
+  const nodes=index.items.filter(item=>item.kind==='knowledge'),vocabCache=new Map();
+  const nodeIds=new Map(),nodePaths=new Map(),nodeNames=new Map();
+  const register=(map,key,node)=>{if(!key)return;if(!map.has(key))map.set(key,new Set());map.get(key).add(node);};
+  for(const node of nodes) {
+    register(nodeIds,node.id,node);register(nodePaths,normalizePath(node.path),node);
+    for(const name of [node.title,node.path.split('/').pop().replace(/\.md$/i,''),...list(node.aliases)])register(nodeNames,fold(name),node);
+  }
+  function vocab(dimension,subject) {
+    const key=dimension+'\0'+subject;if(!vocabCache.has(key))vocabCache.set(key,vocabulary(taxonomy[dimension==='knowledge'?'knowledge':'methods'],dimension,subject));
+    return vocabCache.get(key);
+  }
+  function nodeMatches(ref,item) {
+    const eligible=values=>[...(values||[])].filter(node=>compatible(node.subject,item.subject));
+    const byId=eligible(nodeIds.get(ref.target));if(byId.length)return byId;
+    if(ref.target.includes('/')||/\.md$/i.test(ref.target)) {
+      const paths=new Set([normalizePath(ref.target),normalizePath(item.path.split('/').slice(0,-1).join('/')+'/'+ref.target)].filter(Boolean));
+      return eligible(new Set([...paths].flatMap(path=>[...(nodePaths.get(path)||[])])));
+    }
+    return eligible(nodeNames.get(fold(ref.target)));
+  }
+  function hasAnchor(node,anchor) {
+    if(anchor.startsWith('^'))return new RegExp('(?:^|\\s)\\^'+anchor.slice(1).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*$','m').test(node.markdown);
+    return node.markdown.split(/\r?\n/).some(line=>{const match=line.match(/^\s{0,3}#{1,6}\s+(.+?)(?:\s+#+)?\s*$/);return match&&fold(match[1])===fold(anchor);});
+  }
+  function one(raw,item,dimension) {
+    const ref=parseRef(raw),lookup=vocab(dimension,item.subject),warnings=[];
+    if(!ref.target||['null','~','[]'].includes(fold(ref.target))||/[\x00-\x1f\x7f]/.test(ref.target))return {status:'invalid',raw,warnings:['标签格式无效']};
+    const matches=nodeMatches(ref,item),ambiguous=matches.length>1||matches[0]?.identityConflict;
+    const direct=lookup(ref.target);
+    if(direct.status==='ambiguous')return {status:'ambiguous',raw,warnings:['标签同义词有歧义：'+ref.target]};
+    if(ref.wiki&&ambiguous)return {status:'ambiguous',raw,warnings:['链接目标有歧义：'+ref.target]};
+    if(ref.anchor) {
+      if(matches.length!==1||ambiguous||!hasAnchor(matches[0],ref.anchor))return {status:'missing',raw,warnings:['小节或块引用未唯一解析：'+ref.target+'#'+ref.anchor]};
+      return {status:'resolved',raw,key:dimension+':node:'+matches[0].key+'#'+ref.anchor,label:ref.target+'#'+ref.anchor,broad:false,warnings};
+    }
+    if(direct.status==='resolved') {
+      if(ref.wiki&&!matches.length)warnings.push('标签已按词表识别，但原链接未解析：'+ref.target);
+      return {...direct,raw,warnings};
+    }
+    if(matches.length===1&&!ambiguous) {
+      const node=matches[0],names=[node.title,...list(node.aliases),node.path.split('/').pop().replace(/\.md$/i,'')];
+      const mapped=names.map(lookup),canonical=new Map(mapped.filter(x=>x.status==='resolved').map(x=>[x.key,x]));
+      if(mapped.some(x=>x.status==='ambiguous')||canonical.size>1)return {status:'ambiguous',raw,warnings:['目标页对应多个规范标签：'+ref.target]};
+      if(canonical.size===1)return {...[...canonical.values()][0],raw,warnings};
+      return {status:'resolved',raw,key:dimension+':node:'+node.key,label:node.title||ref.target,
+        broad:dimension==='method'&&broadMethods.has(node.title||ref.target),warnings};
+    }
+    if(ambiguous)return {status:'ambiguous',raw,warnings:['标签目标有歧义：'+ref.target]};
+    if(ref.target.includes('/')||/\.md$/i.test(ref.target))return {status:'missing',raw,warnings:['链接或路径未解析：'+ref.target]};
+    // Old cards often wrap a plain leaf label in [[...]] without creating a page.
+    // Preserve that exact declaration, but never call it a resolved link or
+    // derive aliases from it. Ambiguous pages and paths were rejected above.
+    if(ref.wiki)warnings.push('仅按同名标签比较，原链接未解析：'+ref.target);
+    return {status:ref.wiki?'declared-unresolved':'declared',raw,key:dimension+':label:'+fold(ref.target),label:ref.target,
+      broad:dimension==='method'&&broadMethods.has(ref.target),warnings};
+  }
+  return (item,dimension)=>{
+    const raw=dimension==='knowledge'?item.knowledgeNodes:item.methods,entries=list(raw).map(value=>one(value,item,dimension));
+    const keys=new Map();for(const entry of entries)if(entry.key&&!keys.has(entry.key))keys.set(entry.key,entry);
+    return {entries,keys,warnings:entries.flatMap(entry=>entry.warnings)};
+  };
+}
+function weightedOverlap(a,b,df,count) {
+  const union=new Set([...a.keys(),...b.keys()]);let common=0,total=0;
+  for(const key of union){const weight=1+Math.log((count+1)/((df.get(key)||0)+1));total+=weight;if(a.has(key)&&b.has(key))common+=weight;}
+  return total?common/total:0;
+}
+function createSimilarityEngine({core}={}) {
+  if(!core||typeof core.filterItems!=='function'||typeof core.normalizeFamilyMetadata!=='function')throw new TypeError('相似题引擎需要现行 assembly core');
+  function search({index,sourceKey,mode='knowledge',filters={},excludedKeys=[],taxonomy={}}={}) {
+    if(!Array.isArray(index?.items)||typeof sourceKey!=='string'||!['family','knowledge','method'].includes(mode)||!Array.isArray(excludedKeys))throw new TypeError('相似题查询参数无效');
+    if(!taxonomy||typeof taxonomy!=='object'||Array.isArray(taxonomy))throw new TypeError('词表必须为对象');
+    const result={status:'ready',sourceKey,mode,candidates:[],issues:[],algorithmVersion:ALGORITHM};
+    const conflict=(code,message)=>({...result,status:'conflict',issues:[{code,message}]});
+    const keys=new Map(),ids=new Map(),paths=new Map();
+    for(const item of index.items){keys.set(item.key,(keys.get(item.key)||0)+1);paths.set(item.path,(paths.get(item.path)||0)+1);if(item.id)ids.set(item.id,(ids.get(item.id)||0)+1);}
+    const safe=item=>item.kind==='question'&&!item.identityConflict&&keys.get(item.key)===1&&paths.get(item.path)===1&&(!item.id||ids.get(item.id)===1);
+    const source=index.items.find(item=>item.key===sourceKey);
+    if(!source||!safe(source))return conflict('SIMILARITY_SOURCE_CONFLICT','原题缺失或身份冲突，请先核对来源');
+    const family=core.normalizeFamilyMetadata(source.metadata);
+    if(mode==='family'&&(!family.familyValid||!family.familyId))return conflict('SIMILARITY_FAMILY_UNKNOWN','原题尚未归族或题族字段无效');
+    if(!family.familyValid)result.issues.push({code:'SIMILARITY_FAMILY_INVALID',message:'原题题族字段异常；本次仅按知识点或方法比较'});
+    const normalize=createNormalizer(index,taxonomy),features=new Map(),knowledgeDF=new Map(),methodDF=new Map(),postings={knowledge:new Map(),method:new Map(),family:new Map()};
+    const add=(map,key,itemKey)=>{if(!map.has(key))map.set(key,new Set());map.get(key).add(itemKey);};
+    // One snapshot scan and one source-to-candidates comparison, never all pairs.
+    for(const item of index.items) {
+      if(!safe(item)||item!==source&&!core.normalizeFamilyMetadata(item.metadata).familyValid)continue;
+      const knowledge=normalize(item,'knowledge'),method=normalize(item,'method'),stem=textFeatures.extractStem(item.markdown),tokens=textFeatures.tokenize(stem.text);
+      const value={item,knowledge,method,stem,tokens,family:core.normalizeFamilyMetadata(item.metadata)};features.set(item.key,value);
+      for(const key of knowledge.keys.keys()){knowledgeDF.set(key,(knowledgeDF.get(key)||0)+1);add(postings.knowledge,key,item.key);}
+      for(const key of method.keys.keys()){methodDF.set(key,(methodDF.get(key)||0)+1);add(postings.method,key,item.key);}
+      if(value.family.familyValid&&value.family.familyId)add(postings.family,value.family.familyId,item.key);
+    }
+    const current=features.get(sourceKey),wanted=mode==='family'?[family.familyId]:[...(mode==='knowledge'?current.knowledge:current.method).keys.keys()];
+    result.issues.push(...[...new Set([...current.knowledge.warnings,...current.method.warnings])].map(message=>({code:'SIMILARITY_TAG_DIAGNOSTIC',message})));
+    if(!wanted.length){result.issues.unshift({code:'SIMILARITY_EVIDENCE_MISSING',message:mode==='knowledge'?'原题缺少可比较的知识点标签':'原题缺少可比较的方法标签'});return result;}
+    const pool=new Set();for(const key of wanted)for(const candidate of postings[mode].get(key)||[])pool.add(candidate);
+    const visible=new Set(core.filterItems(index,filters)),excluded=new Set(excludedKeys),termStats=textFeatures.termFrequencies([...features.values()].map(x=>x.tokens));
+    for(const key of pool) {
+      const other=features.get(key),item=other.item;
+      if(key===sourceKey||excluded.has(key)||excluded.has('path:'+item.path)||item.id&&excluded.has('id:'+item.id)||!visible.has(item)||!compatible(source.subject,item.subject))continue;
+      const sharedK=[...current.knowledge.keys.keys()].filter(k=>other.knowledge.keys.has(k));
+      const sharedM=[...current.method.keys.keys()].filter(k=>other.method.keys.has(k));
+      if(mode==='method'&&!sharedM.some(k=>!current.method.keys.get(k).broad&&!other.method.keys.get(k).broad)&&!sharedK.length)continue;
+      const K=weightedOverlap(current.knowledge.keys,other.knowledge.keys,knowledgeDF,features.size),M=weightedOverlap(current.method.keys,other.method.keys,methodDF,features.size);
+      const T=textFeatures.sparseCosine(current.tokens,other.tokens,termStats),score=(mode==='method'?.25:.6)*K+(mode==='method'?.6:.25)*M+.15*T;
+      const reasons=[],missing=[];
+      if(mode==='family')reasons.push('同一登记题族：'+family.familyId);
+      if(sharedK.length)reasons.push('共同知识点：'+sharedK.map(k=>current.knowledge.keys.get(k).label).join('、'));
+      if(sharedM.length)reasons.push('共同方法：'+sharedM.map(k=>current.method.keys.get(k).label).join('、'));
+      if(T>0)reasons.push('题干文字相近（辅助排序）');
+      if(source.difficulty!=null&&item.difficulty!=null&&Math.abs(source.difficulty-item.difficulty)<=1)reasons.push(source.difficulty===item.difficulty?'难度同档':'难度相邻');
+      for(const [name,left,right]of [['知识点',current.knowledge.keys.size,other.knowledge.keys.size],['方法',current.method.keys.size,other.method.keys.size],['题干文字',current.tokens.size,other.tokens.size]]) {
+        if(!left)missing.push('原题缺少'+name+'证据');if(!right)missing.push('候选缺少'+name+'证据');
+      }
+      if(!source.subject||!item.subject)missing.push('学科信息不完整');
+      if(source.difficulty==null||item.difficulty==null)missing.push('难度信息不完整');
+      missing.push(...current.knowledge.warnings,...current.method.warnings,...other.knowledge.warnings,...other.method.warnings,...current.stem.issues,...other.stem.issues);
+      result.candidates.push({key:item.key,id:item.id||'',path:item.path,fingerprint:item.fingerprint,title:item.title,
+        familyId:other.family.familyId,subject:item.subject,questionType:item.questionType,difficulty:item.difficulty,tiers:[...(item.tiers||[])],role:item.role,
+        rankScore:Number(score.toFixed(8)),scores:{knowledge:K,method:M,text:T},
+        evidenceCoverage:{knowledge:!!(current.knowledge.keys.size&&other.knowledge.keys.size),method:!!(current.method.keys.size&&other.method.keys.size),text:!!(current.tokens.size&&other.tokens.size)},
+        reasons,missing:[...new Set(missing)],normalized:{knowledge:other.knowledge.entries.map(x=>({...x,warnings:[...x.warnings]})),methods:other.method.entries.map(x=>({...x,warnings:[...x.warnings]}))}});
+    }
+    result.candidates.sort((a,b)=>b.rankScore-a.rankScore||compare(a.key,b.key)||compare(a.path,b.path));
+    if(!result.candidates.length)result.issues.push({code:'SIMILARITY_NO_CANDIDATES',message:'没有同时满足标签证据、学科和当前筛选的候选题'});
+    return result;
+  }
+  return {search,algorithmVersion:ALGORITHM};
+}
+
+module.exports={createSimilarityEngine};
 
 return module.exports; })();
 const mwbAssemblyService = (() => { const module = {exports:{}};
@@ -6909,7 +7281,7 @@ const mwbAssemblyService = (() => { const module = {exports:{}};
 
 // Host adapter: source notes are read-only. Only explicit plans and generated
 // handouts are written, under dedicated output folders.
-module.exports = function createAssemblyService(plugin, {core, compileMarkdown, collectMediaDependencies, blueprintEngine, familyEngine, parseYaml, previewFile}) {
+module.exports = function createAssemblyService(plugin, {core, compileMarkdown, collectMediaDependencies, blueprintEngine, familyEngine, similarityEngine, parseYaml, previewFile}) {
   const app = plugin.app, vault = app.vault;
   const planFolder = 'Mathsemble/组题方案', outputFolder = 'Mathsemble/讲义';
   const blueprintFolder = 'Mathsemble/组卷蓝图', runFolder = 'Mathsemble/组卷记录';
@@ -6987,12 +7359,13 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     };
     return {check,run,close:() => {closed=true;for (const cancel of [...pending]) cancel();}};
   }
-  function beginSourceCheck(raw,onChange) {
+  function beginSourceCheck(raw,onChange,extraPaths=[]) {
     const config = normalizeSettings(raw), roots = [...config.questionRoots,...config.knowledgeRoots];
     let changed = false, disposed = false;
     const refs = [];
     const relevant = (path,folder) => {
       if (typeof path !== 'string') return false;
+      if(extraPaths.some(extra=>extra===path||folder&&extra.startsWith(path+'/')))return true;
       if (folder && roots.some(root => root === path || root.startsWith(path + '/'))) return true;
       if (excluded(path) || !folder && !/\.md$/i.test(path)) return false;
       return roots.some(root => path.startsWith(root + '/') &&
@@ -7393,12 +7766,80 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       return {run,index,bindings:plainData(run.assignments)};
     } finally {guard?.dispose();io.close();}
   }
-  const familyCandidates=new WeakMap();
+  const replacementCandidates=new WeakMap();
   const familyApi=()=>{
     if(!familyEngine || typeof familyEngine.prepareReplacement!=='function' || typeof familyEngine.applyReplacement!=='function')
       throw new Error('同族换题引擎未配置');
     return familyEngine;
   };
+  const similarityApi=()=>{
+    if(!similarityEngine||typeof similarityEngine.search!=='function')throw new Error('相似题引擎未配置');
+    return similarityEngine;
+  };
+  function replacementApi(kind) {
+    const api=familyApi();
+    if(kind==='family')return {prepare:api.prepareReplacement,apply:api.applyReplacement,algorithmVersion:api.algorithmVersion};
+    if(typeof api.prepareConstrainedReplacement!=='function'||typeof api.applyConstrainedReplacement!=='function')
+      throw new Error('公共换题约束引擎未配置');
+    return {prepare:api.prepareConstrainedReplacement,apply:api.applyConstrainedReplacement,algorithmVersion:api.constrainedAlgorithmVersion};
+  }
+  function taxonomyProbes(config) {
+    const groups=[];
+    for(const root of config.questionRoots) {
+      const ancestors=[],parts=root.split('/');
+      for(let n=parts.length;n>=0;n--)ancestors.push(parts.slice(0,n).join('/'));
+      for(const [dimension,name]of [['knowledge','知识点'],['methods','方法']])groups.push({dimension,
+        paths:ancestors.map(parent=>(parent?parent+'/':'')+'_system/规范/数学标签库/'+name+'.json')});
+    }
+    return {groups,paths:[...new Set(groups.flatMap(group=>group.paths))].sort()};
+  }
+  async function readTaxonomy(config,io) {
+    const probes=taxonomyProbes(config),snapshots=new Map();
+    for(const path of probes.paths) {
+      io.check();const file=vault.getAbstractFileByPath(path);
+      if(!file){snapshots.set(path,null);continue;}
+      if(Array.isArray(file.children))throw new Error('标签词表路径应为文件：'+path);
+      const source=await io.run(()=>vault.read(file),'读取标签词表 '+path);
+      if(typeof source!=='string'||source.length>8*1024*1024)throw new Error('标签词表过大或内容无效：'+path);
+      if(file.path!==path||vault.getAbstractFileByPath(path)!==file)throw new Error('标签词表在读取时已变化，请刷新候选');
+      snapshots.set(path,source);
+    }
+    const taxonomy={},chosen={knowledge:new Set(),methods:new Set()};
+    for(const group of probes.groups){const path=group.paths.find(value=>snapshots.get(value)!==null);if(path)chosen[group.dimension].add(path);}
+    for(const [dimension,paths]of Object.entries(chosen)) {
+      if(!paths.size)continue;
+      const tags=[],seen=new Set();
+      for(const path of [...paths].sort()) {
+        let value;try{value=plainData(JSON.parse(snapshots.get(path)));}catch(error){throw new Error('标签词表不能解析：'+path+'（'+error.message+'）');}
+        const rows=Array.isArray(value)?value:value?.tags;
+        if(!Array.isArray(rows))throw new Error('标签词表缺少 tags 列表：'+path);
+        for(const tag of rows){const key=strongDigest(tag);if(!seen.has(key)){seen.add(key);tags.push(tag);}}
+      }
+      taxonomy[dimension]={tags};
+    }
+    return {taxonomy,digest:strongDigest([...snapshots])};
+  }
+  async function recheckTaxonomy(config,snapshot,io,guard) {
+    const current=await readTaxonomy(config,io);guard.assertCurrent();
+    if(current.digest!==snapshot.digest)throw new Error('标签词表已变化，请刷新相似题候选');
+  }
+  async function findSimilarQuestions(input,options={}) {
+    const api=similarityApi(),sourceKey=boundedText(input.sourceKey,'原题标识',4096),mode=input.mode??'knowledge';
+    const filters=plainData(input.filters||{}),excludedKeys=plainData(input.excludedKeys||[]);
+    const io=readContext(options);let guard;
+    try {
+      originCheck(options);io.check();
+      const config=normalizeSettings(options.config||await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config,undefined,taxonomyProbes(config).paths);
+      const taxonomy=await readTaxonomy(config,io),index=await scan(config,{io}),sources=sourcesFromIndex(index);
+      const result=api.search({index,sourceKey,mode,filters,excludedKeys,taxonomy:taxonomy.taxonomy});
+      await recheckSources(sources,io,guard);await recheckTaxonomy(config,taxonomy,io,guard);
+      const current=normalizeSettings(options.config||await io.run(loadSettings,'核对素材目录'));
+      if(JSON.stringify(current)!==JSON.stringify(config))throw new Error('素材目录设置已变化，请刷新相似题候选');
+      originCheck(options);io.check();guard.assertCurrent();
+      return {...plainData(result),index,taxonomyDigest:taxonomy.digest};
+    } finally {guard?.dispose();io.close();}
+  }
   function familyConstraints(run,entryId,unlock) {
     const binding=run?.assignments.find(row=>row.entryId===entryId),lock=binding&&run.locks.find(row=>row.slotId===binding.slotId);
     return {rowFilters:binding?run.blueprintSnapshot.rows.find(row=>row.rowId===binding.rowId).filters:{},
@@ -7408,12 +7849,13 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
   async function checkFamilyOrigin(rawPlan,digest,config,options,io,guard) {
     originCheck(options);io.check();guard.assertCurrent();
     const current=normalizeSettings(options.config || await io.run(loadSettings,'核对素材目录'));
-    if(JSON.stringify(current)!==JSON.stringify(config)) throw new Error('素材目录设置已变化，请重新查看同族题');
-    if(planDigest(rawPlan)!==digest) throw new Error('方案已变化，请重新查看同族题');
+    if(JSON.stringify(current)!==JSON.stringify(config)) throw new Error('素材目录设置已变化，请刷新换题候选');
+    if(planDigest(rawPlan)!==digest) throw new Error('方案已变化，请刷新换题候选');
     originCheck(options);io.check();guard.assertCurrent();
   }
-  async function prepareFamilyReplacement(input,options={}) {
-    const api=familyApi(),plan=core.validatePlan(input.plan),basePlanSnapshotDigest=planDigest(plan);
+  async function prepareQuestionReplacement(kind,input,options={}) {
+    const api=replacementApi(kind),search=kind==='similarity'?similarityApi():null;
+    const plan=core.validatePlan(input.plan),basePlanSnapshotDigest=planDigest(plan),mode=input.mode??'knowledge';
     const entryId=boundedText(input.entryId,'编排 ID',512),filters=plainData(input.filters||{});
     if(input.unlock!==undefined&&typeof input.unlock!=='boolean') throw new Error('解除锁定选择无效');
     const unlock=input.unlock===true,run=input.run===undefined?null:validateBlueprintRun(input.run);
@@ -7421,36 +7863,53 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     const io=readContext(options);let guard;
     try {
       originCheck(options);io.check();
-      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));guard=beginSourceCheck(config);
+      const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
+      guard=beginSourceCheck(config,undefined,search?taxonomyProbes(config).paths:[]);
+      const taxonomy=search?await readTaxonomy(config,io):null;
       const index=await scan(config,{io}),sources=sourcesFromIndex(index),sourceSnapshotDigest=indexDigest(index);
       if(run)verifyRunOnIndex(run,plan,index,options);
       const constraints=familyConstraints(run,entryId,unlock);
-      const prepared=api.prepareReplacement({index,plan,entryId,filters,...constraints});
+      const prepared=api.prepare({index,plan,entryId,filters,...constraints});
+      let ranked=null;
+      if(search&&prepared.status==='ready') {
+        const source=core.resolvePlan(plan,index).entries.find(row=>row.entry.entryId===entryId).item;
+        const eligible=new Set(prepared.candidates.map(item=>item.key));
+        ranked=search.search({index,sourceKey:source.key,mode,filters,taxonomy:taxonomy.taxonomy});
+        ranked={...ranked,candidates:(ranked.candidates||[]).filter(item=>eligible.has(item.key))};
+      }
+      if(taxonomy)await recheckTaxonomy(config,taxonomy,io,guard);
       await recheckSources(sources,io,guard);await checkFamilyOrigin(input.plan,basePlanSnapshotDigest,config,options,io,guard);
-      const wrapper={schemaVersion:1,status:prepared.status,candidates:plainData(prepared.candidates||[]),context:prepared.context||null,
-        issues:plainData(prepared.issues||[]),index,entryId,filters:plainData(filters),unlock,run:run?plainData(run):null,
-        config:plainData(config),basePlanSnapshotDigest,sourceSnapshotDigest};
+      const status=ranked?.status||prepared.status,candidates=ranked?.candidates||prepared.candidates||[];
+      const issues=[...(prepared.issues||[]),...(ranked?.issues||[])];
+      if(search&&status==='ready'&&!candidates.length&&!issues.length)issues.push({code:'SIMILARITY_NO_CANDIDATES',message:'没有同时满足相似依据和换题约束的候选题'});
+      const algorithmVersion=ranked?.algorithmVersion||api.algorithmVersion;
+      const wrapper={schemaVersion:1,status,candidates:plainData(candidates),context:prepared.context||null,
+        issues:plainData(issues),index,entryId,filters:plainData(filters),unlock,run:run?plainData(run):null,
+        config:plainData(config),basePlanSnapshotDigest,sourceSnapshotDigest,
+        ...(search?{mode,algorithmVersion,taxonomyDigest:taxonomy.digest}:{})};
       // UI fields are display data. Captured constraints cannot be removed or
       // weakened by clearing a wrapper.run, changing filters or toggling unlock.
-      familyCandidates.set(wrapper,{status:prepared.status,entryId,filters,unlock,run,config,context:prepared.context,
-        basePlanSnapshotDigest,sourceSnapshotDigest,constraints});
+      replacementCandidates.set(wrapper,{kind,status,entryId,filters,unlock,run,config,context:prepared.context,
+        basePlanSnapshotDigest,sourceSnapshotDigest,constraints,mode,taxonomy,algorithmVersion,
+        candidateKeys:new Set(candidates.map(candidate=>candidate.key))});
       return wrapper;
     } finally {guard?.dispose();io.close();}
   }
-  async function applyFamilyReplacement(rawPlan,candidate,candidateKey,options={}) {
-    const state=familyCandidates.get(candidate);
-    if(!state||state.status!=='ready') throw new Error('同族候选无效，请重新查看同族题');
-    const api=familyApi(),plan=core.validatePlan(rawPlan),io=readContext(options);let guard;
+  async function applyQuestionReplacement(kind,rawPlan,candidate,candidateKey,options={}) {
+    const state=replacementCandidates.get(candidate);
+    if(!state||state.kind!==kind||state.status!=='ready'||!state.candidateKeys.has(candidateKey)) throw new Error('换题候选无效，请重新查看候选题');
+    const api=replacementApi(kind),plan=core.validatePlan(rawPlan),io=readContext(options);let guard;
     try {
-      if(planDigest(plan)!==state.basePlanSnapshotDigest) throw new Error('方案已变化，请重新查看同族题');
+      if(planDigest(plan)!==state.basePlanSnapshotDigest) throw new Error('方案已变化，请刷新换题候选');
       originCheck(options);io.check();
       const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
-      if(JSON.stringify(config)!==JSON.stringify(state.config)) throw new Error('素材目录设置已变化，请重新查看同族题');
-      guard=beginSourceCheck(config);
+      if(JSON.stringify(config)!==JSON.stringify(state.config)) throw new Error('素材目录设置已变化，请刷新换题候选');
+      guard=beginSourceCheck(config,undefined,state.taxonomy?taxonomyProbes(config).paths:[]);
+      if(state.taxonomy)await recheckTaxonomy(config,state.taxonomy,io,guard);
       const index=await scan(config,{io}),sources=sourcesFromIndex(index),sourceSnapshotDigest=indexDigest(index);
-      if(sourceSnapshotDigest!==state.sourceSnapshotDigest) throw new Error('来源内容或题库身份已变化，请重新查看同族题');
+      if(sourceSnapshotDigest!==state.sourceSnapshotDigest) throw new Error('来源内容或题库身份已变化，请刷新换题候选');
       if(state.run)verifyRunOnIndex(state.run,plan,index,options);
-      const result=api.applyReplacement({freshIndex:index,plan,entryId:state.entryId,candidateKey,expectedContext:state.context,
+      const result=api.apply({freshIndex:index,plan,entryId:state.entryId,candidateKey,expectedContext:state.context,
         filters:state.filters,...state.constraints});
       const next=core.validatePlan(result.plan);let run;
       if(state.run) {
@@ -7458,15 +7917,20 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
         const reference={sourceId:entry.sourceId,sourcePath:entry.sourcePath,sourceFingerprint:entry.sourceFingerprint};
         run=validateBlueprintRun({...previous,runId:newId(),createdAt:new Date().toISOString(),planPathHint:null,
           basePlanSnapshotDigest:state.basePlanSnapshotDigest,resultPlanDigest:planDigest(next),sourceSnapshotDigest,
-          algorithmVersion:api.algorithmVersion||'family-replacement-v1',
+          algorithmVersion:state.algorithmVersion||'family-replacement-v1',
           assignments:previous.assignments.map(row=>row.entryId===state.entryId?{...row,...reference}:row),
           locks:previous.locks.filter(lock=>!(state.unlock&&lock.slotId===state.constraints.targetSlotId))});
         verifyRunOnIndex(run,next,index,options);
       }
+      if(state.taxonomy)await recheckTaxonomy(config,state.taxonomy,io,guard);
       await recheckSources(sources,io,guard);await checkFamilyOrigin(rawPlan,state.basePlanSnapshotDigest,config,options,io,guard);
       return {plan:next,index,...(run?{run}:{})};
     } finally {guard?.dispose();io.close();}
   }
+  const prepareFamilyReplacement=(input,options={})=>prepareQuestionReplacement('family',input,options);
+  const applyFamilyReplacement=(plan,candidate,key,options={})=>applyQuestionReplacement('family',plan,candidate,key,options);
+  const prepareSimilarityReplacement=(input,options={})=>prepareQuestionReplacement('similarity',input,options);
+  const applySimilarityReplacement=(plan,candidate,key,options={})=>applyQuestionReplacement('similarity',plan,candidate,key,options);
   async function readResolvedSources(plan,config,io) {
     const fresh = await scan(config,{io});
     const result = core.resolvePlan(plan,fresh);
@@ -7584,16 +8048,53 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       originCheck(options);io.check();
       const config=normalizeSettings(options.config || await io.run(loadSettings,'读取素材目录'));
       guard=beginSourceCheck(config);
+      let previous=null,savedRecord=null,matchingPaths=null;
+      if(options.run!=null) {
+        previous=validateBlueprintRun(options.run);matchRunPlan(previous,plan);
+      } else if(listSidecars(runFolder).length) {
+        engine();
+        const matches=await io.run(()=>listMatchingBlueprintRuns(plan,options),'查找已有配额记录');
+        matchingPaths=matches.map(row=>row.path).sort();
+        if(matches.length>1)throw Object.assign(new Error('当前方案有多份匹配的配额记录，请明确选择记录后再修改分值或片段'),{code:'BLUEPRINT_RUN_SELECTION_REQUIRED'});
+        if(matches.length===1) {
+          const path=matches[0].path,file=vault.getAbstractFileByPath(path);
+          if(!file||file.extension!=='json')throw new Error('已有配额记录已被移除');
+          const content=await io.run(()=>vault.read(file),'读取已有配额记录');
+          previous=validateBlueprintRun(parseSidecar(content));matchRunPlan(previous,plan);
+          if(file.path!==path||vault.getAbstractFileByPath(path)!==file)throw new Error('已有配额记录已被替换');
+          savedRecord={path,file,content};
+        }
+      } else matchingPaths=[];
+      if(previous?.assignments.some(row=>row.entryId===entryId)&&next.entries.find(entry=>entry.entryId===entryId)?.fragmentRef)
+        throw Object.assign(new Error('此题已归属整题配额，不能改为部分小问；请先明确重新编排配额'),{code:'BLUEPRINT_FRAGMENT_BINDING_CONFLICT'});
       const {sources,index}=await readResolvedSources(next,config,io);
-      await recheckSources(sources,io,guard);originCheck(options);
+      let run;
+      if(previous) {
+        verifyRunOnIndex(previous,plan,index,options);
+        run=validateBlueprintRun({...previous,runId:newId(),createdAt:new Date().toISOString(),planPathHint:null,
+          basePlanSnapshotDigest:baseline,resultPlanDigest:planDigest(next),sourceSnapshotDigest:indexDigest(index),algorithmVersion:'entry-content-edit-v1'});
+        verifyRunOnIndex(run,next,index,options);
+      }
+      await recheckSources(previous?sourcesFromIndex(index):sources,io,guard);originCheck(options);
+      if(matchingPaths) {
+        const current=(await io.run(()=>listMatchingBlueprintRuns(plan,options),'复核已有配额记录')).map(row=>row.path).sort();
+        if(JSON.stringify(current)!==JSON.stringify(matchingPaths))throw new Error('修改期间配额记录发生变化，请重新核对后重试');
+      }
+      if(savedRecord) {
+        const {path,file,content}=savedRecord;
+        if(file.path!==path||vault.getAbstractFileByPath(path)!==file||await io.run(()=>vault.read(file),'复核原配额记录')!==content)
+          throw new Error('修改期间原配额记录已被更改，未应用任何编排修改');
+      }
+      await checkFamilyOrigin(rawPlan,baseline,config,options,io,guard);
       if(planDigest(rawPlan)!==baseline)throw new Error('编排已变化，分值或片段修改未应用');
-      return {plan:next,index};
+      return {plan:next,index,...(run?{run}:{})};
     } finally {guard?.dispose();io.close();}
   }
   return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
     listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
     replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
-    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,updateEntryContent};
+    listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,findSimilarQuestions,
+    prepareSimilarityReplacement,applySimilarityReplacement,updateEntryContent};
 };
 
 return module.exports; })();
@@ -7627,7 +8128,11 @@ function contextOf(raw) {
 }
 const contextKey=context=>sha(canonical(contextOf(context)));
 function pathOf(value) {text(value,'库内路径',4096);if(value.includes('\\')||value.includes(':')||value.startsWith('/')||value.split('/').some(part=>!part||part==='.'||part==='..'))throw bad('USAGE_INVALID','库内路径无效');return value;}
-function dateOf(value,label='使用时间') {text(value,label,80);if(!/^\d{4}-\d\d-\d\dT/.test(value)||!Number.isFinite(Date.parse(value)))throw bad('USAGE_INVALID',label+'无效');return new Date(value).toISOString();}
+function dateOf(value,label='使用时间') {
+  text(value,label,80);const day=value.slice(0,10),midnight=Date.parse(day+'T00:00:00.000Z');
+  if(!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+-]\d\d:\d\d)$/.test(value)||!Number.isFinite(Date.parse(value))||!Number.isFinite(midnight)||new Date(midnight).toISOString().slice(0,10)!==day)
+    throw bad('USAGE_INVALID',label+'无效');return new Date(value).toISOString();
+}
 const identity=item=>`${item.kind}:${item.itemId!=null?'id:'+item.itemId:'path:'+item.path}`;
 const itemIdentity=item=>identity({kind:item.kind,itemId:item.id?String(item.id).trim():null,path:item.path});
 function commandOf(event) {
@@ -7712,14 +8217,16 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
   });
   const serial=fn=>{const previous=queues.get(vault)||Promise.resolve(),task=previous.catch(()=>{}).then(fn);queues.set(vault,task);return task;};
   const folderFor=context=>root+'/'+contextKey(context);
+  const touchesLedger=(context,file,oldPath)=>[file?.path,oldPath].some(path=>typeof path==='string'&&(path===folderFor(context)||path.startsWith(folderFor(context)+'/')));
   function watch(predicate) {
     let changed=false;const refs=[];
     if(vault.on&&vault.offref)for(const event of ['create','modify','delete','rename'])refs.push(vault.on(event,(file,oldPath)=>{if(predicate(file,oldPath))changed=true;}));
     return {check(){if(changed)throw bad('USAGE_STALE','来源或使用账本在操作期间发生变化，请刷新后重试');},dispose(){for(const ref of refs)vault.offref(ref);}};
   }
-  async function readEvent(file,context,options={}) {
+  async function readEvent(file,context,options={},budget) {
     const path=file.path,content=await io(()=>vault.read(file),options);
     if(file.path!==path||vault.getAbstractFileByPath(path)!==file)throw bad('USAGE_STALE','读取时使用记录已被替换');
+    if(budget&&typeof content==='string'){budget.bytes+=size(content);if(budget.bytes>128*1024*1024)throw bad('USAGE_LIMIT','本班课程账本超过 128 MiB，请先备份并核对账本范围');}
     try {if(typeof content!=='string'||size(content)>MAX_BYTES)throw Error('size');const id=path.split('/').pop().replace(/\.json$/,'');return validateEvent(JSON.parse(content),{expectedContext:context,expectedEventId:id,core});}
     catch(error){throw bad('USAGE_CORRUPT','使用账本存在损坏或不兼容记录，未覆盖：'+path+'（'+error.message+'）');}
   }
@@ -7729,7 +8236,7 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
     const guard=watch((file,oldPath)=>[file?.path,oldPath].some(value=>value===path||value?.startsWith(path+'/')));
     try {
     const files=folder.children.filter(file=>file.extension==='json');if(files.length>20000)throw bad('USAGE_LIMIT','本班课程使用记录超过读取上限');
-    const events=[];for(const file of files){if(!/^[a-f0-9]{64}\.json$/.test(file.name||file.path.split('/').pop()))throw bad('USAGE_CORRUPT','使用账本文件名无效：'+file.path);events.push(await readEvent(file,context,options));}
+    const events=[],budget={bytes:0};for(const file of files){if(!/^[a-f0-9]{64}\.json$/.test(file.name||file.path.split('/').pop()))throw bad('USAGE_CORRUPT','使用账本文件名无效：'+file.path);events.push(await readEvent(file,context,options,budget));}
     check(options);const current=vault.getAbstractFileByPath(path);if(current!==folder||current.children.filter(file=>file.extension==='json').length!==files.length||files.some(file=>!current.children.includes(file)))throw bad('USAGE_STALE','读取期间使用账本已变化，请刷新');
     guard.check();return ledgerOf(events,context,core);
     } finally {guard.dispose();}
@@ -7759,7 +8266,7 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
     if(Date.parse(occurredAt)>Date.parse(dateOf(now()))+300000)throw bad('USAGE_INVALID','实际使用时间不能在未来');
     await loadUsage({context},options);const snapshot=await capture(plan,entryIds,options);
     const wrapper={schemaVersion:1,context,action,occurredAt,planSnapshotSha256:snapshot.planSnapshotSha256,planTitle:snapshot.planTitle,items:data(snapshot.items)};
-    candidates.set(wrapper,{...snapshot,context:data(context),action,occurredAt});return wrapper;
+    candidates.set(wrapper,{...snapshot,context:data(context),action,occurredAt,config:data(options.config||null)});return wrapper;
   }
   async function ensureFolder(path) {
     let current='';for(const part of path.split('/')){current=current?current+'/'+part:part;let node=vault.getAbstractFileByPath(current);if(!node){try{await vault.createFolder(current);}catch(error){if(!Array.isArray(vault.getAbstractFileByPath(current)?.children))throw error;}node=vault.getAbstractFileByPath(current);}if(!Array.isArray(node?.children))throw bad('USAGE_CORRUPT','使用账本目录被文件占用');}
@@ -7778,16 +8285,18 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
     try {await vault.create(path,content);}
     catch(error){const file=vault.getAbstractFileByPath(path);if(file){try{return await match(file);}catch(verifyError){if(verifyError.code==='USAGE_ACTION_CONFLICT'||verifyError.code==='USAGE_CORRUPT')throw verifyError;}}throw Object.assign(bad('USAGE_WRITE_UNVERIFIED','登记写入结果未确认；请刷新后用同一动作重试，不要另建动作'),{path,cause:error});}
     const file=vault.getAbstractFileByPath(path);if(!file)throw Object.assign(bad('USAGE_WRITE_UNVERIFIED','登记写入后尚未确认；请刷新核对'),{path});
-    const result=await match(file);return {...result,idempotent:false};
+    try {const result=await match(file);return {...result,idempotent:false};}
+    catch(error){if(error.code==='USAGE_CORRUPT'||error.code==='USAGE_ACTION_CONFLICT')throw error;throw Object.assign(bad('USAGE_WRITE_UNVERIFIED','登记已提交但回读未确认；请刷新后使用同一动作重试'),{path,cause:error});}
   }
   function recordPlanUsage(candidate,{actionId},options={}) {
     const state=candidates.get(candidate);if(!state)throw bad('USAGE_INVALID','登记候选无效，请重新核对当前方案');
+    if(canonical(options.config||null)!==canonical(state.config))throw bad('USAGE_STALE','素材目录设置已变化，请重新核对登记');
     const event=makeEvent({context:state.context,action:state.action,occurredAt:state.occurredAt,planSnapshotSha256:state.planSnapshotSha256,planTitle:state.planTitle,items:state.items},actionId);
     return serial(async()=>{
       check(options);await loadUsage({context:state.context},options);const existing=vault.getAbstractFileByPath(folderFor(state.context)+'/'+event.eventId+'.json');
       if(existing)return append(event,options); // Retry of a verified commit does not reinterpret a later source revision.
       await ensureFolder(folderFor(state.context));
-      const guard=watch((file,oldPath)=>/\.md$/i.test(file?.path||'')||/\.md$/i.test(oldPath||'')||Array.isArray(file?.children));
+      const guard=watch((file,oldPath)=>/\.md$/i.test(file?.path||'')||/\.md$/i.test(oldPath||'')||Array.isArray(file?.children)||touchesLedger(state.context,file,oldPath));
       const guarded={...options,isCurrent:()=>{check(options);guard.check();return true;}};
       try {
       const fresh=await capture(state.plan,state.selected,options);
@@ -7800,12 +8309,17 @@ function createUsageService({vault,core,scanIndex,now=()=>new Date().toISOString
     context=contextOf(context);text(reason,'撤销说明',1000,true);
     if(!/^[a-f0-9]{64}$/.test(eventId))throw bad('USAGE_INVALID','撤销目标无效');
     return serial(async()=>{
+      const guard=watch((file,oldPath)=>touchesLedger(context,file,oldPath));
+      const guarded={...options,isCurrent:()=>{check(options);guard.check();return true;}};
+      try {
       check(options);const ledger=await loadUsage({context},options),target=ledger.events.find(event=>event.eventId===eventId);
+      guard.check();
       if(!target||target.action==='revoke')throw bad('USAGE_INVALID','只能撤销当前班级课程中的原始登记');
       const same=ledger.events.find(event=>event.actionId===actionId);
       if(same){if(same.action!=='revoke'||same.supersedes!==eventId||same.reason!==reason)throw bad('USAGE_ACTION_CONFLICT','动作 ID 已用于其他登记');return {event:same,path:folderFor(context)+'/'+same.eventId+'.json',state:'saved',idempotent:true};}
       if(ledger.revokedEventIds.includes(eventId))throw bad('USAGE_ALREADY_REVOKED','这次登记已经撤销');
-      return append(makeEvent({context,action:'revoke',occurredAt:dateOf(now()),supersedes:eventId,reason},actionId),options);
+      return await append(makeEvent({context,action:'revoke',occurredAt:dateOf(now()),supersedes:eventId,reason},actionId),guarded);
+      } finally {guard.dispose();}
     });
   }
   return {newActionId:()=>text(newId(),'动作 ID',200),preparePlanUsage,recordPlanUsage,revokeUsage,loadUsage,listUsage:loadUsage,
@@ -7931,7 +8445,7 @@ function plain(value,depth=0,seen=new Set()) {
 const json=value=>JSON.stringify(plain(value),null,2)+'\n';
 const objectHash=value=>sha(JSON.stringify(plain(value)));
 function pathOf(raw) {
-  if(typeof raw!=='string'||!raw||raw!==raw.trim()||raw.startsWith('/')||/[\\:\x00-\x1f\x7f]/.test(raw)||raw.split('/').some(p=>!p||p==='.'||p==='..'||/[. ]$/.test(p)||/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p)))throw fail('LIBRARY_PATH','必须使用安全的库内相对路径');
+  if(typeof raw!=='string'||!raw||raw.length>4096||raw!==raw.trim()||raw.startsWith('/')||/[\\:<>"|?*\x00-\x1f\x7f]/.test(raw)||raw.split('/').some(p=>!p||p==='.'||p==='..'||/[. ]$/.test(p)||/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p)))throw fail('LIBRARY_PATH','必须使用安全的库内相对路径');
   return raw;
 }
 const issue=(code,message,path='',severity='warning',extra={})=>({code,message,path,severity,...extra});
@@ -7991,7 +8505,9 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
   const serial=fn=>{const task=queue.catch(()=>{}).then(fn);queue=task;return task;};
   const check=options=>{if(options?.signal?.aborted||options?.isCurrent&&!options.isCurrent())throw Object.assign(new Error('操作已取消或工作区已变化'),{name:'AbortError'});};
   const timestamp=()=>new Date(now()).toISOString();
-  async function readBytes(file){if(vault.readBinary)return binary(await vault.readBinary(file));return binary(await vault.read(file));}
+  async function readBytes(file,options={}){check(options);const timeout=options.resourceTimeoutMs||15000;if(!Number.isFinite(timeout)||timeout<1)throw fail('LIBRARY_TIMEOUT','读取超时参数无效');let timer,onAbort;
+    try {return await Promise.race([Promise.resolve().then(()=>vault.readBinary?vault.readBinary(file):vault.read(file)).then(binary),new Promise((_,reject)=>{timer=setTimeout(()=>reject(fail('LIBRARY_TIMEOUT','读取材料超时：'+file.path)),timeout);onAbort=()=>reject(Object.assign(new Error('操作已取消'),{name:'AbortError'}));options.signal?.addEventListener('abort',onAbort,{once:true});})]);}
+    finally{clearTimeout(timer);options.signal?.removeEventListener('abort',onAbort);}}
   async function ensureFolder(path){let current='';for(const part of pathOf(path).split('/')){current=current?current+'/'+part:part;let node=vault.getAbstractFileByPath(current);if(!node){try{await vault.createFolder(current);}catch(error){node=vault.getAbstractFileByPath(current);if(!Array.isArray(node?.children))throw error;}node=vault.getAbstractFileByPath(current);}if(!Array.isArray(node?.children))throw fail('LIBRARY_CONFLICT','目录已被文件占用：'+current);}}
   async function create(path,bytes){pathOf(path);if(vault.getAbstractFileByPath(path))throw fail('LIBRARY_CONFLICT','目标已存在，未覆盖：'+path);await ensureFolder(path.slice(0,path.lastIndexOf('/')));if(vault.getAbstractFileByPath(path))throw fail('LIBRARY_CONFLICT','目标已存在，未覆盖：'+path);
     bytes=binary(bytes);if(vault.createBinary)return vault.createBinary(path,bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength));return vault.create(path,utf8(bytes));}
@@ -8001,19 +8517,28 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
   async function declarations(markdown,path,known){const rows=[];for(const dep of collectMediaDependencies(markdown,path).dependencies){
     const remote=/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(dep.target),resolvedPath=remote?null:known?known(dep.target,path):await resolve(dep.target,path);
     rows.push({...dep,resolvedPath:resolvedPath||null,external:remote});}return rows;}
-  async function diagnose(options={}) {check(options);const index=await assemblyService.scan(options.config,options),report=analyzeLibrary(index);
-    for(const item of index.items){check(options);for(const dep of await declarations(item.markdown,item.path))if(!dep.resolvedPath&&!dep.external||dep.status==='unsupported')report.issues.push(issue(dep.status==='unsupported'?'unsupported-resource':'missing-resource','资源待核对：'+(dep.target||dep.reasonCode),item.path,'warning',{target:dep.target}));}
-    check(options);return {index,issues:report.issues,counts:{...report.counts,issues:report.issues.length}};}
+  async function diagnose(options={}) {check(options);const config=options.config||await assemblyService.loadSettings(),index=await assemblyService.scan(config,options),indexed=new Set(index.items.map(item=>item.path)),extra=[],discoveryIssues=[];
+    const excluded=path=>/(^|\/)(?:\.[^/]+|_高中知识登记|assets|node_modules|ExamExports|模板&规范|Mathsemble)(\/|$)/i.test(path)||/(?:【模板】|【示例】|复测样例|Q-DEMO-|Q-CANONICAL-|整卷验收_)/i.test(path)||/(?:^|\/)(?:README|章节导航|待补清单)\.md$/i.test(path);
+    // The normal assembly index deliberately excludes unknown question types.
+    // Diagnosis must still surface those files instead of treating absence from
+    // the usable index as proof that the library has no missing metadata.
+    for(const file of vault.getMarkdownFiles())if(!indexed.has(file.path)&&!excluded(file.path)&&(config.questionRoots||[]).some(root=>file.path.startsWith(root+'/')&&(config.recursive!==false||!file.path.slice(root.length+1).includes('/')))){
+      check(options);try{const markdown=utf8(await readBytes(file,options)),metadata=metadataOf(markdown,parseYaml);extra.push({path:file.path,kind:'question',markdown,metadata});discoveryIssues.push(issue('unindexed-source-review','未进入可用题库索引：请核对是否题卡及 question_type，不自动更改类型',file.path,'warning'));}catch(error){if(error.name==='AbortError'||error.code==='LIBRARY_TIMEOUT')throw error;discoveryIssues.push(issue('unindexed-source-error','未入索引素材无法解析：'+error.message,file.path,'error'));}}
+    const allIndex=extra.length?core.buildIndex([...index.items.map(item=>({path:item.path,kind:item.kind,markdown:item.markdown,metadata:item.metadata})),...extra]):index;
+    const report=analyzeLibrary(allIndex);report.issues.push(...discoveryIssues,...(extra.length?index.issues:[]));
+    for(const item of allIndex.items){check(options);for(const dep of await declarations(item.markdown,item.path))if(!dep.resolvedPath&&!dep.external||dep.status==='unsupported')report.issues.push(issue(dep.status==='unsupported'?'unsupported-resource':'missing-resource','资源待核对：'+(dep.target||dep.reasonCode),item.path,'warning',{target:dep.target}));}
+    check(options);return {index,issues:report.issues,counts:{...report.counts,indexed:index.items.length,unindexed:extra.length,issues:report.issues.length,errors:report.issues.filter(row=>row.severity==='error').length}};}
   function batchPath(batchId){if(typeof batchId!=='string'||!/^batch-[a-f0-9]{24}$/.test(batchId))throw fail('LIBRARY_BATCH','批次 ID 无效');return ROOT+'/'+batchId;}
   async function loadBatch(batchId){const path=batchPath(batchId)+'/manifest.json',file=vault.getAbstractFileByPath(path);if(!file)throw fail('LIBRARY_BATCH','暂存批次不存在或尚未完成');
     const text=utf8(await readBytes(file)),batch=plain(JSON.parse(text));if(batch.schemaVersion!==1||batch.batchId!==batchId||!Array.isArray(batch.files)||!Array.isArray(batch.originals))throw fail('LIBRARY_BATCH','批次清单无效');
     const {manifestDigest,...body}=batch;if(objectHash(body)!==manifestDigest)throw fail('LIBRARY_INTEGRITY','批次清单摘要不符');
     for(const row of batch.files){pathOf(row.targetPath);if(!row.stagePath.startsWith(batchPath(batchId)+'/candidates/'))throw fail('LIBRARY_PATH','暂存文件越界');pathOf(row.stagePath);}
     return batch;}
-  async function listBatches(){const rows=[];for(const folder of vault.getAbstractFileByPath(ROOT)?.children||[]){if(!Array.isArray(folder.children)||!/^batch-/.test(folder.name))continue;try{const batch=await loadBatch(folder.name);rows.push({batchId:batch.batchId,profile:batch.profile,createdAt:batch.createdAt,status:batch.status,count:batch.files.length});}catch(_){rows.push({batchId:folder.name,status:'incomplete',count:0});}}return rows;}
+  function batchStatus(batch,log){if(batch.status==='blocked')return 'blocked';const owned=new Set();for(const row of log){if(row.type==='created')owned.add(row.path);if(row.type==='removed')owned.delete(row.path);}if(owned.size===batch.files.length&&batch.files.length)return 'committed';if(owned.size)return 'partial';if(log.some(row=>row.type==='removed'))return 'undone';return log.some(row=>row.type==='intent')?'partial':'staged';}
+  async function listBatches(){const rows=[];for(const folder of vault.getAbstractFileByPath(ROOT)?.children||[]){if(!Array.isArray(folder.children)||!/^batch-/.test(folder.name))continue;try{const batch=await loadBatch(folder.name);rows.push({batchId:batch.batchId,profile:batch.profile,createdAt:batch.createdAt,status:batchStatus(batch,await events(batch.batchId)),count:batch.files.length});}catch(_){rows.push({batchId:folder.name,status:'incomplete',count:0});}}return rows;}
   function unknown(value,known,path,loss){for(const key of Object.keys(value))if(!known.includes(key))loss.push({code:'unknown-field-preserved',path,field:key,disposition:'原件完整保留；不自动映射该字段'});}
   async function stageImport(raw,options={}) {return serial(async()=>{
-    check(options);const input=plain(raw),targetRoot=pathOf(input.targetRoot||'导入题库');if(targetRoot.startsWith('Mathsemble/'))throw fail('LIBRARY_PATH','源卡目标不能位于插件侧车目录');
+    check(options);const input=plain(raw),targetRoot=pathOf(input.targetRoot||'导入题库');if(targetRoot.split('/').some(part=>part.startsWith('.')||part.toLowerCase()==='mathsemble'))throw fail('LIBRARY_PATH','源卡目标不能位于隐藏配置或插件侧车目录');
     const profile=input.profile,originals=(input.files||[]).map((row,i)=>fileRecord(pathOf(row.path||'input-'+i),row.base64!==undefined?decode(row.base64):binary(row.text),'asset'));
     checkedFiles(originals);const idMap=plain(input.idMap||{});for(const [from,to]of Object.entries(idMap))if(!from||typeof to!=='string'||!to.trim()||/[\x00-\x1f]/.test(to))throw fail('LIBRARY_ID','ID 映射无效');
     const digest=objectHash({profile,targetRoot,originals,idMap}),batchId='batch-'+digest.slice(0,24),base=batchPath(batchId);
@@ -8030,7 +8555,7 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
       }else throw fail('LIBRARY_PROFILE','未知导入 profile，原件已保留但禁止提交');
       sourceFiles=checkedFiles(sourceFiles);
     }catch(error){issues.push(issue(error.code||'invalid-input',error.message,'','error'));sourceFiles=[];}
-    const mapping=Object.fromEntries(sourceFiles.map(row=>[row.path,row.kind==='plan'?'Mathsemble/组题方案/导入_'+batchId+'_'+row.path.split('/').pop():row.kind==='sidecar'?'Mathsemble/导入旁车/'+batchId+'/'+row.path:row.kind==='archive'?'Mathsemble/导入归档/'+batchId+'/'+row.path:targetRoot+'/'+row.path]));
+    const mapping=Object.fromEntries(sourceFiles.map(row=>[row.path,row.kind==='plan'?'Mathsemble/组题方案/导入_'+batchId+'_'+sha(row.path).slice(0,8)+'_'+row.path.split('/').pop():row.kind==='sidecar'?'Mathsemble/导入旁车/'+batchId+'/'+row.path:row.kind==='archive'?'Mathsemble/导入归档/'+batchId+'/'+row.path:targetRoot+'/'+row.path]));
     const sourceByPath=new Map(sourceFiles.map(row=>[row.path,row])),originalItems=[],candidateItems=[];
     const known=(target,source)=>{const direct=String(target).split(/[?#]/)[0],rel=normalizedTarget(source,target);if(sourceByPath.has(rel))return rel;if(sourceByPath.has(direct))return direct;const matches=sourceFiles.filter(row=>row.path.split('/').pop()===direct);return matches.length===1?matches[0].path:null;};
     for(const row of sourceFiles){check(options);let bytes=decode(row.base64);if(row.kind==='source'){
@@ -8077,12 +8602,14 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
   async function event(batchId,type,data){const log=await events(batchId),sequence=(log.at(-1)?.sequence||0)+1,row={schemaVersion:1,batchId,eventId:newId(),sequence,time:timestamp(),type,...plain(data)};await create(batchPath(batchId)+'/events/'+String(sequence).padStart(8,'0')+'.json',json(row));return row;}
   async function preflight(batch,options={}){const issues=[],log=await events(batch.batchId),owned=new Map(log.filter(row=>row.type==='created').map(row=>[row.path,row]));
     for(const row of log.filter(row=>row.type==='removed'))owned.delete(row.path);
-    const ids=new Map();for(const file of vault.getMarkdownFiles()){check(options);if(file.path.startsWith('Mathsemble/'))continue;try{const meta=metadataOf(utf8(await readBytes(file)),parseYaml);if(typeof meta.id==='string'&&meta.id){if(!ids.has(meta.id))ids.set(meta.id,[]);ids.get(meta.id).push(file.path);}}catch(_){}}
-    const newIds=new Map();for(const row of batch.files){const existing=vault.getAbstractFileByPath(row.targetPath),receipt=owned.get(row.targetPath);if(existing){if(!receipt||sha(await readBytes(existing))!==receipt.sha256)issues.push(issue('target-exists','目标已存在或本批文件已被编辑：'+row.targetPath,row.targetPath,'error'));}
+    const ids=new Map();for(const file of vault.getMarkdownFiles()){check(options);if(file.path.startsWith('Mathsemble/'))continue;try{const meta=metadataOf(utf8(await readBytes(file,options)),parseYaml),id=typeof meta.id==='string'?meta.id.trim():'';if(id){if(!ids.has(id))ids.set(id,[]);ids.get(id).push(file.path);}}catch(error){if(error.name==='AbortError'||error.code==='LIBRARY_TIMEOUT')throw error;}}
+    const existingPaths=new Map((vault.getFiles?.()||vault.getMarkdownFiles()).map(file=>[file.path.toLowerCase(),file.path]));
+    const newIds=new Map();for(const row of batch.files){const existing=vault.getAbstractFileByPath(row.targetPath),receipt=owned.get(row.targetPath);if(receipt&&receipt.sha256!==row.sha256)issues.push(issue('receipt-mismatch','创建日志与暂存候选摘要不符',row.targetPath,'error'));if(existing){if(!receipt||sha(await readBytes(existing))!==receipt.sha256)issues.push(issue('target-exists','目标已存在或本批文件已被编辑：'+row.targetPath,row.targetPath,'error'));}
+      else if(existingPaths.has(row.targetPath.toLowerCase()))issues.push(issue('target-case-conflict','目标存在仅大小写不同的文件',row.targetPath,'error'));
       else if(receipt)issues.push(issue('created-file-missing','本批已创建文件后来被删除：'+row.targetPath,row.targetPath,'error'));
-      if(row.kind==='source')try{const meta=metadataOf(utf8(decode(row.base64)),parseYaml);if(typeof meta.id==='string'&&meta.id){const same=(ids.get(meta.id)||[]).filter(path=>path!==row.targetPath||!receipt);if(same.length||newIds.has(meta.id))issues.push(issue('id-conflict','题目 ID 已存在或批内重复：'+meta.id,row.targetPath,'error',{relatedPaths:[...same,...(newIds.has(meta.id)?[newIds.get(meta.id)]:[])]}));newIds.set(meta.id,row.targetPath);}}catch(error){issues.push(issue('metadata-invalid',error.message,row.targetPath,'error'));}}
+      if(row.kind==='source')try{const meta=metadataOf(utf8(decode(row.base64)),parseYaml),id=typeof meta.id==='string'?meta.id.trim():'';if(id){const same=(ids.get(id)||[]).filter(path=>path!==row.targetPath||!receipt);if(same.length||newIds.has(id))issues.push(issue('id-conflict','题目 ID 已存在或批内重复：'+id,row.targetPath,'error',{relatedPaths:[...same,...(newIds.has(id)?[newIds.get(id)]:[])]}));newIds.set(id,row.targetPath);}}catch(error){issues.push(issue('metadata-invalid',error.message,row.targetPath,'error'));}}
     return {issues,owned};}
-  async function inspectBatch(batchId,options={}){const batch=await loadBatch(batchId),state=await preflight(batch,options);return {...batch,issues:[...batch.issues,...state.issues],commitLog:await events(batchId)};}
+  async function inspectBatch(batchId,options={}){const batch=await loadBatch(batchId),state=await preflight(batch,options),commitLog=await events(batchId);return {...batch,status:batchStatus(batch,commitLog),issues:[...batch.issues,...state.issues],commitLog};}
   async function commitBatch(batchId,{confirmed=false,...options}={}) {if(confirmed!==true)throw fail('LIBRARY_CONFIRM','核对批次后须明确确认入库');return serial(async()=>{
     let writingPath=null,changed=false;const refs=[];
     const current=()=>{check(options);if(changed)throw fail('LIBRARY_CHANGED','提交期间题库发生变化，请重新核对批次');};
@@ -8105,22 +8632,38 @@ function createLibraryService({vault,core,assemblyService,parseYaml,collectMedia
     const batch=await loadBatch(batchId),state=await preflight(batch,options),removed=[],issues=[];
     for(const [path,receipt]of state.owned){check(options);if(!batch.files.some(row=>row.targetPath===path&&row.sha256===receipt.sha256)){issues.push(issue('undo-ownership','日志与批次不匹配，未删除',path,'error'));continue;}
       const file=vault.getAbstractFileByPath(path);if(!file){await event(batchId,'removed',{path,sha256:receipt.sha256});continue;}
-      if(sha(await readBytes(file))!==receipt.sha256||vault.getAbstractFileByPath(path)!==file||sha(await readBytes(file))!==receipt.sha256){issues.push(issue('undo-edited','本批文件已被编辑或替换，未删除',path,'error'));continue;}
-      check(options);try{await vault.delete(file,true);await event(batchId,'removed',{path,sha256:receipt.sha256});removed.push(path);}catch(error){issues.push(issue('undo-unverified','删除结果需核对：'+error.message,path,'error'));}
+      if(!vault.on||!vault.offref)throw fail('LIBRARY_ADAPTER','撤销需要文件变化监听器，未删除');
+      let changed=false;const refs=['create','modify','delete','rename'].map(type=>vault.on(type,(node,oldPath)=>{if(node?.path===path||oldPath===path)changed=true;}));
+      try {
+        const first=sha(await readBytes(file,options)),second=sha(await readBytes(file,options));
+        if(first!==receipt.sha256||second!==receipt.sha256||changed||vault.getAbstractFileByPath(path)!==file){issues.push(issue('undo-edited','本批文件已被编辑或替换，未删除',path,'error'));continue;}
+        check(options);
+        try{await vault.delete(file,true);await event(batchId,'removed',{path,sha256:receipt.sha256});removed.push(path);}catch(error){issues.push(issue('undo-unverified','删除结果需核对：'+error.message,path,'error'));}
+      }finally{for(const ref of refs)vault.offref(ref);}
     }
     return {status:issues.length?'partial':'complete',batchId,removed,issues};
   });}
   async function exportTransfer({sourcePaths=[],planPaths=[],sidecarPaths=[],archivePaths=[],plan}={},options={}) {
-    check(options);const files=[],references=[],issues=[],seen=new Set();
+    check(options);const files=[],references=[],issues=[],seen=new Set();let totalBytes=0;
     async function capture(path,kind){pathOf(path);if(seen.has(path))return;seen.add(path);const file=vault.getAbstractFileByPath(path);if(!file||Array.isArray(file.children)){issues.push(issue('missing-file','缺少待封装文件',path,'error'));return;}
-      const bytes=await readBytes(file);check(options);if(vault.getAbstractFileByPath(path)!==file||sha(await readBytes(file))!==sha(bytes))throw fail('LIBRARY_CHANGED','封装期间文件变化：'+path);files.push(fileRecord(path,bytes,kind));
-      if(kind==='asset'&&/\.svg$/i.test(path)&&/(?:href\s*=\s*["']\s*(?:https?:|\/\/)|url\(\s*["']?(?:https?:|\/\/))/i.test(bytes.toString('utf8')))issues.push(issue('svg-external-dependency','SVG 含未封装外部引用',path,'warning'));
+      const bytes=await readBytes(file,options);check(options);totalBytes+=bytes.length;if(totalBytes>MAX_BYTES||files.length>=MAX_FILES)throw fail('LIBRARY_BUDGET','材料超过文件数或 64 MiB 字节预算');if(vault.getAbstractFileByPath(path)!==file||sha(await readBytes(file,options))!==sha(bytes))throw fail('LIBRARY_CHANGED','封装期间文件变化：'+path);files.push(fileRecord(path,bytes,kind));
+      if(kind==='asset'&&/\.svg$/i.test(path)){
+        const svg=bytes.toString('utf8'),targets=[];
+        for(const match of svg.matchAll(/\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))|url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s)]+))\s*\)|@import\s+(?:"([^"]*)"|'([^']*)')/gi))targets.push(match.slice(1).find(value=>value!==undefined)||'');
+        if(targets.some(target=>target.trim()&&!/^(?:#|data:)/i.test(target.trim())))issues.push(issue('svg-external-dependency','SVG 含未封装的相对或外部引用（含图片／字体／样式）',path,'warning'));
+      }
       if(kind==='source')for(const dep of await declarations(utf8(bytes),path)){references.push({sourcePath:path,target:dep.target,resolvedPath:dep.resolvedPath,syntax:dep.syntax,status:dep.status});if(dep.resolvedPath&&dep.status!=='unsupported')await capture(dep.resolvedPath,/\.md$/i.test(dep.resolvedPath)?'source':'asset');else issues.push(issue('unpacked-dependency','未封装依赖：'+(dep.target||dep.reasonCode),path,'warning'));}}
     const plans=[];if(plan)plans.push({path:'plans/current.plan.json',plan:core.validatePlan(plan)});
     for(const path of planPaths){await capture(path,'plan');const row=files.find(row=>row.path===path);if(row)plans.push({path,plan:core.validatePlan(JSON.parse(utf8(decode(row.base64))))});}
-    for(const row of plans){if(!seen.has(row.path)){files.push(fileRecord(row.path,json(row.plan),'plan'));seen.add(row.path);}for(const entry of row.plan.entries)if(entry.kind!=='section'){await capture(entry.sourcePath,'source');const source=files.find(file=>file.path===entry.sourcePath);if(source)source.sourceKind=entry.kind;}}
+    const freshIndex=plans.length?await assemblyService.scan(options.config,options):null;
+    for(const row of plans){if(!seen.has(row.path)){files.push(fileRecord(row.path,json(row.plan),'plan'));seen.add(row.path);}for(const resolved of core.resolvePlan(row.plan,freshIndex).entries){const {entry,item,status}=resolved;if(entry.kind==='section')continue;
+      if(status!=='ok'){issues.push(issue('stale-plan-reference','方案来源需要核对，未自动接受：'+status,entry.sourcePath,'error'));continue;}
+      references.push({sourcePath:row.path,target:entry.sourcePath,resolvedPath:item.path,syntax:'plan-source',status:'ok',sourceId:entry.sourceId});
+      await capture(item.path,'source');const source=files.find(file=>file.path===item.path);if(source)source.sourceKind=entry.kind;}}
     for(const path of sourcePaths)await capture(path,'source');for(const path of sidecarPaths)await capture(path,'sidecar');
     for(const path of archivePaths){const node=vault.getAbstractFileByPath(path);if(Array.isArray(node?.children)){const walk=async folder=>{for(const child of folder.children){if(Array.isArray(child.children))await walk(child);else await capture(child.path,'archive');}};await walk(node);}else await capture(path,'archive');}
+    const records=[];for(const row of files.filter(file=>file.kind==='source'))try{const markdown=utf8(decode(row.base64)),metadata=metadataOf(markdown,parseYaml);records.push({path:row.path,kind:row.sourceKind||sourceKind(metadata),markdown,metadata});}catch(error){issues.push(issue('source-metadata',error.message,row.path,'error'));}
+    const index=core.buildIndex(records);for(const row of plans)for(const problem of core.resolvePlan(row.plan,index).issues)issues.push({...problem,severity:'error',code:'stale-plan-reference'});
     checkedFiles(files);check(options);const body={schemaVersion:1,format:TRANSFER,packageId:newId(),createdAt:timestamp(),files,references,issues};return {package:{...body,integrity:objectHash(body)},issues,status:issues.length?'partial':'complete'};
   }
   const stageTransfer=(value,{targetRoot='导入题库',idMap={},...options}={})=>stageImport({profile:TRANSFER,targetRoot,idMap,files:[{path:'transfer.json',text:JSON.stringify(value)}]},options);
@@ -8144,10 +8687,10 @@ module.exports=function createLibraryModal({Modal,Notice,service,getPlan}={}) {
       try{return await fn({signal:controller.signal,isCurrent:()=>!this.closed&&this.controller===controller&&!controller.signal.aborted});}
       catch(error){this.message(error.message||String(error),error.name!=='AbortError');}
       finally{if(this.controller===controller)this.controller=null;this.busy=false;if(!this.closed)this.controls();}}
-    controls(){for(const node of this.contentEl.querySelectorAll('input,select,button'))node.disabled=this.busy;if(this.commitButton)this.commitButton.disabled=this.busy||!this.batch||!this.confirm.checked||this.batch.status==='blocked'||this.batch.issues.some(row=>row.severity==='error');if(this.undoButton)this.undoButton.disabled=this.busy||!this.batch||!this.confirm.checked;}
+    controls(){for(const node of this.contentEl.querySelectorAll('input,select,button'))node.disabled=this.busy&&node.dataset.libraryNavigation!=='true';if(this.commitButton)this.commitButton.disabled=this.busy||!this.batch||!this.confirm.checked||this.batch.status==='blocked'||this.batch.issues.some(row=>row.severity==='error');if(this.undoButton)this.undoButton.disabled=this.busy||!this.batch||!this.confirm.checked;}
     async onOpen(){this.modalEl.classList.add('mwb-library-modal');this.contentEl.classList.add('mwb-library');this.el('h2',this.contentEl,'题库诊断与待入库');
       this.el('p',this.contentEl,'先核对原件、问题与损耗报告，再确认创建新文件。不会自动合并重复题、改号或覆盖已有材料。');
-      const nav=this.el('div',this.contentEl);this.panels={};for(const [id,label]of [['diagnose','集中诊断'],['batch','待入库批次'],['transfer','材料包']]){this.button(nav,label,async()=>this.show(id));const panel=this.el('section',this.contentEl);panel.dataset.libraryPanel=id;this.panels[id]=panel;}
+      const nav=this.el('div',this.contentEl);this.panels={};for(const [id,label]of [['diagnose','集中诊断'],['batch','待入库批次'],['transfer','材料包']]){const button=this.button(nav,label,async()=>this.show(id));button.dataset.libraryNavigation='true';button.onclick=()=>{if(!this.closed)this.show(id);};const panel=this.el('section',this.contentEl);panel.dataset.libraryPanel=id;this.panels[id]=panel;}
       this.status=this.el('p',this.contentEl,'选择操作。');this.status.setAttribute('role','status');
       const diag=this.panels.diagnose;this.button(diag,'扫描当前题库',options=>this.scan(options));this.diagnosticList=this.el('div',diag);
       const batch=this.panels.batch;this.profile=this.field(batch,'输入 profile','select');for(const [value,label]of [['markdown','Markdown 与本地图片'],['mathsemble-question-json-v1','Mathsemble 结构化 JSON v1'],['mathsemble-transfer-v1','Mathsemble 材料包 v1']])this.el('option',this.profile,label).value=value;
@@ -8156,29 +8699,30 @@ module.exports=function createLibraryModal({Modal,Notice,service,getPlan}={}) {
       this.targetRoot=this.field(batch,'源卡目标目录');this.targetRoot.value='导入题库';
       this.idMap=this.field(batch,'显式 ID 映射（JSON，可留空）','textarea');this.idMap.placeholder='{"冲突旧ID":"人工确认的新ID"}';
       this.button(batch,'保存为待入库批次',options=>this.stage(options));
-      this.batchSelect=this.field(batch,'已暂存批次','select');this.button(batch,'刷新批次列表',()=>this.refresh());this.button(batch,'打开批次',options=>this.openBatch(this.batchSelect.value,options));
+      this.batchSelect=this.field(batch,'已暂存批次','select');this.button(batch,'刷新批次列表',options=>this.refresh(options));this.button(batch,'打开批次',options=>this.openBatch(this.batchSelect.value,options));
       this.batchSummary=this.el('div',batch);this.confirm=this.field(batch,'已核对问题与损耗，确认创建／撤销本批文件');this.confirm.type='checkbox';this.confirm.onchange=()=>this.controls();
       this.commitButton=this.button(batch,'确认入库',options=>this.commit(options));this.undoButton=this.button(batch,'撤销本批创建',options=>this.undo(options));
       const transfer=this.panels.transfer;this.el('p',transfer,'导出当前编排所引用源卡、本地图片与方案。含教师答案和隐藏资源，请作为教师私有材料保管。外链、未知依赖及历史旁车内部路径会明确报告；本格式不是 QTI。');
       this.sidecars=this.field(transfer,'另携带旁车路径（每行一个，可留空）','textarea');this.archives=this.field(transfer,'另携带归档目录（每行一个，可留空）','textarea');
       this.button(transfer,'封装当前编排',options=>this.pack(options));this.packageSummary=this.el('div',transfer);this.packageText=this.field(transfer,'材料包 JSON','textarea');this.packageText.rows=10;
       this.button(transfer,'下载材料包 JSON',()=>this.download());this.button(transfer,'将此材料包暂存待入库',options=>this.stagePackage(options));
-      this.show('diagnose');await this.action('读取批次列表',()=>this.refresh());this.controls();}
-    show(id){for(const [name,panel]of Object.entries(this.panels))panel.hidden=name!==id;}
+      this.show('diagnose');await this.action('读取批次列表',options=>this.refresh(options));this.controls();}
+    show(id,preserveOperation=false){if(!preserveOperation&&this.activePanel&&this.activePanel!==id)this.controller?.abort();this.activePanel=id;for(const [name,panel]of Object.entries(this.panels))panel.hidden=name!==id;}
+    valid(options={}){return !this.closed&&(!options.isCurrent||options.isCurrent());}
     listIssues(parent,issues){const list=this.el('ul',parent);for(const row of issues){const item=this.el('li',list,(row.severity==='error'?'阻断：':'')+row.message+(row.path?' · '+row.path:''));if(row.path?.endsWith('.md'))this.button(item,'打开原文',()=>service.openSource(row.path));}return list;}
-    async scan(options){const report=await service.diagnose(options);if(this.closed)return;this.diagnosticList.replaceChildren();this.el('p',this.diagnosticList,report.counts.items+' 份素材，'+report.issues.length+' 项诊断。疑似重复仅为人工核对候选。');this.listIssues(this.diagnosticList,report.issues);this.message('诊断完成，未修改源文。');}
-    async refresh(){const batches=await service.listBatches();if(this.closed)return;const value=this.batchSelect.value;this.batchSelect.replaceChildren();this.el('option',this.batchSelect,'选择批次').value='';for(const batch of batches)this.el('option',this.batchSelect,batch.batchId+' · '+batch.status+' · '+batch.count+' 文件').value=batch.batchId;this.batchSelect.value=this.batch?.batchId||value;}
-    async stage(options){if(!this.inputFiles.files.length)throw Error('先选择原件');const files=[];for(const file of this.inputFiles.files){const bytes=new Uint8Array(await file.arrayBuffer());let raw='';for(let i=0;i<bytes.length;i+=32768)raw+=String.fromCharCode(...bytes.subarray(i,i+32768));files.push({path:file.webkitRelativePath||file.name,base64:btoa(raw)});}
-      const batch=await service.stageImport({profile:this.profile.value,files,targetRoot:this.targetRoot.value,idMap:this.idMap.value.trim()?JSON.parse(this.idMap.value):{}},options);if(this.closed)return;await this.refresh();await this.openBatch(batch.batchId,options);this.message('原件与候选已暂存；尚未进入素材目录。');}
-    async openBatch(id,options={}){if(!id)throw Error('先选择批次');const batch=await service.inspectBatch(id,options);if(this.closed)return;this.batch=batch;this.confirm.checked=false;this.show('batch');this.batchSummary.replaceChildren();this.el('h3',this.batchSummary,batch.batchId+' · '+batch.status);this.el('p',this.batchSummary,batch.originals.length+' 份原件，'+batch.files.length+' 个候选文件；原件摘要与候选摘要分别保存。');this.listIssues(this.batchSummary,batch.issues);
+    async scan(options){const report=await service.diagnose(options);if(!this.valid(options))return;this.diagnosticList.replaceChildren();this.el('p',this.diagnosticList,report.counts.items+' 份素材，'+report.issues.length+' 项诊断。疑似重复仅为人工核对候选。');this.listIssues(this.diagnosticList,report.issues);this.message('诊断完成，未修改源文。');}
+    async refresh(options={}){const batches=await service.listBatches();if(!this.valid(options))return;const value=this.batchSelect.value;this.batchSelect.replaceChildren();this.el('option',this.batchSelect,'选择批次').value='';for(const batch of batches)this.el('option',this.batchSelect,batch.batchId+' · '+batch.status+' · '+batch.count+' 文件').value=batch.batchId;this.batchSelect.value=this.batch?.batchId||value;}
+    async stage(options){if(!this.inputFiles.files.length)throw Error('先选择原件');if([...this.inputFiles.files].reduce((n,file)=>n+file.size,0)>(service.limits?.maxBytes||64*1024*1024)||this.inputFiles.files.length>(service.limits?.maxFiles||2000))throw Error('原件超过文件数量或 64 MiB 字节预算');const files=[];for(const file of this.inputFiles.files){if(!options.isCurrent())throw Object.assign(Error('操作已取消'),{name:'AbortError'});const bytes=new Uint8Array(await file.arrayBuffer());let raw='';for(let i=0;i<bytes.length;i+=32768)raw+=String.fromCharCode(...bytes.subarray(i,i+32768));files.push({path:file.webkitRelativePath||file.name,base64:btoa(raw)});}
+      const batch=await service.stageImport({profile:this.profile.value,files,targetRoot:this.targetRoot.value,idMap:this.idMap.value.trim()?JSON.parse(this.idMap.value):{}},options);if(!this.valid(options))return;await this.refresh(options);await this.openBatch(batch.batchId,options);if(this.valid(options))this.message('原件与候选已暂存；尚未进入素材目录。');}
+    async openBatch(id,options={}){if(!id)throw Error('先选择批次');const batch=await service.inspectBatch(id,options);if(!this.valid(options))return;this.batch=batch;this.confirm.checked=false;this.show('batch',true);this.batchSummary.replaceChildren();this.el('h3',this.batchSummary,batch.batchId+' · '+batch.status);this.el('p',this.batchSummary,batch.originals.length+' 份原件，'+batch.files.length+' 个候选文件；原件摘要与候选摘要分别保存。');this.listIssues(this.batchSummary,batch.issues);
       const losses=this.el('details',this.batchSummary);this.el('summary',losses,'损耗、未知字段及映射报告（'+batch.lossReport.length+'）');for(const loss of batch.lossReport)this.el('p',losses,(loss.path||'')+' '+(loss.field||'')+'：'+loss.disposition);
       const files=this.el('details',this.batchSummary);this.el('summary',files,'候选路径与 ID／资源映射');for(const row of batch.files)this.el('p',files,row.path+' → '+row.targetPath);this.el('pre',files,JSON.stringify(batch.idMap,null,2));
       const log=this.el('details',this.batchSummary);this.el('summary',log,'提交与撤销日志');this.el('pre',log,JSON.stringify(batch.commitLog,null,2));this.controls();}
-    async commit(options){if(!this.confirm.checked||!this.batch)throw Error('先核对并确认本批材料');const result=await service.commitBatch(this.batch.batchId,{...options,confirmed:true});if(this.closed)return;await this.openBatch(this.batch.batchId,options);this.message(result.status==='complete'?'本批入库完成；仅创建新文件。':'入库未完整完成，请查看冲突／日志；已创建文件保留。',result.status!=='complete');if(result.issues?.length)this.listIssues(this.batchSummary,result.issues);}
-    async undo(options){if(!this.confirm.checked||!this.batch)throw Error('先核对并确认撤销');const result=await service.undoBatch(this.batch.batchId,{...options,confirmed:true});if(this.closed)return;await this.openBatch(this.batch.batchId,options);this.message(result.status==='complete'?'已撤销本批确认创建且内容未变的文件；原件与日志保留。':'部分文件无法撤销；已编辑或归属不明的材料未删除。',result.status!=='complete');if(result.issues?.length)this.listIssues(this.batchSummary,result.issues);}
-    async pack(options){const plan=await getPlan?.();if(!plan)throw Error('先打开包含素材的编排方案');const lines=node=>node.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);const result=await service.exportTransfer({plan,sidecarPaths:lines(this.sidecars),archivePaths:lines(this.archives)},options);if(this.closed)return;this.transfer=result.package;this.packageText.value=JSON.stringify(result.package);this.packageSummary.replaceChildren();this.el('p',this.packageSummary,result.package.files.length+' 个文件；'+(result.status==='complete'?'已捕获范围完整。':'存在未封装依赖或其他缺口，请核对。'));this.listIssues(this.packageSummary,result.issues);this.message('材料包已准备；未写入源文或正式素材目录。');}
+    async commit(options){if(!this.confirm.checked||!this.batch)throw Error('先核对并确认本批材料');const result=await service.commitBatch(this.batch.batchId,{...options,confirmed:true});if(!this.valid(options))return;await this.openBatch(this.batch.batchId,options);if(!this.valid(options))return;this.message(result.status==='complete'?'本批入库完成；仅创建新文件。':'入库未完整完成，请查看冲突／日志；已创建文件保留。',result.status!=='complete');if(result.issues?.length)this.listIssues(this.batchSummary,result.issues);}
+    async undo(options){if(!this.confirm.checked||!this.batch)throw Error('先核对并确认撤销');const result=await service.undoBatch(this.batch.batchId,{...options,confirmed:true});if(!this.valid(options))return;await this.openBatch(this.batch.batchId,options);if(!this.valid(options))return;this.message(result.status==='complete'?'已撤销本批确认创建且内容未变的文件；原件与日志保留。':'部分文件无法撤销；已编辑或归属不明的材料未删除。',result.status!=='complete');if(result.issues?.length)this.listIssues(this.batchSummary,result.issues);}
+    async pack(options){const plan=await getPlan?.();if(!plan)throw Error('先打开包含素材的编排方案');const lines=node=>node.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);const result=await service.exportTransfer({plan,sidecarPaths:lines(this.sidecars),archivePaths:lines(this.archives)},options);if(!this.valid(options))return;this.transfer=result.package;this.packageText.value=JSON.stringify(result.package);this.packageSummary.replaceChildren();this.el('p',this.packageSummary,result.package.files.length+' 个文件；'+(result.status==='complete'?'已捕获范围完整。':'存在未封装依赖或其他缺口，请核对。'));this.listIssues(this.packageSummary,result.issues);this.message('材料包已准备；未写入源文或正式素材目录。');}
     download(){if(!this.packageText.value)throw Error('先封装或粘贴材料包');const blob=new Blob([this.packageText.value],{type:'application/json'}),url=URL.createObjectURL(blob),link=this.el('a',this.contentEl,'');link.href=url;link.download='mathsemble-materials.json';link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-    async stagePackage(options){const value=JSON.parse(this.packageText.value),batch=await service.stageTransfer(value,{...options,targetRoot:this.targetRoot.value,idMap:this.idMap.value.trim()?JSON.parse(this.idMap.value):{}});if(this.closed)return;await this.refresh();await this.openBatch(batch.batchId,options);this.message('材料包已校验并暂存，确认前不会创建正式材料。');}
+    async stagePackage(options){const value=JSON.parse(this.packageText.value),batch=await service.stageTransfer(value,{...options,targetRoot:this.targetRoot.value,idMap:this.idMap.value.trim()?JSON.parse(this.idMap.value):{}});if(!this.valid(options))return;await this.refresh(options);await this.openBatch(batch.batchId,options);if(this.valid(options))this.message('材料包已校验并暂存，确认前不会创建正式材料。');}
     onClose(){this.closed=true;this.controller?.abort();this.controller=null;this.batch=null;this.transfer=null;this.contentEl.replaceChildren();}
   };
 };
@@ -8457,9 +9001,13 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
         for(const [key,name] of [['subject','学科'],['knowledge','知识点'],['method','方法'],['role','教学角色'],['source','来源']])this.filter(extra,row,key,name);
         const fixed=this.el('div',panel,undefined,'mwb-blueprint-toolbar');
         const fromPlan=this.field(fixed,'将编排中的题目计入此行','select');this.el('option',fromPlan,'选择已有题目').value='';
-        for(const entry of this.view.plan.entries.filter(entry=>entry.kind==='question'))this.el('option',fromPlan,entry.title||entry.sourcePath).value=entry.entryId;
+        for(const entry of this.view.plan.entries.filter(entry=>entry.kind==='question')){
+          const option=this.el('option',fromPlan,(entry.title||entry.sourcePath)+(entry.fragmentRef?'（只选小问，须先恢复整题）':''));
+          option.value=entry.entryId;option.disabled=!!entry.fragmentRef;
+        }
         this.button(fixed,'固定到此行',()=>{
           const entry=this.view.plan.entries.find(entry=>entry.entryId===fromPlan.value);if(!entry){this.status('先选择编排中的题目。',true);return;}
+          if(entry.fragmentRef){this.status('已选小问不能充抵整题配额，请先恢复整题。',true);return;}
           const slots=Array.from({length:Math.min(1000,Math.max(0,row.count))},(_,i)=>row.rowId+':'+(i+1));
           const slotId=slots.find(id=>!this.locks.some(lock=>lock.slotId===id));
           if(!slotId){this.status('该行已无空余锁定位置。',true);return;}
@@ -8664,12 +9212,140 @@ module.exports = function createFamilyModal({Modal,Component,core,service,render
 };
 
 return module.exports; })();
+const mwbAssemblySimilarityUi = (() => { const module = {exports:{}};
+'use strict';
+
+module.exports = function createSimilarityModal({Modal,Component,core,service,renderMarkdown}) {
+  const clone=value=>JSON.parse(JSON.stringify(value));
+  const modes={family:'同族',knowledge:'同考点',method:'同方法'};
+  const types={choice:'单选',multiple_choice:'多选',fill_blank:'填空',true_false:'判断',short_answer:'解答',calculation:'计算',proof:'证明',comprehensive:'综合'};
+  const body=value=>String(value||'').replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/,'');
+  return class SimilarityModal extends Modal {
+    constructor(app,plugin,view,{sourceKey,entryId}={}) {
+      super(app);this.plugin=plugin;this.view=view;this.sourceKey=sourceKey;this.entryId=entryId;
+      this.similarityEditor=true;this.closed=false;this.busy=false;this.visible=30;
+      this.candidate=null;this.run=undefined;this.matches=[];
+    }
+    el(tag,parent,text,cls) {const node=this.contentEl.ownerDocument.createElement(tag);if(text!==undefined)node.textContent=String(text);if(cls)node.className=cls;parent?.appendChild(node);return node;}
+    button(parent,label,fn) {const node=this.el('button',parent,label);node.type='button';node.onclick=()=>{if(!this.closed&&!node.disabled&&!this.busy)Promise.resolve().then(()=>{if(!this.closed&&node.isConnected&&!node.disabled&&!this.busy)return fn();}).catch(error=>this.status(error.message,true));};return node;}
+    check(parent,label,checked=false) {const wrap=this.el('label',parent,undefined,'mwb-family-check');const node=this.el('input',wrap);node.type='checkbox';node.checked=checked;node.setAttribute('aria-label',label);this.el('span',wrap,label);return node;}
+    status(message,error=false) {if(this.closed||!this.statusEl)return;this.statusEl.textContent=message;this.statusEl.classList.toggle('is-error',error);}
+    updateBusy() {for(const node of this.contentEl.querySelectorAll('input,select,button'))node.disabled=this.busy||node.dataset.unavailable==='true';}
+    snapshot() {return {plan:JSON.stringify(this.view.plan),settings:JSON.stringify(this.view.settings),pending:this.view.pendingBlueprintRun,
+      index:this.view.index,scan:this.view.scanGeneration,mode:this.modeSelect.value,run:this.runSelect?.value,unlock:!!this.unlockInput?.checked,
+      filters:this.useFiltersInput.checked?JSON.stringify(this.view.filters):null};}
+    current(snapshot) {return !!snapshot&&!this.closed&&!this.view.closed&&!this.view.actionBusy&&!this.view.scanBusy&&
+      JSON.stringify(this.view.plan)===snapshot.plan&&JSON.stringify(this.view.settings)===snapshot.settings&&
+      this.view.pendingBlueprintRun===snapshot.pending&&this.view.index===snapshot.index&&this.view.scanGeneration===snapshot.scan&&
+      this.modeSelect.value===snapshot.mode&&this.runSelect?.value===snapshot.run&&!!this.unlockInput?.checked===snapshot.unlock&&
+      (snapshot.filters===null||JSON.stringify(this.view.filters)===snapshot.filters);}
+    checkWorkspace() {if(this.candidate&&!this.current(this.candidateSnapshot))this.invalidate('编排、目录或素材已变化，请刷新候选。');}
+    async action(label,fn) {
+      if(this.closed||this.busy)return;
+      this.busy=true;const controller=this.controller=new AbortController(),snapshot=this.snapshot();this.updateBusy();this.status(label+'…');
+      const isCurrent=()=>this.controller===controller&&!controller.signal.aborted&&this.current(snapshot);
+      try {if(!isCurrent())throw new Error('编排工作区正在处理其他操作，请稍后重试');return await fn({signal:controller.signal,isCurrent,config:clone(this.view.settings)},snapshot);}
+      catch(error){if(!this.closed)this.status(error.message||String(error),error.name!=='AbortError');}
+      finally{if(this.controller===controller)this.controller=null;this.busy=false;if(!this.closed)this.updateBusy();}
+    }
+    async onOpen() {
+      this.lifecycleOwner=new Component();this.lifecycleOwner.register?.(()=>{if(!this.closed)this.close();});this.plugin.addChild?.(this.lifecycleOwner);
+      this.modalEl.classList.add('mwb-family-modal','mwb-similarity-modal');this.contentEl.classList.add('mwb-family','mwb-similarity');
+      this.el('h2',this.contentEl,this.entryId?'相似换题':'找相似题');
+      this.el('p',this.contentEl,'按已登记题族、知识点或方法查找候选。匹配理由用于辅助选题，不代表数学等价或解法相同；请核对题意、条件和难度。','mwb-assembly-muted');
+      const controls=this.el('div',this.contentEl,undefined,'mwb-family-controls');
+      const label=this.el('label',controls);this.el('span',label,'查找方式');this.modeSelect=this.el('select',label);this.modeSelect.setAttribute('aria-label','查找方式');
+      for(const [value,name]of Object.entries(modes))this.el('option',this.modeSelect,name).value=value;
+      this.modeSelect.value='knowledge';this.modeSelect.onchange=()=>this.invalidate('查找方式已变化，请刷新候选。');
+      this.useFiltersInput=this.check(controls,'沿用当前素材筛选',!!this.entryId);this.useFiltersInput.onchange=()=>this.invalidate();
+      if(this.entryId){
+        const runLabel=this.el('label',controls);this.el('span',runLabel,'采用配额记录');this.runSelect=this.el('select',runLabel);this.runSelect.setAttribute('aria-label','采用配额记录');
+        this.runSelect.onchange=()=>{this.run=undefined;this.invalidate();};
+        this.unlockInput=this.check(controls,'解除此题配额锁定后换题');this.unlockInput.onchange=()=>this.invalidate();
+      }
+      this.button(controls,'刷新候选',()=>this.prepare());
+      this.statusEl=this.el('p',this.contentEl,'正在读取候选条件…','mwb-family-status');this.statusEl.setAttribute('role','status');
+      this.results=this.el('div',this.contentEl,undefined,'mwb-family-results');
+      if(!this.entryId){await this.prepare();return;}
+      let ready=false;
+      await this.action('读取配额记录',async options=>{
+        if(this.view.pendingBlueprintRun){this.run=this.view.pendingBlueprintRun;this.el('option',this.runSelect,'本次尚未保存的配额记录').value='pending';this.runSelect.dataset.unavailable='true';ready=true;}
+        else{
+          const matches=await service.listMatchingBlueprintRuns(clone(this.view.plan),options);
+          if(!options.isCurrent())throw new Error('编排已变化，请重新打开换题窗口');this.matches=matches;
+          if(!matches.length){this.el('option',this.runSelect,'未找到匹配记录：按当前条件换题').value='legacy';this.runSelect.dataset.unavailable='true';ready=true;}
+          else{if(matches.length>1)this.el('option',this.runSelect,'请选择本次采用的配额记录').value='';for(const item of matches)this.el('option',this.runSelect,[item.title||item.path,item.createdAt||''].filter(Boolean).join(' · ')).value=item.path;if(matches.length===1){this.runSelect.value=matches[0].path;ready=true;}}
+        }
+        this.status(ready?'记录已确定，正在准备候选。':'有多份记录匹配，请明确选择后刷新候选。');
+      });
+      if(ready&&!this.closed)await this.prepare();
+    }
+    invalidate(message='条件已变化，请刷新候选。') {this.controller?.abort();this.candidate=null;this.candidateSnapshot=null;this.closePreviews();this.results?.replaceChildren();this.status(message);}
+    async prepare() {
+      await this.action('核对相似候选',async(options,snapshot)=>{
+        this.candidate=null;this.candidateSnapshot=null;this.closePreviews();this.results.replaceChildren();
+        const mode=this.modeSelect.value,filters=this.useFiltersInput.checked?{...clone(this.view.filters),kind:'question'}:{kind:'question'};
+        let candidate;
+        if(this.entryId){
+          const selected=this.runSelect.value;if(!selected)throw new Error('请先选择采用的配额记录');
+          let run=this.run;if(selected!=='pending'&&selected!=='legacy')run=await service.loadBlueprintRun(selected,clone(this.view.plan));
+          if(!options.isCurrent())throw new Error('编排已变化，请重新打开换题窗口');
+          candidate=await service.prepareSimilarityReplacement({plan:clone(this.view.plan),entryId:this.entryId,mode,filters,...(run?{run}:{}),unlock:this.unlockInput.checked},options);
+          this.run=run;
+        }else candidate=await service.findSimilarQuestions({sourceKey:this.sourceKey,mode,filters,excludedKeys:[]},options);
+        if(!options.isCurrent())throw new Error('工作区或查找方式已变化，候选未采用');
+        this.candidate=candidate;this.candidateSnapshot=snapshot;this.visible=30;this.renderCandidates();
+      });
+    }
+    metadata(item) {return [types[item?.questionType]||item?.questionType,item?.difficulty!=null?'难度 '+item.difficulty:'难度未填写',...(item?.tiers||[]),...(item?.methods||[]),...(item?.knowledgeNodes||[])].filter(Boolean).join(' · ');}
+    sourceItem(wrapper) {return this.entryId?core.resolvePlan(this.view.plan,wrapper.index).entries.find(value=>value.entry.entryId===this.entryId)?.item:wrapper.index.items.find(item=>item.key===this.sourceKey);}
+    renderCandidates() {
+      this.closePreviews();this.results.replaceChildren();const wrapper=this.candidate;if(!wrapper)return;
+      const source=this.sourceItem(wrapper);this.el('p',this.results,'参照题：'+(source?.title||'来源待核')+' · '+this.metadata(source));
+      if(this.entryId)this.el('p',this.results,this.run?'将保留原配额行条件与题族上限；成功替换后，保存方案时写出新的配额记录。':'此方案未找到匹配的配额记录；本次按当前条件核对候选，不推断历史配额。','mwb-assembly-muted');
+      const issues=[...new Set((wrapper.issues||[]).map(value=>typeof value==='string'?value:value?.message).filter(Boolean))];
+      if(issues.length){const list=this.el('ul',this.results,undefined,'mwb-similarity-issues');for(const message of issues)this.el('li',list,message);}
+      if(wrapper.status!=='ready'){this.status((wrapper.issues||[]).map(value=>value.message||String(value)).join('；')||'当前条件下不能查找候选。',true);return;}
+      const candidates=wrapper.candidates||[];this.status(candidates.length?`找到 ${candidates.length} 道${modes[this.modeSelect.value]}候选；请核对匹配理由。`:issues.length?issues.join('；'):'没有满足全部条件的候选题。可调整查找方式或筛选条件。');
+      const scope=this.previewScope={owner:new Component(),controller:new AbortController(),closed:false,active:0,queue:[]};this.plugin.addChild?.(scope.owner);
+      for(const candidate of candidates.slice(0,this.visible)){
+        const item=wrapper.index.items.find(value=>value.path===candidate.path&&(value.id||'')===(candidate.id||'')&&value.fingerprint===candidate.fingerprint);if(!item)continue;
+        const card=this.el('article',this.results,undefined,'mwb-family-candidate mwb-similarity-candidate');card.dataset.candidateKey=candidate.key;
+        this.el('h3',card,item.title);this.el('p',card,this.metadata(item));this.el('p',card,item.path,'mwb-assembly-muted');
+        const reasons=(candidate.reasons||[]).filter(value=>typeof value==='string');this.el('p',card,'匹配依据：'+(reasons.join('；')||'暂无可解释的匹配依据'),'mwb-similarity-reasons');
+        const missing=(candidate.missing||[]).filter(value=>typeof value==='string');if(missing.length)this.el('p',card,'信息不足：'+missing.join('；'),'mwb-assembly-muted mwb-similarity-missing');
+        const delta=source?.difficulty!=null&&item.difficulty!=null?item.difficulty-source.difficulty:null;
+        this.el('p',card,delta===null?'难度差异：有题目未填写难度，需人工核对。':delta===0?'难度差异：登记难度相同。':`难度差异：比参照题${delta>0?'高':'低'} ${Math.abs(delta)} 级。`,'mwb-similarity-difficulty');
+        if(this.entryId)this.button(card,'选用此题',()=>this.apply(candidate.key));
+        this.button(card,'打开原文',()=>service.openSource(item.path));
+        const content=this.el('div',card,'正在加载题目…','mwb-typography mwb-family-question');scope.queue.push({item,content});
+      }
+      this.pump(scope);if(candidates.length>this.visible)this.button(this.results,'再显示 30 道',()=>{this.checkWorkspace();if(this.candidate){this.visible+=30;this.renderCandidates();}});this.updateBusy();
+    }
+    pump(scope) {while(!scope.closed&&scope.active<2&&scope.queue.length){const {item,content}=scope.queue.shift();scope.active++;content.replaceChildren();Promise.resolve().then(()=>{if(!scope.closed)return renderMarkdown(body(item.markdown),content,item.path,scope.owner,scope.controller.signal);}).catch(error=>{if(!scope.closed)content.textContent='预览未完成：'+error.message;}).finally(()=>{scope.active--;this.pump(scope);});}}
+    closePreviews() {const scope=this.previewScope;if(!scope)return;scope.closed=true;scope.controller.abort();scope.queue.length=0;this.plugin.removeChild?.(scope.owner);this.previewScope=null;}
+    async apply(key) {
+      const candidate=this.candidate;if(!this.entryId||candidate?.status!=='ready')return;
+      if(!this.current(this.candidateSnapshot)){this.invalidate('编排、目录或查找条件已变化，请刷新候选。');return;}
+      await this.action('核对并替换',async options=>{
+        const isCurrent=()=>options.isCurrent()&&this.candidate===candidate&&this.current(this.candidateSnapshot);
+        const result=await service.applySimilarityReplacement(clone(this.view.plan),candidate,key,{...options,isCurrent});
+        if(!isCurrent())throw new Error('编排已变化，本次替换未应用');
+        this.view.index=result.index;this.view.indexState='ready';this.view.populateFilters();this.view.renderTree();this.view.setPlan(result.plan);this.view.pendingBlueprintRun=result.run||null;
+        this.view.setStatus('已选用候选题。请核对题意与卷内设置。'+(result.run?'保存方案时会同时保存新的配额记录。':'请保存方案。'));this.close();
+      });
+    }
+    onClose() {this.closed=true;this.controller?.abort();this.controller=null;this.closePreviews();const owner=this.lifecycleOwner;this.lifecycleOwner=null;if(owner)this.plugin.removeChild?.(owner);this.candidate=null;this.candidateSnapshot=null;if(this.view.similarityModal===this)this.view.similarityModal=null;this.contentEl.replaceChildren();}
+  };
+};
+
+return module.exports; })();
 const mwbAssemblyView = (() => { const module = {exports:{}};
 'use strict';
 
 // Native Obsidian view. UI state belongs to the workspace; content writes are
 // delegated to explicit service actions. No source Markdown is mutated here.
-module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily,
+module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily,openSimilarity,
   usageService,openUsage,openLibrary,openPresentation}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
@@ -8849,6 +9525,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.app.workspace.requestSaveLayout?.();
     }
     stateChanged() {
+      this.similarityModal?.invalidate('编排已变化，请刷新候选。');
       if(this.presentationModal&&!this.presentationModal.closed)this.presentationModal.fail(new Error('编排已变化，请重新打开逐题投影'));
       this.clearArrangementDrag();
       this.clearSelection('编排已变化，请重新生成候选。');
@@ -9092,6 +9769,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.closed = true;
       this.blueprintModal?.close();
       this.familyModal?.close();
+      this.similarityModal?.close();
       this.usageModal?.close();this.libraryModal?.close();this.presentationModal?.close();
       this.usageGeneration++;
       this.clearArrangementDrag();
@@ -9382,10 +10060,10 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }catch(error){if(!this.closed&&generation===this.usageGeneration){this.usageState='error';this.usageError=errorText(error);}}
       if(!this.closed&&generation===this.usageGeneration)this.renderResults();
     }
-    usageIndex(index=this.index,ledger=this.usageLedger) {
+    usageIndex(index=this.index,ledger=this.usageLedger,now=this.usageNow) {
       if(!usageService||this.usageFilter.mode==='all')return index;
       if(!ledger||this.usageState!=='ready')throw new Error(this.usageState==='loading'?'正在读取使用记录，请稍候':this.usageError||'请先填写班级或课程并刷新使用记录');
-      const eligible=new Set(usageService.filterUsage(index.items,ledger,{context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days}));
+      const eligible=new Set(usageService.filterUsage(index.items,ledger,{context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now}));
       // Keep knowledge nodes for normal knowledge-tag resolution. Filtering the
       // question pool must not change the meaning of a shared knowledge tag.
       return {...index,items:index.items.filter(item=>item.kind==='knowledge'||eligible.has(item))};
@@ -9484,6 +10162,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
     }
     renderResults() {
+      this.similarityModal?.checkWorkspace();
       if(!this.results) return;
       if(this.selectedItem){
         const current=this.index.items.find(item=>item.path===this.selectedItem.path&&item.kind===this.selectedItem.kind&&item.fingerprint===this.selectedItem.fingerprint);
@@ -9496,7 +10175,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const previews=this.beginInlinePreviews('results');
       this.results.replaceChildren();
       let items=[];
-      try{items=core.filterItems(this.usageIndex(),this.filters);}
+      try{
+        items=core.filterItems(this.usageIndex(),this.filters);
+        if(usageService&&this.usageFilter.mode!=='all')items=usageService.filterUsage(items,this.usageLedger,
+          {context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now:this.usageNow});
+      }
       catch(error){this.resultsSummary.textContent='使用筛选未就绪';this.emptyState(this.results,'使用记录待核对',errorText(error));return;}
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
       if(this.filters.familyId&&core.familyGroups){
@@ -9529,6 +10212,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         if(item.kind==='question'&&item.familyState==='classified')this.button(footer,'查看题族',()=>{
           this.filters={kind:'question',query:'',familyId:item.familyId};this.limit=100;if(this.searchInput)this.searchInput.value='';this.populateFilters();this.renderResults();
         },'mwb-assembly-card-family').title='查看题族 '+item.familyId;
+        if(item.kind==='question'&&openSimilarity)this.button(footer,'找相似题',()=>openSimilarity(this,{sourceKey:item.key}),'mwb-assembly-card-similarity').title='按题族、考点或方法查找候选题';
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
@@ -9671,7 +10355,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
             throw new Error('筛选或编排已变化，请重新生成候选');
           sourceCheck.assertCurrent();
           const count=selection.items.length;
-          const next=core.addSelectedQuestions(this.plan,this.usageIndex(latest,usageLedger),this.filters,selection.items);
+          const next=core.addSelectedQuestions(this.plan,this.usageIndex(latest,usageLedger,new Date().toISOString()),this.filters,selection.items);
           this.index=latest;this.indexState='ready';this.selection=null;
           this.selectionNotice=`已将 ${count} 道题加入编排，可在“预览编排”调整顺序和角色。`;
           this.populateFilters();this.renderTree();this.setPlan(next);
@@ -9887,6 +10571,17 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const panel=this.el('details',parent,'mwb-assembly-part-settings');
       this.el('summary',panel,'',entry.kind==='question'?'内容范围与本次分值':'知识小节范围');
       this.el('p',panel,'mwb-assembly-muted','只保存本次编排的选择；启用分值或片段后为 v4 方案，旧方案请另存。');
+      const runChoice=this.el('div',panel);runChoice.hidden=true;
+      const runSelect=this.field(runChoice,'采用配额记录','select');runSelect.dataset.arrangementMutate='true';let runsRead=false;
+      panel.addEventListener('toggle',()=>{
+        if(!panel.open||runsRead||this.pendingBlueprintRun||!service.listMatchingBlueprintRuns)return;runsRead=true;
+        const snapshot=this.plan;
+        void service.listMatchingBlueprintRuns(snapshot,{isCurrent:()=>!this.closed&&panel.isConnected&&this.plan===snapshot}).then(matches=>{
+          if(this.closed||!panel.isConnected||this.plan!==snapshot)return;
+          if(matches.length>1){runChoice.hidden=false;this.el('option',runSelect,'多份配额记录匹配，请选择').value='';
+            for(const match of matches)this.el('option',runSelect,[match.title,match.createdAt,match.path.split('/').pop()].filter(Boolean).join(' · ')).value=match.path;}
+        }).catch(error=>{if(panel.isConnected&&!this.closed)this.setStatus(errorText(error),true);});
+      });
       let total;
       if(entry.kind==='question'){
         total=this.field(panel,'本次总分（可留空）');total.type='number';total.min='0';total.max='1000000';total.step='0.01';
@@ -9925,21 +10620,23 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           if(scored.length&&scored.length!==selected.length)throw new Error('请填写所有已选小问分值，或将小问分值全部留空');
           if(scored.length){fragmentRef.scores=Object.fromEntries(scored.map(choice=>[choice.id,Number(choice.score.value)]));delete patch.score;}
         }
-        await this.applyEntryContent(entry.entryId,patch,row);
+        if(!runChoice.hidden&&!runSelect.value)throw new Error('多份配额记录匹配，请先选择本次采用的记录');
+        await this.applyEntryContent(entry.entryId,patch,row,runSelect.value);
       });apply.dataset.arrangementMutate='true';apply.dataset.boundary=String(status!=='ok'||parsed?.supported&&!parsed.valid);
       if(entry.fragmentRef){
-        const whole=this.button(panel,'恢复整题／整篇',()=>this.applyEntryContent(entry.entryId,{fragmentRef:null,...(total?{score:null}:{})},row));
+        const whole=this.button(panel,'恢复整题／整篇',()=>this.applyEntryContent(entry.entryId,{fragmentRef:null,...(total?{score:null}:{})},row,runSelect.value));
         whole.dataset.arrangementMutate='true';
       }
     }
-    async applyEntryContent(entryId,patch,row) {
+    async applyEntryContent(entryId,patch,row,runPath) {
       if(this.closed||!row.isConnected||this.actionBusy||this.scanBusy)return;
       const plan=this.plan,config=JSON.stringify(this.settings);
       await this.runAction('核对内容范围与分值',async()=>{
-        const result=await service.updateEntryContent(plan,entryId,patch,{config:this.settings,
-          isCurrent:()=>!this.closed&&this.plan===plan&&JSON.stringify(this.settings)===config});
+        const options={config:this.settings,isCurrent:()=>!this.closed&&this.plan===plan&&JSON.stringify(this.settings)===config};
+        const run=this.pendingBlueprintRun||(runPath?await service.loadBlueprintRun(runPath,plan):undefined);
+        const result=await service.updateEntryContent(plan,entryId,patch,{...options,...(run?{run}:{})});
         if(this.closed||this.plan!==plan)return;
-        this.index=result.index;this.indexState='ready';this.setPlan(result.plan);
+        this.index=result.index;this.indexState='ready';this.setPlan(result.plan);this.pendingBlueprintRun=result.run||null;
         this.setStatus('已更新本次内容范围与分值；原题卡保持不变。');
       });
     }
@@ -10066,6 +10763,10 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           const replace=action(actions,'同族换题','family',()=>{if(row.isConnected)openFamily(this,entry.entryId);});
           replace.dataset.arrangementMutate='true';
           replace.title=item?.familyState==='classified'?'选择同族题，保留位置、卷内标题和角色':'需有效 family_id；打开后可查看不能换题的原因';
+        }
+        if(entry.kind==='question'&&openSimilarity){
+          const replace=action(actions,'相似换题','similarity',()=>{if(row.isConnected)openSimilarity(this,{entryId:entry.entryId});});
+          replace.dataset.arrangementMutate='true';replace.title='按题族、考点或方法选择候选，并核对配额与来源';
         }
         const remove=action(actions,entry.kind==='section'?'移除分区标题':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
         remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');
@@ -10749,8 +11450,8 @@ function createExportArchiveService({vault,validatePlan,now = ()=>new Date(),
     if (captured.planSnapshot != null) {
       if (!validatePlan) throw failure('ARCHIVE_PLAN_INVALID','归档方案需要现行校验器');
       captured.planSnapshot=plain(validatePlan(captured.planSnapshot),'方案快照');
-      if (captured.planSnapshot?.schemaVersion !== 3)
-        throw failure('ARCHIVE_PLAN_INVALID','材料归档仅接收校验后的 v3 方案');
+      if (![3,4].includes(captured.planSnapshot?.schemaVersion))
+        throw failure('ARCHIVE_PLAN_INVALID','材料归档仅接收校验后的 v3 或 v4 方案');
     }
     const id=newId();
     if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/.test(id) || ids.has(id))
@@ -10767,7 +11468,7 @@ function createExportArchiveService({vault,validatePlan,now = ()=>new Date(),
     }
     if (captured.compiledPathContext !== undefined) inputSummary.compiledPathContext=captured.compiledPathContext;
     for (const key of ['planSnapshot','sourceMap']) if (captured[key] != null)
-      inputSummary[key]={...descriptor(json(captured[key])),...(key==='planSnapshot' ? {schemaVersion:3} : {})};
+      inputSummary[key]={...descriptor(json(captured[key])),...(key==='planSnapshot' ? {schemaVersion:captured.planSnapshot.schemaVersion} : {})};
     const configuration={};
     for (const key of ['settings','options','runtime']) if (captured[key] !== undefined) configuration[key]=captured[key];
     const archiveInput=archive ? captured : null;
@@ -10849,8 +11550,11 @@ function createExportArchiveService({vault,validatePlan,now = ()=>new Date(),
               inputSummary.sources[index].archivePath=archivePath;
             }
             if (archiveInput.compiledMarkdown !== undefined) await write('compiled.md',archiveInput.compiledMarkdown);
-            for (const key of ['planSnapshot','sourceMap']) if (archiveInput[key] != null)
-              await write(key==='planSnapshot' ? 'plan.v3.json' : 'source-map.json',json(archiveInput[key]));
+            for (const key of ['planSnapshot','sourceMap']) if (archiveInput[key] != null) {
+              const relative=key==='planSnapshot' ? 'plan.v'+archiveInput.planSnapshot.schemaVersion+'.json' : 'source-map.json';
+              await write(relative,json(archiveInput[key]));
+              inputSummary[key].archivePath=relative;
+            }
             await write('input.json',json({...inputSummary,...configuration,origin}));
             const blobs=new Map(),writtenHashes=new Set();
             for (const resource of resources?.resources || []) {
@@ -13204,7 +13908,8 @@ module.exports = class MathsemblePlugin extends Plugin {
     });
     const blueprintEngine = mwbAssemblyBlueprint.createBlueprintEngine({core:mwbAssemblyCore});
     const familyEngine = mwbAssemblyFamily.createFamilyEngine({core:mwbAssemblyCore});
-    const assemblyService = mwbAssemblyService(this, {core:mwbAssemblyCore,blueprintEngine,familyEngine,
+    const similarityEngine = mwbAssemblySimilarity.createSimilarityEngine({core:mwbAssemblyCore});
+    const assemblyService = mwbAssemblyService(this, {core:mwbAssemblyCore,blueprintEngine,familyEngine,similarityEngine,
       compileMarkdown:mwbAssemblyMarkdown.compileMarkdown,
       collectMediaDependencies:mwbAssemblyMarkdown.collectMediaDependencies, parseYaml,
       previewFile:async (file, options = {}) => {
@@ -13231,7 +13936,14 @@ module.exports = class MathsemblePlugin extends Plugin {
         mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
     const FamilyModal = mwbAssemblyFamilyUi({Modal,Component,core:mwbAssemblyCore,service:assemblyService,
       renderMarkdown:(markdown,container,path,owner,signal)=>mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
+    const SimilarityModal = mwbAssemblySimilarityUi({Modal,Component,core:mwbAssemblyCore,service:assemblyService,
+      renderMarkdown:(markdown,container,path,owner,signal)=>mwbRenderMarkdown(this.app,markdown,container,path,owner,undefined,signal)});
     const AssemblyView = mwbAssemblyView({ItemView,Component,Notice,core:mwbAssemblyCore,usageService,
+      openSimilarity:(view,target)=>{
+        if(view.closed||view.actionBusy||view.scanBusy)return;
+        view.similarityModal?.close();
+        view.similarityModal=new SimilarityModal(this.app,this,view,target);view.similarityModal.open();
+      },
       openUsage:view=>{
         if(view.closed||view.actionBusy||view.scanBusy||view.usageModal&&!view.usageModal.closed)return;
         view.usageModal=new UsageModal(this.app,this,view,{context:view.usageContext(),onChanged:()=>view.refreshUsage()});view.usageModal.open();

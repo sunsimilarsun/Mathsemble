@@ -29,13 +29,21 @@ test('library audit: import conflict uses the same trim-only ID identity as core
 });
 test('library audit: undo must preserve edits observed during the final source read',async()=>{
   const f=fixture(),batch=await stage(f);await f.service.commitBatch(batch.batchId,{confirmed:true});const target=batch.files[0].targetPath;let reads=0,edited=false;
-  f.control.read=node=>{if(node.path===target&&++reads===3){edited=true;node.bytes=Buffer.from('用户刚保存的新正文');f.emit('modify',node);}};
+  f.control.read=node=>{if(node.path===target&&++reads===4){edited=true;node.bytes=Buffer.from('用户刚保存的新正文');f.emit('modify',node);}};
   const result=await f.service.undoBatch(batch.batchId,{confirmed:true});assert(edited,'race fixture did not inject its edit');
   assert(f.nodes.has(target),'undo deleted a user edit observed before delete');assert.equal(f.nodes.get(target).bytes.toString(),'用户刚保存的新正文');assert(!f.deleted.includes(target));assert.equal(result.status,'partial');
 });
 test('library audit: undo must preserve a replacement file swapped during its last read',async()=>{
   const f=fixture(),batch=await stage(f);await f.service.commitBatch(batch.batchId,{confirmed:true});const target=batch.files[0].targetPath;let reads=0,replaced=false;
-  f.control.read=node=>{if(node.path===target&&++reads===3){replaced=true;f.file(target,'用户新建的同名文件');}};
+  f.control.read=node=>{if(node.path===target&&++reads===4){replaced=true;f.file(target,'用户新建的同名文件');}};
   const result=await f.service.undoBatch(batch.batchId,{confirmed:true});assert(replaced,'race fixture did not replace its target');
   assert(f.nodes.has(target),'undo deleted a replacement TFile');assert.equal(f.nodes.get(target).bytes.toString(),'用户新建的同名文件');assert(!f.deleted.includes(target));assert.equal(result.status,'partial');
+});
+test('library audit: uncaptured relative dependencies inside SVG cannot claim a complete transfer',async()=>{
+  const f=fixture();f.file('题库/A.md',question('A')+'\n\n![图](assets/diagram.svg)');
+  f.file('题库/assets/diagram.svg','<svg xmlns="http://www.w3.org/2000/svg"><image href="child.png" width="10" height="10"/></svg>');f.file('题库/assets/child.png','image bytes');
+  const result=await f.service.exportTransfer({sourcePaths:['题库/A.md']});
+  const childIncluded=result.package.files.some(file=>file.path==='题库/assets/child.png');
+  assert(childIncluded||result.status==='partial','package omitted an SVG dependency while claiming complete');
+  if(!childIncluded)assert(result.issues.some(issue=>/svg|dependency/.test(issue.code)),'missing nested-media limitation was not reported');
 });

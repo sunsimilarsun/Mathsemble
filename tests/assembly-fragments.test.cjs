@@ -67,8 +67,13 @@ test('selected reference images and footnotes cannot silently lose definitions s
   const item={kind:'question',markdown:region('stem','','共用题干')+'\n\n'+region('part','p-a','![图][g]\n\n文字[^n]')+'\n\n'+region('part','p-b','另一问\n\n[g]: image.png\n[^n]: 必需脚注')};
   assert.throws(()=>fragments.resolveFragment(item,ref()),/缺少图片、链接或脚注定义/);
   const both=fragments.resolveFragment(item,ref(['p-a','p-b']));assert.match(both.markdown,/image.png/);
-  item.markdown=item.markdown.replace('共用题干','共用题干\n\n[g]: image.png\n[^n]: 必需脚注');
+  item.markdown=item.markdown.replace('另一问\n\n[g]: image.png\n[^n]: 必需脚注','另一问').replace('共用题干','共用题干\n\n[g]: image.png\n[^n]: 必需脚注');
   assert.match(fragments.resolveFragment(item,ref()).markdown,/image.png/);
+});
+test('duplicate definitions cannot change image meaning when an earlier part is omitted',()=>{
+  const item={kind:'question',markdown:region('stem','','共用')+'\n\n'+region('part','p-a','甲问\n\n[g]: first.png')+'\n\n'+
+    region('part','p-b','![图][g]\n\n[g]: second.png')};
+  assert.throws(()=>fragments.resolveFragment(item,ref(['p-b'])),error=>error.code==='FRAGMENT_DEPENDENCY_AMBIGUOUS');
 });
 test('code and math reference syntax are literal, while collapsed and shortcut references need closure',()=>{
   const item={kind:'question',markdown:region('stem','','共用')+'\n\n'+region('part','p-a','`![x][g]`\n\n$$[x][g]$$\n\n```md\n![x][g]\n```')+'\n\n'+region('part','p-b','另一问\n\n[g]: image.png')};
@@ -77,6 +82,18 @@ test('code and math reference syntax are literal, while collapsed and shortcut r
     const withUse={...item,markdown:item.markdown.replace('`![x][g]`',usage)};
     assert.throws(()=>fragments.resolveFragment(withUse,ref()),/缺少图片/);
   }
+});
+test('resource dollars and backticks cannot consume following real anchors or hide missing reference dependencies',()=>{
+  for(const url of ['a$b.png','a`b.png']) {
+    const item={kind:'question',markdown:region('stem','','共用 ![直接图]('+url+')\n\n$z$')+'\n\n'+
+      region('part','p-a','![引用图][g]\n\n$x$')+'\n\n'+region('part','p-b','另问\n\n[g]: img.png')};
+    assert.deepEqual(fragments.listFragments(item).fragments.map(p=>p.id),['p-a','p-b']);
+    assert.throws(()=>fragments.resolveFragment(item,ref()),/缺少图片/);
+  }
+});
+test('multiline Markdown link titles cannot inject structural anchors',()=>{
+  const fake='[链接](https://example.test "\n<!-- mathsemble:part fake -->\n假的小问\n<!-- mathsemble:end -->\n")';
+  assert.equal(fragments.listFragments({kind:'question',markdown:fake}).supported,false);
 });
 test('reference validation rejects getters, symbols, sparse arrays, duplicate and dangerous IDs',()=>{
   const getter={kind:'question-part',get ids(){throw Error('getter executed');}};
@@ -111,6 +128,12 @@ test('v1/v2/v3 migrate in memory without new required entry fields or mutation',
     deepFreeze(raw);const before=JSON.stringify(raw),next=core.validatePlan(raw);
     assert.equal(next.schemaVersion,3);assert.equal(JSON.stringify(raw),before);assert.deepEqual(Object.keys(next.entries[0]),Object.keys(plan.entries[0]));
   }
+});
+test('v4 entries reject sparse arrays and symbol extensions instead of silently losing them in JSON',()=>{
+  const {plan}=planFor(question()),scored=core.updateEntry(plan,plan.entries[0].entryId,{score:1});
+  const sparse={...scored,entries:Array(1)};assert.throws(()=>core.validatePlan(sparse),/不允许的属性/);
+  const symbols={...scored,entries:[...scored.entries]};symbols.entries[Symbol('extra')]=1;
+  assert.throws(()=>core.validatePlan(symbols),/不允许的属性/);
 });
 test('part scoring derives entry total, rejects contradictions and recalculates selected-score edits',()=>{
   const {plan}=planFor(question()),id=plan.entries[0].entryId;
