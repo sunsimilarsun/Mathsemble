@@ -35,7 +35,9 @@ async function browserCases(sources,css) {
   const ok=(value,message)=>{if(!value)throw Error(message);};
   const check=async(name,fn)=>{try{await fn();results.push({name,ok:true});}catch(error){results.push({name,ok:false,error:String(error.stack||error)});}};
   const pause=()=>new Promise(resolve=>setTimeout(resolve,0));
-  const load=source=>{const module={exports:{}};new Function('module',source)(module);return module.exports;};
+  let fragmentApi;
+  const load=source=>{const module={exports:{}};new Function('module','MWB_ASSEMBLY_FRAGMENTS',source)(module,fragmentApi);return module.exports;};
+  fragmentApi=load(sources.fragments);
   // An embedded wide document gives a fixed, wide viewport independently of
   // the headless runner's initial window. Only the plugin pane gets narrower.
   const frame=document.createElement('iframe');frame.style.cssText='width:1440px;height:920px;border:0;';
@@ -312,7 +314,7 @@ async function browserCases(sources,css) {
 
 test('assembly UI supports compact editing, filter recovery and container-width navigation',async t=>{
   if(!chrome){if(process.env.CI)throw Error('Chrome is required for assembly UI checks');t.skip('Set CHROME_PATH');return;}
-  const sources={core:fs.readFileSync(path.join(root,'src/assembly-core.cjs'),'utf8'),view:fs.readFileSync(path.join(root,'src/assembly-view.cjs'),'utf8')};
+  const sources={fragments:fs.readFileSync(path.join(root,'src/assembly-fragments.cjs'),'utf8'),core:fs.readFileSync(path.join(root,'src/assembly-core.cjs'),'utf8'),view:fs.readFileSync(path.join(root,'src/assembly-view.cjs'),'utf8')};
   const css=hostCss+fs.readFileSync(path.join(root,'styles/assembly.css'),'utf8');
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mathsemble-assembly-layout-'));
   try {

@@ -95,7 +95,7 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
     }
     options(name) {
       const items=(this.view.index?.items||[]).filter(item=>item.kind==='question');
-      const values=items.flatMap(item=>name==='tier'?item.tiers:name==='method'?item.methods:name==='knowledge'?item.knowledgeNodes:[item[name]]).filter(value=>value!==undefined&&value!==null&&value!=='');
+      const values=items.flatMap(item=>name==='tier'?item.tiers:name==='method'?item.methods.map(value=>core.parseKnowledgeRef(value).target):name==='knowledge'?item.knowledgeNodes:[item[name]]).filter(value=>value!==undefined&&value!==null&&value!=='');
       if(name==='questionType')values.push(...Object.keys(types));
       if(name==='difficulty')values.push(1,2,3,4,5);
       return [...new Set(values.map(String))].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}));
@@ -103,8 +103,9 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
     filter(parent,row,name,label) {
       const input=this.field(parent,label,'select');input.multiple=true;input.size=3;input.dataset.filter=name;
       const selected=Array.isArray(row.filters[name])?row.filters[name]:row.filters[name]?[row.filters[name]]:[];
-      const values=[...new Set([...this.options(name),...selected.map(String)])];
-      for(const value of values){const option=this.el('option',input,name==='questionType'?types[value]||value:value);option.value=value;option.selected=selected.map(String).includes(value);}
+      const selectedValues=new Set(selected.map(value=>name==='method'?core.parseKnowledgeRef(value).target:String(value)));
+      const values=[...new Set([...this.options(name),...selectedValues])];
+      for(const value of values){const option=this.el('option',input,name==='questionType'?types[value]||value:value);option.value=value;option.selected=selectedValues.has(value);}
       input.onchange=()=>{row.filters[name]=[...input.selectedOptions].map(option=>name==='difficulty'?Number(option.value):option.value);this.changed();};
       return input;
     }
@@ -125,9 +126,13 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
         for(const [key,name] of [['subject','学科'],['knowledge','知识点'],['method','方法'],['role','教学角色'],['source','来源']])this.filter(extra,row,key,name);
         const fixed=this.el('div',panel,undefined,'mwb-blueprint-toolbar');
         const fromPlan=this.field(fixed,'将编排中的题目计入此行','select');this.el('option',fromPlan,'选择已有题目').value='';
-        for(const entry of this.view.plan.entries.filter(entry=>entry.kind==='question'))this.el('option',fromPlan,entry.title||entry.sourcePath).value=entry.entryId;
+        for(const entry of this.view.plan.entries.filter(entry=>entry.kind==='question')){
+          const option=this.el('option',fromPlan,(entry.title||entry.sourcePath)+(entry.fragmentRef?'（只选小问，须先恢复整题）':''));
+          option.value=entry.entryId;option.disabled=!!entry.fragmentRef;
+        }
         this.button(fixed,'固定到此行',()=>{
           const entry=this.view.plan.entries.find(entry=>entry.entryId===fromPlan.value);if(!entry){this.status('先选择编排中的题目。',true);return;}
+          if(entry.fragmentRef){this.status('已选小问不能充抵整题配额，请先恢复整题。',true);return;}
           const slots=Array.from({length:Math.min(1000,Math.max(0,row.count))},(_,i)=>row.rowId+':'+(i+1));
           const slotId=slots.find(id=>!this.locks.some(lock=>lock.slotId===id));
           if(!slotId){this.status('该行已无空余锁定位置。',true);return;}
@@ -146,7 +151,7 @@ module.exports = function createBlueprintModal({Modal,Component,Notice,core,engi
       await this.action('按配额生成',async options=>{
         if(redraw)this.seed=uid();
         const value=await service.generateBlueprintCandidate({plan:clone(this.view.plan),blueprint:clone(this.blueprint),locks:clone(this.locks),excludedKeys:[],seed:this.seed},options);
-        if(this.closed)return;this.candidate=value;this.blueprint=value.blueprint||this.blueprint;this.visible=50;this.renderCandidate();
+        if(this.closed)return;this.candidate=value;this.visible=50;this.renderCandidate();
       });
     }
     updateApply() {if(this.applyButton){this.applyButton.dataset.unavailable=String(this.candidate?.allocation?.status!=='complete');this.applyButton.disabled=this.busy||this.applyButton.dataset.unavailable==='true';}}

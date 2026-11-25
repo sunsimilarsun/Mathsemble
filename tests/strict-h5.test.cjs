@@ -5,6 +5,7 @@ const source=fs.readFileSync(path.resolve(__dirname,'../main.js'),'utf8');
 const stub=`const module={exports:{}};const stub={Plugin:class{},Modal:class{constructor(app){this.app=app;}},Notice:class{},MarkdownRenderer:{},MarkdownView:class{},finishRenderMath:()=>Promise.resolve(),renderMath:()=>{throw Error('not Obsidian');}};function require(n){return n==='obsidian'?stub:{};}`;
 const load=stub+'\n'+source+'\nglobalThis.h5={mwbHandoutQuestionPlan,mwbApplyHandoutQuestions,mwbQuestionTitle,mwbQuestionHeadingEdit,mwbWrapSingleQuestion,handoutPlan,studentSpacePlan,mwbTeacherMeasurementPlan,injectSpaceNodes,exportHtml,PreviewModal,paginate:paginatePreviewDocument};globalThis.mockObsidian=stub;';
 const ctx={console,Buffer};vm.runInNewContext(load,ctx);const a=ctx.h5;
+const setextSources=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/strict-h5-setext-sources.json'),'utf8'));
 const named=['例1','例一','例题１','变式1','变式一','练习1','练习题2','检测1','检测题3','题1','第1题','例1 二次函数','【例1】 标题'];
 // 8d3cea5 generalized the original question-only policy to every top-level H5.
 // Labels still support legacy diagnostics; they no longer decide block scope.
@@ -55,6 +56,47 @@ test('strict H5: H1-H5 and setext close a block, H5 starts the next, and empty b
  assert.equal(untitled.groups.length,1);assert.equal(untitled.errors.length,0);
  assert.equal(untitled.warnings[0].code,'empty-block-title');
 });
+test('strict H5: multiline metadata paragraphs are not Obsidian Setext headings in any edition',()=>{
+ const fixture=setextSources.find(f=>f.name==='six-multiline-metadata-blocks');
+ const plan=a.mwbHandoutQuestionPlan(fixture.source);
+ assert.equal(plan.headings.length,fixture.headingCount);
+ assert.equal(plan.groups.length,fixture.groupCount);
+ assert.equal(plan.errors.length,0);
+ assert.deepEqual(Array.from(plan.headings,h=>h.title),['Algebra review',...Array.from({length:6},(_,i)=>'Review '+(i+1))]);
+ for(const mode of ['document','student','teacher']){
+  const projected=a.handoutPlan(plan.markdown,mode).markdown;
+  assert.equal((projected.match(/data-mwb-heading-token=/g)||[]).length,7,mode);
+  assert.equal((projected.match(/^reason: Example \d\.$/gm)||[]).length,6,mode+': metadata must stay ordinary text');
+  assert.doesNotMatch(projected,/^(?:tags:|level:|reason:).*data-mwb-heading-token/m,mode);
+  assert.equal(projected.replace(/<span data-mwb-heading-token="[^"]+" style="display:none" aria-hidden="true"><\/span> /g,''),fixture.source,mode+': only heading markers may be added');
+ }
+});
+test('strict H5: multiline dash/equal underlines remain inside their current block',()=>{
+ for(const fixture of setextSources.filter(f=>f.name.startsWith('multiline-'))){
+  const plan=a.mwbHandoutQuestionPlan(fixture.source);
+  const next=fixture.source.split('\n').indexOf('##### Example 2');
+  assert.equal(plan.headings.length,fixture.headingCount,fixture.name);
+  assert.equal(plan.groups.length,fixture.groupCount,fixture.name);
+  assert.equal(plan.groups[0].end,next,fixture.name);
+  assert.deepEqual(Array.from(plan.headings,h=>h.level),[5,5],fixture.name);
+  assert.equal(plan.markdown.split('\n').length,fixture.source.split('\n').length,fixture.name);
+  assert.doesNotMatch(plan.markdown,/^Second paragraph line.*data-mwb-heading-token/m,fixture.name);
+ }
+});
+test('strict H5: a single-line Setext title immediately after a horizontal rule keeps its exact source boundary',()=>{
+ const fixture=setextSources.find(f=>f.name==='single-line-setext-after-horizontal-rule');
+ for(const underline of ['===','---']){
+  const source=fixture.source.replace('===',underline),plan=a.mwbHandoutQuestionPlan(source);
+  const titleLine=source.split('\n').indexOf('Summary');
+  assert.equal(plan.headings.length,2,underline);
+  assert.equal(plan.headings[1].title,'Summary',underline);
+  assert.equal(plan.headings[1].index,titleLine,underline);
+  assert.equal(plan.headings[1].injectionLine,titleLine,underline);
+  assert.equal(plan.headings[1].level,underline[0]==='='?1:2,underline);
+  assert.equal(plan.groups[0].end,titleLine,underline);
+  assert.match(plan.markdown,/\n---\nSummary <span data-mwb-heading-token=/,underline);
+ }
+});
 test('strict H5: legacy labels/orphan answers warn; repeated labels have distinct source IDs',()=>{
  const p=a.mwbHandoutQuestionPlan('**例1**\n题干\n\n> [!answer]- 解\n> a\n\n##### 例1\n正文\n\n##### 例1\n正文');
  assert.equal(p.groups.length,2);assert.notEqual(p.groups[0].id,p.groups[1].id);
@@ -81,13 +123,13 @@ test('strict H5 real Chromium mapping and print geometry',async t=>{
  const css=fs.readFileSync(path.resolve(__dirname,'../styles.css'),'utf8');
  const fixtures=fs.existsSync(path.join(__dirname,'fixtures/strict-h5-commonmark.json'))?JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/strict-h5-commonmark.json'),'utf8')):[];
  const math=fs.readFileSync(path.join(__dirname,'fixtures/group-mathjax.svg.html'),'utf8');
- const script=load+'\n('+browserCases.toString()+')('+JSON.stringify(fixtures)+','+JSON.stringify(math)+');';
+ const script=load+'\n('+browserCases.toString()+')('+JSON.stringify(fixtures)+','+JSON.stringify(math)+','+JSON.stringify(setextSources)+');';
  const html='<!doctype html><html><head><meta charset="utf-8"><style>'+css+'</style></head><body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>';
  const input=path.join(dir,'test.html');fs.writeFileSync(input,html);
  try{for(const r of await runChromeDocument(chrome,input,path.join(dir,'profile')))await t.test(r.name,()=>assert.equal(r.ok,true,r.error||''));}
  finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
-async function browserCases(fixtures,math){
+async function browserCases(fixtures,math,setextSources){
  const out=[],a=h5;
  const check=async(name,f)=>{try{await f();out.push({name,ok:true});}catch(e){out.push({name,ok:false,error:e.stack});}};
  const ok=(x,m)=>{if(!x)throw Error(m);};
@@ -189,6 +231,44 @@ async function browserCases(fixtures,math){
   for(const reverse of [false,true]){
    const root=raw();if(reverse)root.prepend(root.lastElementChild.previousElementSibling);else root.appendChild(document.createElement('h4'));
    let failed=false;try{a.mwbApplyHandoutQuestions(root,plan);}catch(e){failed=true;}ok(failed,'bad header mapping accepted');
+  }
+ });
+ for(const mode of ['document','student','teacher'])await check('multiline metadata maps safely without H5 blocks in '+mode,()=>{
+  const fixture=setextSources.find(f=>f.name==='six-multiline-metadata-blocks');
+  const metadataPlan=a.mwbHandoutQuestionPlan(fixture.source);
+  const projected=a.handoutPlan(metadataPlan.markdown,mode).markdown;
+  const root=document.createElement('div');
+  // Controlled DOM matching the observed Obsidian blocks: ATX headings,
+  // paragraphs, and HRs. This is not a replacement Markdown parser.
+  for(const block of projected.split(/\n\n+/)){
+   const heading=/^(#{1,6}) (.*)$/.exec(block);
+   if(heading){const node=document.createElement('h'+heading[1].length);node.innerHTML=heading[2];root.appendChild(node);}
+   else if(block.startsWith('---\n')){
+    root.appendChild(document.createElement('hr'));
+    const node=document.createElement('p');node.innerHTML=block.split('\n').slice(1,-1).join('\n');root.appendChild(node);
+    root.appendChild(document.createElement('hr'));
+   }else{const node=document.createElement('p');node.textContent=block;root.appendChild(node);}
+  }
+  const originalNodes=[...root.children],originalText=root.textContent;
+  ok(root.querySelectorAll('h1,h2,h3,h4,h5').length===7,'controlled host headings changed');
+  ok(a.mwbApplyHandoutQuestions(root,metadataPlan,'synthetic.md')===0,'metadata became protected blocks');
+  ok(root.getAttribute('data-mwb-question-policy')==='strict-h5','empty block set bypassed policy');
+  ok(!root.querySelector('[data-mwb-heading-token]'),'mapping tokens remain');
+  ok(root.textContent===originalText,'metadata content changed');
+  ok(originalNodes.every((node,index)=>root.children[index]===node),'ordinary content moved or replaced');
+ });
+ await check('unknown H2 still aborts without H5 blocks before any DOM mutation',()=>{
+  for(const source of ['Ordinary paragraph.','## Known title\n\nOrdinary paragraph.']){
+   const noBlocks=a.mwbHandoutQuestionPlan(source),root=document.createElement('div');
+   for(const heading of noBlocks.headings){
+    const node=document.createElement('h'+heading.level);node.innerHTML=`<span data-mwb-heading-token="${heading.token}"></span>${heading.title}`;root.appendChild(node);
+   }
+   root.appendChild(document.createElement('p')).textContent='Ordinary paragraph.';
+   root.appendChild(document.createElement('h2')).textContent='Unexpected title';
+   const before=root.innerHTML;let error;
+   try{a.mwbApplyHandoutQuestions(root,noBlocks);}catch(e){error=e;}
+   ok(error&&/无法映射的顶层标题/.test(error.message),'zero H5 blocks bypassed unknown heading validation');
+   ok(root.innerHTML===before,'failed mapping changed user content');
   }
  });
  for(const fixture of fixtures)await check('CommonMark fixture: '+fixture.name,()=>{

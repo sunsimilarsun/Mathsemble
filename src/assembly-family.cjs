@@ -3,6 +3,7 @@
 // Pure same-family replacement. Fresh source reads, strong digests, recovered
 // blueprint records and persistence belong to the service, never this module.
 const ALGORITHM='family-replacement-v1';
+const CONSTRAINED_ALGORITHM='constrained-replacement-v1';
 const FILTERS=new Set(['kind','query','subject','questionType','difficulty','tier','role','method','source','knowledge','familyId','familyState']);
 const forbidden=new Set(['__proto__','prototype','constructor']);
 const compare=(a,b)=>a<b?-1:a>b?1:0;
@@ -43,7 +44,9 @@ const sourceOf=item=>({sourceId:item.id||'',sourcePath:item.path,sourceFingerpri
 function createFamilyEngine({core}={}) {
   if(!core||['validatePlan','resolvePlan','filterItems','normalizeFamilyMetadata','updateEntry'].some(name=>typeof core[name]!=='function'))
     throw new TypeError('题族换题引擎需要现行 assembly core');
-  function prepareReplacement({index,plan,entryId,filters={},rowFilters={},maxPerFamily=null,locked=false}) {
+  // Both candidate strategies share identity, quota, locking and source checks.
+  // Only the explicit same-family strategy requires a classified source family.
+  function prepare({index,plan,entryId,filters={},rowFilters={},maxPerFamily=null,locked=false},sameFamily) {
     const current=core.validatePlan(jsonData(plan,'组题方案')),currentFilters=filtersOf(filters),requiredFilters=filtersOf(rowFilters);
     if(typeof entryId!=='string'||!entryId.trim()||entryId.length>512)throw error('FAMILY_INVALID','待换编排项 ID 无效');
     if(typeof locked!=='boolean'||maxPerFamily!==null&&(!Number.isSafeInteger(maxPerFamily)||maxPerFamily<1||maxPerFamily>1000))
@@ -52,6 +55,7 @@ function createFamilyEngine({core}={}) {
     const conflict=(code,message,extra={})=>({status:'conflict',candidates:[],issues:[issue(code,message,{entryId,...extra})]});
     const entry=current.entries.find(value=>value.entryId===entryId);
     if(!entry||entry.kind!=='question')return conflict('FAMILY_TARGET_INVALID','只能替换当前方案中的题目');
+    if(entry.fragmentRef)return conflict('FAMILY_FRAGMENT_SELECTED','此项选用了稳定小问；请先切回整题再换题，避免把片段身份套用到另一道题');
     if(locked)return conflict('FAMILY_LOCKED','请先显式解除该题的锁定再换题');
     const resolved=core.resolvePlan(current,index),target=resolved.entries.find(value=>value.entry.entryId===entryId);
     const ids=new Map(),paths=new Map();
@@ -59,7 +63,8 @@ function createFamilyEngine({core}={}) {
     const safe=item=>item?.kind==='question'&&!item.identityConflict&&paths.get(item.path)===1&&(!item.id||ids.get(item.id)===1);
     if(target.status!=='ok'||!safe(target.item))return conflict('FAMILY_SOURCE_CHANGED','待换题来源缺失、冲突或已变化，请先核对来源',{sourceStatus:target.status});
     const family=core.normalizeFamilyMetadata(target.item.metadata);
-    if(!family.familyValid||!family.familyId)return conflict('FAMILY_UNKNOWN','待换题未分类或题族字段无效，不能推断同族关系');
+    if(sameFamily&&(!family.familyValid||!family.familyId))return conflict('FAMILY_UNKNOWN','待换题未分类或题族字段无效，不能推断同族关系');
+    if(!family.familyValid)return conflict('FAMILY_FIELD_INVALID','待换题的题族字段无效，请先核对原文');
     const usedIds=new Set(),usedPaths=new Set(),counts=new Map(),familySources=[];
     for(const value of resolved.entries) {
       if(value.entry.entryId===entryId)continue;
@@ -75,9 +80,10 @@ function createFamilyEngine({core}={}) {
       }
     }
     if(maxPerFamily!==null) {
-      const withTarget=new Map(counts);withTarget.set(family.familyId,(withTarget.get(family.familyId)||0)+1);
+      const withTarget=new Map(counts);
+      if(sameFamily)withTarget.set(family.familyId,(withTarget.get(family.familyId)||0)+1);
       for(const [familyId,count]of withTarget)if(count>maxPerFamily)
-        return conflict('FAMILY_LIMIT','整个方案已超过题族上限，同族换题不能放宽约束',{familyId,count,limit:maxPerFamily});
+        return conflict('FAMILY_LIMIT','整个方案已超过题族上限，换题不能放宽约束',{familyId,count,limit:maxPerFamily});
     }
     // Evaluate both sets against the FULL index: filtering away knowledge notes
     // first would change resolved/shared-tag semantics. Same fields remain AND.
@@ -87,28 +93,34 @@ function createFamilyEngine({core}={}) {
       if(!safe(item)||identity(item)===identity(target.item)||usedPaths.has(item.path)||item.id&&usedIds.has(item.id)||
           !visible.has(item)||!required.has(item))continue;
       const other=core.normalizeFamilyMetadata(item.metadata);
-      if(!other.familyValid||other.familyId!==family.familyId)continue;
+      if(!other.familyValid||sameFamily&&other.familyId!==family.familyId)continue;
+      // The target was removed from counts above. A cross-family candidate now
+      // consumes one slot in its own family; unknown families stay independent.
+      if(maxPerFamily!==null&&other.familyId&&(counts.get(other.familyId)||0)+1>maxPerFamily)continue;
       candidates.push({key:identity(item),id:item.id||'',path:item.path,fingerprint:item.fingerprint,title:item.title,role:item.role,
         familyId:other.familyId,subject:item.subject,questionType:item.questionType,difficulty:item.difficulty,tiers:[...(item.tiers||[])]});
     }
     candidates.sort((a,b)=>compare(a.key,b.key)||compare(a.path,b.path));
-    const context=JSON.stringify({algorithmVersion:ALGORITHM,plan:current,entryId,target:{...sourceOf(target.item),familyId:family.familyId},
+    const context=JSON.stringify({algorithmVersion:sameFamily?ALGORITHM:CONSTRAINED_ALGORITHM,plan:current,entryId,target:{...sourceOf(target.item),familyId:family.familyId},
       filters:currentFilters,rowFilters:requiredFilters,maxPerFamily,locked,candidates,
       familySources:familySources.sort((a,b)=>compare(a.entryId,b.entryId))});
-    return {status:'ready',candidates,context,issues:candidates.length?[]:[issue('FAMILY_NO_CANDIDATES','没有同时满足当前筛选、原配额行和同族条件的替代题',{entryId,familyId:family.familyId})]};
+    return {status:'ready',candidates,context,issues:candidates.length?[]:[issue(sameFamily?'FAMILY_NO_CANDIDATES':'REPLACEMENT_NO_CANDIDATES',
+      sameFamily?'没有同时满足当前筛选、原配额行和同族条件的替代题':'没有同时满足当前筛选、原配额行与题族上限的替代题',{entryId,familyId:family.familyId})]};
   }
-  function applyReplacement({freshIndex,plan,entryId,candidateKey,expectedContext,filters={},rowFilters={},maxPerFamily=null,locked=false}) {
+  function apply({freshIndex,plan,entryId,candidateKey,expectedContext,filters={},rowFilters={},maxPerFamily=null,locked=false},sameFamily) {
     if(typeof candidateKey!=='string'||!candidateKey||typeof expectedContext!=='string')throw error('FAMILY_INVALID','换题候选或上下文无效');
-    const prepared=prepareReplacement({index:freshIndex,plan,entryId,filters,rowFilters,maxPerFamily,locked});
+    const prepared=prepare({index:freshIndex,plan,entryId,filters,rowFilters,maxPerFamily,locked},sameFamily);
     if(prepared.status!=='ready'||prepared.context!==expectedContext)
       throw error('FAMILY_STALE','换题来源、方案或约束已变化，请重新选择',prepared.issues);
     const candidate=prepared.candidates.find(item=>item.key===candidateKey);
-    if(!candidate)throw error('FAMILY_STALE','替代题不在当前受约束的同族候选中');
+    if(!candidate)throw error('FAMILY_STALE','替代题不在当前受约束的候选中');
     const current=core.validatePlan(plan),entry=current.entries.find(value=>value.entryId===entryId);
     const previous={sourceId:entry.sourceId,sourcePath:entry.sourcePath,sourceFingerprint:entry.sourceFingerprint},next=sourceOf(candidate);
     return {plan:core.updateEntry(current,entryId,next),replacement:{entryId,previous,next}};
   }
-  return {prepareReplacement,applyReplacement,algorithmVersion:ALGORITHM};
+  return {prepareReplacement:input=>prepare(input,true),applyReplacement:input=>apply(input,true),
+    prepareConstrainedReplacement:input=>prepare(input,false),applyConstrainedReplacement:input=>apply(input,false),
+    algorithmVersion:ALGORITHM,constrainedAlgorithmVersion:CONSTRAINED_ALGORITHM};
 }
 
 module.exports={createFamilyEngine};

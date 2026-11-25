@@ -63,7 +63,7 @@
 
 - `sources/0001.md` 等：捕获的原 Markdown，保留 BOM、CRLF 等原字符串内容；`inputs.sources[].archivePath` 对应原路径，`textUtf8Sha256` 明确表示该字符串的 UTF-8 摘要。
 - `compiled.md`、`source-map.json`：从编排生成的完整正文及来源映射，适用时保存。
-- `plan.v3.json`：经现行校验器确认的 v3 方案快照；不向旧方案增加归档字段。
+- `plan.v3.json` 或 `plan.v4.json`：经现行校验器确认的方案快照，文件名与清单中的 `schemaVersion` 使用实际格式；v4 保留卷内分值和稳定片段引用，不降级或丢字段。不向原方案增加归档字段，也不覆盖原方案；旧 v3 归档格式保持。
 - `media/<摘要>.bin`：去重后的媒体字节；通过资源清单的 `mime`、`localPath`／脱敏 URL、`representation` 和 `archivePath` 辨认来源与表示形式。
 - `artifacts/0001.pdf`、`.html` 等：捕获的生成产物；清单中的 `state` 仍区分已保存、未保存和结果不确定。
 

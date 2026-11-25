@@ -21,6 +21,16 @@
   line-height: inherit;
 }
 .mwb-typography li { margin-block: 0.24em; line-height: inherit; }
+/* Host themes give HRs rem-based gaps while isolated PDF uses browser defaults.
+ * Fix the paper geometry in both contexts; ordinary note styling is untouched. */
+.mwb-typography.mwb-print-document hr {
+  box-sizing: border-box;
+  height: 0;
+  margin: 0.5em 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid #999;
+}
 .mwb-typography h1,
 .mwb-typography h2,
 .mwb-typography h3,
@@ -1170,6 +1180,52 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
   .mwb-assembly-arrangement-entry-header > .mwb-assembly-arrangement-role { width:76px; max-width:76px; }
   .mwb-assembly-arrangement-more > summary { top:9px; right:9px; width:26px; }
 }
+/* ORDERING_SIDEBAR_START */
+.mwb-assembly-arrangement-workspace { display:flex; position:relative; gap:14px; min-width:0; min-height:0; flex:1; }
+.mwb-assembly-order-toggle { margin-left:auto; }
+.mwb-assembly-order-sidebar { display:flex; flex-direction:column; flex:0 0 290px; width:290px; max-width:40%; min-height:0; border:1px solid var(--background-modifier-border); border-radius:var(--mwb-panel-radius,9px); background:var(--background-secondary); overflow:hidden; }
+.mwb-assembly-order-sidebar[hidden] { display:none; }
+.mwb-assembly-order-header { display:flex; align-items:center; gap:8px; padding:12px 12px 0; }
+.mwb-assembly-order-header strong { white-space:nowrap; }
+.mwb-assembly-order-header .mwb-assembly-muted { margin-left:auto; font-size:11px; white-space:nowrap; }
+.mwb-assembly-order-header > .mwb-assembly-order-close { flex-shrink:0; padding:0; width:24px; height:24px; background:transparent; box-shadow:none; border:0; color:var(--text-muted); font-size:19px; }
+.mwb-assembly-order-hint { margin:8px 12px 12px; color:var(--text-muted); font-size:11px; line-height:1.5; }
+.mwb-assembly-order-list { flex:1; overflow:auto; min-height:0; padding:2px 8px 12px; scrollbar-gutter:stable; overscroll-behavior:contain; }
+.mwb-assembly-order-row { display:grid; grid-template-columns:22px minmax(0,1fr) 23px 23px; align-items:center; gap:2px; position:relative; padding:7px 3px; margin-bottom:5px; border:1px solid transparent; border-radius:6px; background:var(--background-primary); }
+.mwb-assembly-order-row.is-section { margin-top:12px; border-top:1px solid var(--background-modifier-border); background:transparent; }
+.mwb-assembly-order-row:first-child { margin-top:0; }
+.mwb-assembly-order-row.is-selected { border-color:var(--interactive-accent); box-shadow:inset 3px 0 var(--interactive-accent); }
+.mwb-assembly-order-row:hover { background:var(--background-modifier-hover,var(--background-primary)); }
+.mwb-assembly-order-row > button { padding:2px; min-width:0; height:26px; box-shadow:none; border:0; background:transparent; color:var(--text-muted); }
+.mwb-assembly-order-row > button:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:1px; }
+.mwb-assembly-order-row > [data-order-action="drag"] { cursor:grab; font-size:19px; }
+.mwb-assembly-order-row > [data-order-action="jump"] { height:auto; display:flex; flex-direction:column; align-items:start; gap:2px; padding:1px 5px; text-align:left; white-space:normal; }
+.mwb-assembly-order-label { color:var(--text-accent); font-size:11px; }
+.mwb-assembly-order-title { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; color:var(--text-normal); font-size:12px; line-height:1.5; font-weight:500; }
+.mwb-assembly-order-meta { color:var(--text-muted); font-size:10px; line-height:1.4; }
+.mwb-assembly-order-row.has-warning .mwb-assembly-order-meta { color:var(--text-error); }
+.mwb-assembly-order-row.is-dragging { opacity:.45; }
+.mwb-assembly-order-row.is-drop-before::before,.mwb-assembly-order-row.is-drop-after::after { content:""; position:absolute; left:0; right:0; height:3px; border-radius:3px; background:var(--interactive-accent); pointer-events:none; }
+.mwb-assembly-order-row.is-drop-before::before { top:-4px; }
+.mwb-assembly-order-row.is-drop-after::after { bottom:-4px; }
+.mwb-assembly-order-footer { padding:10px 12px; border-top:1px solid var(--background-modifier-border); }
+.mwb-assembly-order-selection { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:600; margin-bottom:7px; }
+.mwb-assembly-order-destination { display:flex; align-items:end; gap:8px; }
+.mwb-assembly-order-destination .mwb-assembly-field { flex:1; min-width:0; }
+.mwb-assembly-order-destination input { width:100%; }
+.mwb-assembly-order-live { font-size:11px; color:var(--text-muted); line-height:1.5; }
+.mwb-assembly-order-live:not(:empty) { margin-top:6px; }
+.mwb-assembly-arrangement-entry.is-order-selected { border-color:var(--interactive-accent); }
+@container mathsemble-assembly (max-width:1000px) {
+  .mwb-assembly-order-sidebar { flex-basis:260px; width:260px; }
+  .mwb-assembly-arrangement-workspace { gap:8px; }
+  .mwb-assembly-arrangement-workspace:not(.is-ordering-collapsed) .mwb-assembly-arrangement-entry-header { flex-wrap:wrap; }
+  .mwb-assembly-arrangement-workspace:not(.is-ordering-collapsed) .mwb-assembly-arrangement-title { flex-basis:calc(100% - 110px); }
+}
+@container mathsemble-assembly (max-width:759px) {
+  .mwb-assembly-order-sidebar { position:absolute; z-index:8; right:0; top:0; bottom:0; width:min(300px,94%); max-width:94%; box-shadow:-8px 0 24px #0002; }
+}
+/* ORDERING_SIDEBAR_END */
 /* Quota editing is isolated in its own dialog; the existing library and plan
    layouts retain their independent scrolling and card geometry. */
 .mwb-blueprint-modal { width: min(1160px, 96vw); max-width: 96vw; }
@@ -1201,3 +1257,32 @@ mark.mwb-hover-answer.mwb-reading-answer-math.mwb-choice-answer {
 .mwb-family-question { margin-top: 10px; overflow-wrap: anywhere; }
 .mwb-family-question img { max-width: 100%; height: auto; }
 .mwb-family-status.is-error { color: var(--text-error); }
+/* P2 auxiliary surfaces stay inside their own modal/view boundaries. */
+.modal.mwb-usage-modal, .modal.mwb-library-modal { width: min(90vw, 1080px); max-width: 90vw; max-height: 92vh; }
+.mwb-usage, .mwb-library { overflow: auto; }
+.mwb-usage-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mwb-usage-field, .mwb-library label { display: flex; flex-direction: column; gap: 5px; margin-block: 9px; }
+.mwb-usage-actions, .mwb-library section > div { margin-block: 10px; }
+.mwb-usage-actions button, .mwb-library button { margin: 4px 8px 4px 0; }
+.mwb-usage-event { border-top: 1px solid var(--background-modifier-border); padding-block: 8px; }
+.mwb-usage-event pre, .mwb-library pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
+.mwb-usage .is-error, .mwb-library .is-error { color: var(--text-error); }
+.mwb-library textarea { min-height: 5em; width: 100%; resize: vertical; }
+@media (max-width: 600px) { .mwb-usage-controls { grid-template-columns: 1fr; } }
+.modal.mwb-presentation-modal { width: min(96vw, 1440px); max-width: 96vw; height: 94vh; }
+.mwb-presentation-modal .modal-content { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.mwb-presentation-header, .mwb-presentation-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.mwb-presentation-header h2 { margin: 0; flex: 1; }
+.mwb-presentation-counter { font-variant-numeric: tabular-nums; }
+.mwb-presentation-nav { margin-block: 12px 0; }
+.mwb-presentation-status { margin-block: 8px; }
+.mwb-presentation-status.is-error { color: var(--text-error); }
+.mwb-presentation-body { flex: 1; min-height: 0; overflow: auto; padding: 20px 24px 36px; font-size: clamp(20px, 2.1vw, 30px); }
+.mwb-presentation-body img { max-height: 65vh; object-fit: contain; }
+.mwb-presentation-body .mwb-page-break { display: none; }
+.mwb-assembly-usage-filters { margin-block: 12px; }
+.mwb-assembly-usage-filters > div { display: grid; grid-template-columns: 1fr; gap: 8px; margin-block: 8px; }
+.mwb-assembly-part-settings { border-top: 1px solid var(--background-modifier-border); padding-block: 8px; margin-top: 8px; }
+.mwb-assembly-part-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 6px; }
+.mwb-assembly-part-row input[type="number"] { width: 90px; }
+.mwb-assembly-arrangement-score { max-width: 85px; }

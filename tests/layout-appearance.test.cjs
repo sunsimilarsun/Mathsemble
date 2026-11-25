@@ -18,7 +18,9 @@ const abortHelpers = source.slice(source.indexOf('function mwbRenderAbortError('
 const exportStart = source.indexOf('const { exportHtml } = (() =>');
 const exportHelpers = source.slice(exportStart, source.indexOf('const { typographyCss } =', exportStart));
 const headerStart = source.indexOf('function mwbCreateTrialHeader(');
-const headerHelper = source.slice(headerStart, source.indexOf('class PreviewModal', headerStart));
+const headerEnd = source.indexOf('\n}', headerStart);
+assert.ok(headerStart >= 0 && headerEnd > headerStart, 'production trial header is available');
+const headerHelper = source.slice(headerStart, headerEnd + 2);
 const chrome = [process.env.CHROME_PATH, '/usr/bin/chromium', '/usr/bin/google-chrome',
   '/usr/bin/google-chrome-stable', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Google/Chrome/Application/chrome.exe'),

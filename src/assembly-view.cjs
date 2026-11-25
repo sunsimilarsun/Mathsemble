@@ -2,7 +2,8 @@
 
 // Native Obsidian view. UI state belongs to the workspace; content writes are
 // delegated to explicit service actions. No source Markdown is mutated here.
-module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily}) {
+module.exports = function createAssemblyView({ItemView, Notice, Component, core, service, renderMarkdown,openBlueprint,openFamily,openSimilarity,
+  usageService,openUsage,openLibrary,openPresentation}) {
   const VIEW_TYPE = 'mathsemble-assembly';
   const roles = ['例题', '变式', '训练'];
   const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
@@ -46,15 +47,19 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.arrangementMenuOpen = new Set();
       this.arrangementExpanded = new Set();
       this.arrangementDrag = null;
+      this.orderingSidebarOpen = null;
+      this.orderingSelectedId = null;
       this.inlinePreviewGroups = new Map();
       this.inlinePreviewQueue = [];
       this.inlinePreviewActive = 0;
+      this.usageFilter={classId:'',courseId:'',mode:'all',days:30};
+      this.usageGeneration=0;this.usageLedger=null;this.usageState='idle';this.usageStats=new Map();
     }
     getViewType() { return VIEW_TYPE; }
     getDisplayText() { return this.plan?.title || '选材与编排'; }
     getIcon() { return 'layers'; }
     getState() {
-      return {plan:this.plan,planPath:this.planPath,dirty:this.dirty,filters:this.filters,workspaceMode:this.workspaceMode};
+      return {plan:this.plan,planPath:this.planPath,dirty:this.dirty,filters:this.filters,usageFilter:this.usageFilter,workspaceMode:this.workspaceMode};
     }
     async setState(state, result) {
       if (state?.plan) {
@@ -70,8 +75,13 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         } catch (error) { this.notice('无法恢复旧编排：' + errorText(error)); }
       }
       if(['library','arrangement'].includes(state?.workspaceMode))this.workspaceMode=state.workspaceMode;
+      if(state?.usageFilter&&typeof state.usageFilter==='object'){
+        const raw=state.usageFilter;
+        this.usageFilter={classId:typeof raw.classId==='string'?raw.classId.slice(0,200):'',courseId:typeof raw.courseId==='string'?raw.courseId.slice(0,200):'',
+          mode:['all','unused','taught-not-assigned'].includes(raw.mode)?raw.mode:'all',days:Number.isSafeInteger(raw.days)&&raw.days>0&&raw.days<=36500?raw.days:30};
+      }
       await super.setState?.(state, result);
-      if (!this.closed && this.root) this.render();
+      if (!this.closed && this.root) {this.render();await this.refreshUsage();}
     }
     notice(message) { if (Notice) new Notice(message, 6000); }
     el(tag, parent, className, text) {
@@ -174,6 +184,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.app.workspace.requestSaveLayout?.();
     }
     stateChanged() {
+      this.similarityModal?.invalidate('编排已变化，请刷新候选。');
+      if(this.presentationModal&&!this.presentationModal.closed)this.presentationModal.fail(new Error('编排已变化，请重新打开逐题投影'));
       this.clearArrangementDrag();
       this.clearSelection('编排已变化，请重新生成候选。');
       this.dirty = true;
@@ -342,6 +354,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const knowledge = this.plan.entries.filter(entry => entry.kind === 'knowledge').length;
       const sections=this.plan.entries.filter(entry=>entry.kind==='section').length;
       this.summaryEl.textContent = [`已选 ${questions} 题`,knowledge?`${knowledge} 篇知识`:'',sections?`${sections} 个分区`:''].filter(Boolean).join(' · ');
+      const scored=this.plan.entries.filter(entry=>entry.kind==='question'&&typeof entry.score==='number');
+      if(scored.length){const sum=scored.reduce((total,entry)=>total+Math.round(entry.score*100),0)/100;this.summaryEl.textContent+=` · ${scored.length===questions?'总分':'已设分值小计'} ${sum} 分`;}
       this.summaryEl.setAttribute('aria-label',`查看预览编排：${this.plan.entries.length} 项，${questions} 道题，${knowledge} 篇知识，${sections} 个分区`);
       if(this.saveStateEl){
         this.saveStateEl.textContent=this.dirty?'方案未保存':this.planPath?'方案已保存':'新方案';
@@ -414,6 +428,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.closed = true;
       this.blueprintModal?.close();
       this.familyModal?.close();
+      this.similarityModal?.close();
+      this.usageModal?.close();this.libraryModal?.close();this.presentationModal?.close();
+      this.usageGeneration++;
       this.clearArrangementDrag();
       this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
@@ -566,6 +583,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.el('p',menuBody,'mwb-assembly-muted',planSaveHint);
       this.renderPlanSettings(menuBody);
       const menuActions=this.el('div',menuBody,'mwb-assembly-menu-actions');
+      if(openUsage)this.button(menuActions,'实际使用账本',()=>openUsage(this));
+      if(openLibrary)this.button(menuActions,'题库诊断与入库',()=>openLibrary(this));
+      if(openPresentation)this.button(menuActions,'逐题投影',()=>openPresentation(this));
       this.button(menuActions, '新建', () => {
         if (this.actionBusy || !this.confirmDiscard('new','新建')) return;
         this.plan = core.createPlan(); this.planPath = null; this.dirty = false; this.pendingBlueprintRun=null;
@@ -634,6 +654,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.el('h4', filterHeader, '', '筛选条件');
       this.button(filterHeader,'清除筛选',()=>{
         this.filters={kind:this.filters.kind,query:''};this.limit=100;
+        this.resetUsageFilter();
         if (this.searchInput) this.searchInput.value='';
         this.populateFilters();this.renderResults();
       },'mwb-assembly-text-button');
@@ -650,6 +671,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       this.advancedFilters.open=['difficulty','role','method','source'].some(key=>this.filters[key]);
       this.populateFilters();
+      if(usageService)this.renderUsageFilters(this.left);
       this.tree = this.el('div',this.left,'mwb-assembly-tree');
       this.renderTree();
     }
@@ -676,6 +698,51 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         }
         select.value=current;
       }
+    }
+    usageContext() { return {classId:this.usageFilter.classId.trim(),courseId:this.usageFilter.courseId.trim()}; }
+    resetUsageFilter() {
+      this.usageFilter.mode='all';const select=this.root?.querySelector('[data-usage-field="mode"]');if(select)select.value='all';
+      this.usageGeneration++;this.app.workspace.requestSaveLayout?.();
+    }
+    async refreshUsage() {
+      if(!usageService)return;
+      const generation=++this.usageGeneration,context=this.usageContext();
+      this.usageLedger=null;this.usageStats=new Map();
+      this.clearSelection('使用记录已变化，请重新生成候选。');
+      if(!context.classId&&!context.courseId){this.usageState='idle';this.usageError='请填写班级或课程代号';if(!this.closed)this.renderResults();return;}
+      this.usageState='loading';if(!this.closed)this.renderResults();
+      try {
+        const ledger=await usageService.loadUsage({context});
+        if(this.closed||generation!==this.usageGeneration)return;
+        this.usageLedger=ledger;this.usageState='ready';this.usageNow=new Date().toISOString();
+        this.usageStats=new Map(usageService.summarizeUsage(this.index.items,ledger,{context,now:this.usageNow}).map(row=>[row.item.key,row]));
+      }catch(error){if(!this.closed&&generation===this.usageGeneration){this.usageState='error';this.usageError=errorText(error);}}
+      if(!this.closed&&generation===this.usageGeneration)this.renderResults();
+    }
+    usageIndex(index=this.index,ledger=this.usageLedger,now=this.usageNow) {
+      if(!usageService||this.usageFilter.mode==='all')return index;
+      if(!ledger||this.usageState!=='ready')throw new Error(this.usageState==='loading'?'正在读取使用记录，请稍候':this.usageError||'请先填写班级或课程并刷新使用记录');
+      const eligible=new Set(usageService.filterUsage(index.items,ledger,{context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now}));
+      // Keep knowledge nodes for normal knowledge-tag resolution. Filtering the
+      // question pool must not change the meaning of a shared knowledge tag.
+      return {...index,items:index.items.filter(item=>item.kind==='knowledge'||eligible.has(item))};
+    }
+    renderUsageFilters(parent) {
+      const panel=this.el('details',parent,'mwb-assembly-usage-filters');panel.open=this.usageFilter.mode!=='all';
+      this.el('summary',panel,'','实际使用筛选');
+      const body=this.el('div',panel);
+      for(const [key,label] of [['classId','班级代号'],['courseId','课程代号']]){
+        const input=this.field(body,label);input.maxLength=200;input.value=this.usageFilter[key];input.dataset.usageField=key;
+        input.addEventListener('change',()=>{this.usageFilter[key]=input.value.trim();this.app.workspace.requestSaveLayout?.();void this.refreshUsage();});
+      }
+      const mode=this.field(body,'使用条件','select');mode.dataset.usageField='mode';
+      for(const [value,label] of [['all','不限'],['unused','本班／课程近期未用'],['taught-not-assigned','已讲但尚未布置']])this.el('option',mode,'',label).value=value;
+      mode.value=this.usageFilter.mode;mode.addEventListener('change',()=>{this.usageFilter.mode=mode.value;this.app.workspace.requestSaveLayout?.();void this.refreshUsage();});
+      const days=this.field(body,'近期天数');days.type='number';days.min='1';days.max='36500';days.step='1';days.value=String(this.usageFilter.days);days.dataset.usageField='days';
+      days.addEventListener('change',()=>{const value=Number(days.value);if(!Number.isSafeInteger(value)||value<1||value>36500){days.value=String(this.usageFilter.days);this.notice('请输入 1 至 36500 的整数天数');return;}this.usageFilter.days=value;this.app.workspace.requestSaveLayout?.();void this.refreshUsage();});
+      this.button(body,'刷新使用记录',()=>this.refreshUsage());
+      if(openUsage)this.button(body,'登记或查看使用',()=>openUsage(this));
+      this.el('p',body,'mwb-assembly-muted','班级和课程共同确定记录范围；含小问的部分使用也计为该题已用。筛选应用于选材和条件抽题，配额蓝图使用自己的条件。');
     }
     renderTree() {
       if (!this.tree) return;
@@ -748,12 +815,38 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       this.activeFilters.hidden=!this.activeFilters.childElementCount;
     }
+    navigateQuestionResults(filters,message) {
+      if(this.closed)return;
+      this.filters={...filters};this.limit=100;
+      this.resetUsageFilter?.();this.clearItemPreview();
+      this.workspaceAnchors.library=null;this.workspaceScroll.library=0;
+      if(this.searchInput)this.searchInput.value=this.filters.query||'';
+      this.populateFilters();this.updateTabs();this.switchPane('library');
+      if(this.workspaceMode!=='library')this.switchWorkspaceMode('library');else this.renderResults();
+      this.resultsDisclosure.open=true;
+      const target=this.results.querySelector('.mwb-assembly-family-title')||this.resultsSummary;
+      target.focus({preventScroll:true});
+      this.center.scrollTop+=target.getBoundingClientRect().top-this.center.getBoundingClientRect().top;
+      this.setStatus(message);this.app.workspace.requestSaveLayout?.();
+    }
+    showFamily(item) {
+      if(item?.kind!=='question'||item.familyState!=='classified')return;
+      this.navigateQuestionResults({kind:'question',query:'',familyId:item.familyId},'正在查看题族：'+item.familyId+'（全部已收录题）');
+    }
+    renderFamilyOverview(family,visibleCount) {
+      const panel=this.el('section',this.results,'mwb-assembly-family-overview mwb-assembly-empty');
+      const title=this.el('strong',panel,'mwb-assembly-family-title','题族：'+family.familyId);
+      title.tabIndex=-1;title.setAttribute('role','heading');title.setAttribute('aria-level','3');
+      this.el('p',panel,'',family.count===1?'当前仅收录这一题，暂无其他同族题。':`已收录 ${family.count} 道题，当前筛选匹配 ${visibleCount} 道。`);
+      this.button(panel,'返回全部题目',()=>this.navigateQuestionResults({kind:'question',query:''},'已返回全部题目'));
+    }
     updateTabs() {
       for(const button of this.tabs?.querySelectorAll('button')||[]) {
         const active=button.dataset.kind===this.filters.kind;button.classList.toggle('is-active',active);button.setAttribute('aria-pressed',String(active));
       }
     }
     renderResults() {
+      this.similarityModal?.checkWorkspace();
       if(!this.results) return;
       if(this.selectedItem){
         const current=this.index.items.find(item=>item.path===this.selectedItem.path&&item.kind===this.selectedItem.kind&&item.fingerprint===this.selectedItem.fingerprint);
@@ -765,16 +858,22 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.renderSelection();
       const previews=this.beginInlinePreviews('results');
       this.results.replaceChildren();
-      const items=core.filterItems(this.index,this.filters);
+      let items=[];
+      try{
+        items=core.filterItems(this.usageIndex(),this.filters);
+        if(usageService&&this.usageFilter.mode!=='all')items=usageService.filterUsage(items,this.usageLedger,
+          {context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now:this.usageNow});
+      }
+      catch(error){this.resultsSummary.textContent='使用筛选未就绪';this.emptyState(this.results,'使用记录待核对',errorText(error));return;}
       this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
       if(this.filters.familyId&&core.familyGroups){
         const family=core.familyGroups(this.index).groups.find(value=>value.familyId===this.filters.familyId);
-        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);this.resultsSummary.textContent+=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');}
+        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);this.resultsSummary.textContent+=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');this.renderFamilyOverview(family,items.length);}
       }
       if(!items.length){
         const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再刷新素材。');
         if(Object.entries(this.filters).some(([key,value])=>key!=='kind'&&value))this.button(empty,'清除筛选',()=>{
-          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.searchInput.value='';this.populateFilters();this.renderResults();
+          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.resetUsageFilter();this.searchInput.value='';this.populateFilters();this.renderResults();
         });
         else if(!this.index.items.length)this.button(empty,'配置内容目录',()=>{this.configDetails.open=true;this.switchPane('filters');this.questionRootsInput.focus();});
       }
@@ -786,15 +885,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const info=[item.subject,item.kind==='question'?(typeNames[item.questionType]||item.questionType):'整篇知识',item.difficulty?`难度 ${item.difficulty}`:'',item.tier,item.role].filter(Boolean);
         const badges=this.el('div',row,'mwb-assembly-badges');
         for(const text of info)this.el('span',badges,'mwb-assembly-badge',text);
+        const usage=this.usageStats.get(item.key);
+        if(usage?.lastUsed)this.el('span',badges,'mwb-assembly-badge','本班／课程上次使用 '+new Date(usage.lastUsed).toLocaleDateString());
         const related=this.relatedKnowledge(item);
         if(related.length){const links=this.el('div',row,'mwb-assembly-muted mwb-assembly-card-related','关联知识：'+related.map(node=>node.title).join('、'));links.title=links.textContent;}
         this.addInlinePreview(previews,row,item);
         const footer=this.el('div',row,'mwb-assembly-card-footer');
         this.el('div',footer,'mwb-assembly-result-path',item.path).title=item.path;
         this.button(footer,'查看全文',open,'mwb-assembly-card-open');
-        if(item.kind==='question'&&item.familyState==='classified')this.button(footer,'查看题族',()=>{
-          this.filters={kind:'question',query:'',familyId:item.familyId};this.limit=100;if(this.searchInput)this.searchInput.value='';this.populateFilters();this.renderResults();
-        },'mwb-assembly-card-family').title='查看题族 '+item.familyId;
+        if(item.kind==='question'&&item.familyState==='classified')this.button(footer,'查看题族',()=>this.showFamily(item),'mwb-assembly-card-family').title='查看题族 '+item.familyId;
+        if(item.kind==='question'&&openSimilarity)this.button(footer,'找相似题',()=>openSimilarity(this,{sourceKey:item.key}),'mwb-assembly-card-similarity').title='按题族、考点或方法查找候选题';
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
@@ -817,7 +917,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
     }
     selectionContext() {
-      return JSON.stringify({filters:this.filters,plan:this.plan,count:this.selectionCount,scan:this.scanGeneration,settings:this.settings});
+      return JSON.stringify({filters:this.filters,usage:this.usageFilter,usageGeneration:this.usageGeneration,plan:this.plan,count:this.selectionCount,scan:this.scanGeneration,settings:this.settings});
     }
     selectionIsCurrent() {
       return !!this.selection && this.selection.index===this.index && this.selection.context===this.selectionContext();
@@ -907,7 +1007,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(this.closed||this.actionBusy||this.scanBusy) return;
       if(this.filters.kind!=='question') return;
       try {
-        const result=core.selectQuestions(this.index,this.filters,this.plan,Number(this.selectionCount));
+        const result=core.selectQuestions(this.usageIndex(),this.filters,this.plan,Number(this.selectionCount));
         this.selection={...result,index:this.index,context:this.selectionContext()};
         this.selectionNotice='';this.renderSelection();
         this.setStatus(`已生成 ${result.items.length} 道候选题，核对后可加入编排。`);
@@ -930,12 +1030,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           sourceCheck=service.beginSourceCheck(this.settings);
           this.selectionSourceCheck=sourceCheck;
           latest=await service.scan(this.settings);
+          let usageLedger=this.usageLedger;
+          if(usageService&&this.usageFilter.mode!=='all')usageLedger=await usageService.loadUsage({context:this.usageContext()});
           if(this.closed)return;
           if(this.selection!==selection||!this.selectionIsCurrent())
             throw new Error('筛选或编排已变化，请重新生成候选');
           sourceCheck.assertCurrent();
           const count=selection.items.length;
-          const next=core.addSelectedQuestions(this.plan,latest,this.filters,selection.items);
+          const next=core.addSelectedQuestions(this.plan,this.usageIndex(latest,usageLedger,new Date().toISOString()),this.filters,selection.items);
           this.index=latest;this.indexState='ready';this.selection=null;
           this.selectionNotice=`已将 ${count} 道题加入编排，可在“预览编排”调整顺序和角色。`;
           this.populateFilters();this.renderTree();this.setPlan(next);
@@ -1037,7 +1139,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       sectionMenu.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();sectionMenu.open=false;sectionToggle.focus();}});
       const refresh=this.button(toolbar,'接受来源更新',()=>this.updateReferences());refresh.dataset.arrangementMutate='true';
       refresh.title='刷新素材并接受可确认的来源变化；保留本次标题和角色，缺失或冲突需单独处理。';
-      this.arrangementList=this.el('div',this.arrangementPane,'mwb-assembly-arrangement-list');
+      this.orderingToggle=this.button(toolbar,'排序目录',()=>this.toggleOrderingSidebar(),'mwb-assembly-order-toggle');
+      this.arrangementWorkspace=this.el('div',this.arrangementPane,'mwb-assembly-arrangement-workspace');
+      this.arrangementList=this.el('div',this.arrangementWorkspace,'mwb-assembly-arrangement-list');
+      for(const name of ['click','focusin'])this.arrangementList.addEventListener(name,event=>{
+        const row=event.target.closest?.('.mwb-assembly-arrangement-entry');
+        if(row)this.selectOrderingEntry(row.dataset.entryId);
+      });
+      this.renderOrderingShell();
       this.releaseWorkspaceAnchorOnInput(this.arrangementPane,'arrangement');
       this.arrangementList.setAttribute('aria-label','已选内容顺序');
       this.arrangementList.addEventListener('dragover',event=>{
@@ -1051,7 +1160,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     clearArrangementDrag() {
       this.arrangementDrag=null;
-      for(const row of this.arrangementList?.querySelectorAll('.is-dragging')||[])row.classList.remove('is-dragging');
+      for(const row of this.arrangementPane?.querySelectorAll('.is-dragging,.is-drop-before,.is-drop-after')||[])
+        row.classList.remove('is-dragging','is-drop-before','is-drop-after');
     }
     currentArrangementDrag() {
       const drag=this.arrangementDrag;
@@ -1102,7 +1212,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const next=core.updateEntry(this.plan,entryId,patch);
         const before=this.plan.entries.find(entry=>entry.entryId===entryId),after=next.entries.find(entry=>entry.entryId===entryId);
         if(before.title===after.title&&before.role===after.role)return true;
-        this.plan=next;this.stateChanged();this.renderResults();
+        this.plan=next;this.stateChanged();this.renderResults();this.renderOrderingSidebar(true);
         return true;
       }catch(error){this.setStatus(errorText(error),true);this.notice(errorText(error));return false;}
     }
@@ -1145,6 +1255,277 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       for(const node of [record.node,record.body]){group.resizeRecords.set(node,record);group.resizeObserver?.observe(node);}
       record.updateOverflow();
+    }
+    renderEntryContentSettings(parent,row,entry,item,status) {
+      if(!service.updateEntryContent||entry.kind==='section')return;
+      const panel=this.el('details',parent,'mwb-assembly-part-settings');
+      this.el('summary',panel,'',entry.kind==='question'?'内容范围与本次分值':'知识小节范围');
+      this.el('p',panel,'mwb-assembly-muted','只保存本次编排的选择；启用分值或片段后为 v4 方案，旧方案请另存。');
+      const runChoice=this.el('div',panel);runChoice.hidden=true;
+      const runSelect=this.field(runChoice,'采用配额记录','select');runSelect.dataset.arrangementMutate='true';let runsRead=false;
+      panel.addEventListener('toggle',()=>{
+        if(!panel.open||runsRead||this.pendingBlueprintRun||!service.listMatchingBlueprintRuns)return;runsRead=true;
+        const snapshot=this.plan;
+        void service.listMatchingBlueprintRuns(snapshot,{isCurrent:()=>!this.closed&&panel.isConnected&&this.plan===snapshot}).then(matches=>{
+          if(this.closed||!panel.isConnected||this.plan!==snapshot)return;
+          if(matches.length>1){runChoice.hidden=false;this.el('option',runSelect,'多份配额记录匹配，请选择').value='';
+            for(const match of matches)this.el('option',runSelect,[match.title,match.createdAt,match.path.split('/').pop()].filter(Boolean).join(' · ')).value=match.path;}
+        }).catch(error=>{if(panel.isConnected&&!this.closed)this.setStatus(errorText(error),true);});
+      });
+      let total;
+      if(entry.kind==='question'){
+        total=this.field(panel,'本次总分（可留空）');total.type='number';total.min='0';total.max='1000000';total.step='0.01';
+        total.value=entry.score==null?'':String(entry.score);total.dataset.arrangementField='score';total.dataset.arrangementMutate='true';
+      }
+      const choices=[];let parsed;
+      try{parsed=item&&core.listFragments?core.listFragments(item):null;}
+      catch(error){this.el('p',panel,'mwb-assembly-error',errorText(error));}
+      if(parsed?.supported&&!parsed.valid)this.el('p',panel,'mwb-assembly-error',parsed.issues.map(issue=>issue.message).join('；'));
+      else if(parsed?.supported){
+        this.el('p',panel,'mwb-assembly-muted',entry.kind==='question'?'勾选所需小问；自动保留共用题干。每个小问的分数全部填写或全部留空。':'勾选需要的小节；不按当前标题位置推断身份。');
+        for(const part of parsed.fragments){
+          const group=this.el('div',panel,'mwb-assembly-part-row');
+          const label=this.el('label',group,'mwb-assembly-check'),check=this.el('input',label);check.type='checkbox';
+          check.checked=!!entry.fragmentRef?.ids.includes(part.id);check.dataset.partId=part.id;check.dataset.arrangementMutate='true';
+          label.appendChild(this.contentEl.ownerDocument.createTextNode(part.title+' ['+part.id+']'));
+          let score;
+          if(entry.kind==='question'){
+            score=this.el('input',group);score.type='number';score.min='0';score.max='1000000';score.step='0.01';score.placeholder='小问分值';
+            score.setAttribute('aria-label',part.title+'分值');score.dataset.partScore=part.id;score.dataset.arrangementMutate='true';
+            score.value=entry.fragmentRef?.scores?.[part.id]==null?'':String(entry.fragmentRef.scores[part.id]);
+          }
+          choices.push({id:part.id,check,score});
+        }
+      }else this.el('p',panel,'mwb-assembly-muted','此来源未声明稳定片段，继续使用整题／整篇；需要截取时先在原文中按片段契约声明。');
+      if(entry.fragmentRef)this.el('p',panel,'mwb-assembly-muted','当前选用：'+entry.fragmentRef.ids.join('、'));
+      const apply=this.button(panel,'应用内容与分值',async()=>{
+        if(!row.isConnected||this.closed||this.actionBusy||this.scanBusy)return;
+        const selected=choices.filter(choice=>choice.check.checked),selectedIds=new Set(selected.map(choice=>choice.id));
+        const ids=[...(entry.fragmentRef?.ids||[]).filter(id=>selectedIds.has(id)),...selected.map(choice=>choice.id).filter(id=>!entry.fragmentRef?.ids.includes(id))];
+        let fragmentRef=ids.length?{kind:entry.kind==='question'?'question-part':'knowledge-section',ids}:null;
+        const patch={fragmentRef};
+        if(total)patch.score=total.value.trim()===''?null:Number(total.value);
+        if(fragmentRef&&entry.kind==='question'){
+          const scored=selected.filter(choice=>choice.score.value.trim()!=='');
+          if(scored.length&&scored.length!==selected.length)throw new Error('请填写所有已选小问分值，或将小问分值全部留空');
+          if(scored.length){fragmentRef.scores=Object.fromEntries(scored.map(choice=>[choice.id,Number(choice.score.value)]));delete patch.score;}
+        }
+        if(!runChoice.hidden&&!runSelect.value)throw new Error('多份配额记录匹配，请先选择本次采用的记录');
+        await this.applyEntryContent(entry.entryId,patch,row,runSelect.value);
+      });apply.dataset.arrangementMutate='true';apply.dataset.boundary=String(status!=='ok'||parsed?.supported&&!parsed.valid);
+      if(entry.fragmentRef){
+        const whole=this.button(panel,'恢复整题／整篇',()=>this.applyEntryContent(entry.entryId,{fragmentRef:null,...(total?{score:null}:{})},row,runSelect.value));
+        whole.dataset.arrangementMutate='true';
+      }
+    }
+    async applyEntryContent(entryId,patch,row,runPath) {
+      if(this.closed||!row.isConnected||this.actionBusy||this.scanBusy)return;
+      const plan=this.plan,config=JSON.stringify(this.settings);
+      await this.runAction('核对内容范围与分值',async()=>{
+        const options={config:this.settings,isCurrent:()=>!this.closed&&this.plan===plan&&JSON.stringify(this.settings)===config};
+        const run=this.pendingBlueprintRun||(runPath?await service.loadBlueprintRun(runPath,plan):undefined);
+        const result=await service.updateEntryContent(plan,entryId,patch,{...options,...(run?{run}:{})});
+        if(this.closed||this.plan!==plan)return;
+        this.index=result.index;this.indexState='ready';this.setPlan(result.plan);this.pendingBlueprintRun=result.run||null;
+        this.setStatus('已更新本次内容范围与分值；原题卡保持不变。');
+      });
+    }
+    renderOrderingShell() {
+      this.orderingSidebar=this.el('aside',this.arrangementWorkspace,'mwb-assembly-order-sidebar');
+      this.orderingSidebar.setAttribute('aria-label','排序目录');
+      const header=this.el('div',this.orderingSidebar,'mwb-assembly-order-header');
+      this.el('strong',header,'','排序目录');
+      this.orderingCount=this.el('span',header,'mwb-assembly-muted');
+      const close=this.button(header,'×',()=>this.toggleOrderingSidebar(false),'mwb-assembly-order-close');
+      close.setAttribute('aria-label','收起排序目录');close.title='收起排序目录';
+      this.el('p',this.orderingSidebar,'mwb-assembly-order-hint','点击定位 · 拖动排序 · Alt + ↑ / ↓ 微调');
+      this.orderingList=this.el('div',this.orderingSidebar,'mwb-assembly-order-list');
+      this.orderingList.setAttribute('role','list');this.orderingList.setAttribute('aria-label','编排目录');
+      this.orderingList.addEventListener('dragover',event=>{
+        if(!this.currentArrangementDrag())return;
+        event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='move';
+        const rect=this.orderingList.getBoundingClientRect();
+        if(event.clientY<rect.top+32)this.orderingList.scrollTop-=18;
+        else if(event.clientY>rect.bottom-32)this.orderingList.scrollTop+=18;
+      });
+      this.orderingList.addEventListener('drop',event=>{
+        if(event.target!==this.orderingList)return;
+        event.preventDefault();this.dropOrderingEntry(event,null,null,true);
+      });
+      const footer=this.el('div',this.orderingSidebar,'mwb-assembly-order-footer');
+      this.orderingSelection=this.el('div',footer,'mwb-assembly-order-selection');
+      const actions=this.el('div',footer,'mwb-assembly-order-destination');
+      this.orderingPosition=this.field(actions,'移到第几项');this.orderingPosition.type='number';
+      this.orderingPosition.min='1';this.orderingPosition.step='1';this.orderingPosition.dataset.arrangementMutate='true';
+      this.orderingMove=this.button(actions,'移动',()=>{
+        if(!footer.isConnected)return;
+        const id=this.orderingSelectedId,row=[...this.orderingList.children].find(node=>node.dataset.entryId===id);
+        this.moveOrderingEntry(id,Number(this.orderingPosition.value)-1,row);
+      });this.orderingMove.dataset.arrangementMutate='true';
+      this.orderingPosition.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();this.orderingMove.click();}});
+      this.orderingLive=this.el('div',footer,'mwb-assembly-order-live');this.orderingLive.setAttribute('role','status');
+      this.orderingSidebar.addEventListener('keydown',event=>{
+        if(event.key==='Escape'){event.preventDefault();this.toggleOrderingSidebar(false);}
+      });
+      // A restored background leaf has width zero until Obsidian reveals it.
+      if(this.orderingSidebarOpen===null)this.orderingSidebarOpen=!this.contentEl.clientWidth||this.contentEl.clientWidth>=760;
+      this.toggleOrderingSidebar(this.orderingSidebarOpen,false);
+    }
+    toggleOrderingSidebar(open=!this.orderingSidebarOpen,focus=true) {
+      this.orderingSidebarOpen=!!open;
+      this.arrangementWorkspace.classList.toggle('is-ordering-collapsed',!open);
+      this.orderingSidebar.hidden=!open;
+      this.orderingToggle.setAttribute('aria-expanded',String(!!open));
+      this.orderingToggle.textContent=open?'收起排序目录':'排序目录';
+      if(focus){
+        if(open)(this.orderingList.querySelector('[aria-current="true"]')||this.orderingList.querySelector('button')||this.orderingMove)?.focus({preventScroll:true});
+        else this.orderingToggle.focus({preventScroll:true});
+      }
+    }
+    selectOrderingEntry(id,{reveal=false}={}) {
+      if(this.closed||!this.plan.entries.some(entry=>entry.entryId===id))return;
+      this.orderingSelectedId=id;
+      for(const row of this.orderingList?.children||[]){
+        const selected=row.dataset.entryId===id;row.classList.toggle('is-selected',selected);
+        row.querySelector('[data-order-action="jump"]')?.setAttribute('aria-current',String(selected));
+      }
+      for(const row of this.arrangementList?.children||[]){
+        const selected=row.dataset.entryId===id;row.classList.toggle('is-order-selected',selected);
+        if(selected&&reveal){
+          const list=this.arrangementList;
+          list.scrollTop+=row.getBoundingClientRect().top-list.getBoundingClientRect().top-4;
+          this.workspaceAnchors.arrangement=this.captureWorkspaceAnchor('arrangement',row);
+        }
+      }
+      this.updateOrderingDestination();
+    }
+    updateOrderingDestination() {
+      if(!this.orderingPosition)return;
+      const index=this.plan.entries.findIndex(entry=>entry.entryId===this.orderingSelectedId),entry=this.plan.entries[index];
+      const sections=core.getSections(this.plan),sectionIndex=sections.findIndex(section=>section.entryId===entry?.entryId);
+      const section=sectionIndex>=0,total=section?sections.length:this.plan.entries.length;
+      const row=[...this.orderingList.children].find(node=>node.dataset.entryId===entry?.entryId);
+      this.orderingSelection.textContent=entry?(row?.querySelector('.mwb-assembly-order-title')?.textContent||entry.title):'先加入题目或知识';
+      this.orderingPosition.parentElement.querySelector('span').textContent=section?'移到第几分区':'移到第几项';
+      this.orderingPosition.setAttribute('aria-label',section?'移到第几分区':'移到第几项');
+      this.orderingPosition.max=String(total);this.orderingPosition.value=entry?String((section?sectionIndex:index)+1):'';
+      for(const control of [this.orderingMove,this.orderingPosition]){
+        control.dataset.boundary=String(!entry);control.disabled=!entry||this.actionBusy||this.scanBusy;
+      }
+      this.orderingPosition.title=section?'整体移动分区及其下方内容':'位置包含题目、知识和分区标题';
+    }
+    moveOrderingEntry(id,target,row) {
+      if(!row?.isConnected||this.closed||this.workspaceMode!=='arrangement'||this.actionBusy||this.scanBusy)return;
+      this.orderingSelectedId=id;
+      const before=this.plan;
+      this.changeArrangement(id,(plan,index)=>{
+        const section=plan.entries[index].kind==='section',total=section?core.getSections(plan).length:plan.entries.length;
+        if(!Number.isInteger(target)||target<0||target>=total)throw new Error(`请输入 1 至 ${total} 之间的${section?'分区序号':'编排位置'}`);
+        return section?core.moveSection(plan,id,target):core.moveEntry(plan,id,target);
+      },row);
+      if(this.plan!==before){
+        this.selectOrderingEntry(id,{reveal:true});
+        this.orderingLive.textContent=`已移动到第 ${target+1} ${before.entries.find(entry=>entry.entryId===id)?.kind==='section'?'个分区':'项'}`;
+      }
+    }
+    dropOrderingEntry(event,targetId,row,after=false) {
+      const drag=this.currentArrangementDrag(),id=event.dataTransfer?.getData('application/x-mathsemble-entry');
+      this.clearArrangementDrag();
+      if(!drag||id!==drag.id||row&&!row.isConnected)return;
+      const entries=this.plan.entries,sourceIndex=entries.findIndex(entry=>entry.entryId===id),source=entries[sourceIndex];
+      let target=targetId===null?entries.length:entries.findIndex(entry=>entry.entryId===targetId);
+      if(target<0||!source)return;
+      if(source.kind==='section'){
+        const sections=core.getSections(this.plan),from=sections.findIndex(section=>section.entryId===id);
+        let to=targetId===null?sections.length:sections.findIndex(section=>section.start<=target&&target<section.end);
+        if(to<0)to=0;else if(targetId!==null&&after)to++;
+        target=to-(from<to?1:0);
+      }else{
+        if(targetId!==null&&after)target++;
+        target-=sourceIndex<target?1:0;
+      }
+      this.moveOrderingEntry(id,target,drag.row);
+    }
+    renderOrderingSidebar(metadataOnly=false) {
+      if(!this.orderingList||this.workspaceMode!=='arrangement')return;
+      const list=this.orderingList,active=this.contentEl.ownerDocument.activeElement,activeRow=active?.closest?.('.mwb-assembly-order-row');
+      const focus=list.contains(activeRow)?{id:activeRow.dataset.entryId,action:active.dataset.orderAction}:null,scrollTop=list.scrollTop;
+      const resolved=core.resolvePlan(this.plan,this.index),sections=core.getSections(this.plan);
+      this.orderingCount.textContent=`${this.plan.entries.filter(entry=>entry.kind==='question').length} 题 · ${this.plan.entries.length} 项`;
+      if(!metadataOnly)list.replaceChildren();
+      let number=0;
+      resolved.entries.forEach(({entry,item,status},index)=>{
+        const sectionIndex=sections.findIndex(section=>section.entryId===entry.entryId),section=sections[sectionIndex];
+        const label=section?`分区 ${sectionIndex+1}`:entry.kind==='knowledge'?'知识':`第 ${++number} 题`;
+        const title=entry.title||item?.title||'未命名内容';
+        let row=metadataOnly?[...list.children].find(node=>node.dataset.entryId===entry.entryId):null;
+        if(!row){
+          row=this.el('div',list,'mwb-assembly-order-row'+(section?' is-section':''));row.dataset.entryId=entry.entryId;row.setAttribute('role','listitem');
+          const button=(text,action,fn)=>{const node=this.button(row,text,fn);node.dataset.orderAction=action;return node;};
+          const handle=button('⠿','drag',()=>this.selectOrderingEntry(entry.entryId));handle.draggable=true;handle.dataset.arrangementMutate='true';
+          handle.addEventListener('dragstart',event=>{
+            this.clearArrangementDrag();
+            if(this.closed||!row.isConnected||this.workspaceMode!=='arrangement'||this.actionBusy||this.scanBusy){event.preventDefault();return;}
+            handle.focus({preventScroll:true});this.selectOrderingEntry(entry.entryId);
+            this.arrangementDrag={id:entry.entryId,plan:this.plan,path:this.planPath,row};
+            event.dataTransfer?.setData('application/x-mathsemble-entry',entry.entryId);
+            if(event.dataTransfer)event.dataTransfer.effectAllowed='move';
+            const moving=new Set(this.plan.entries.slice(section?.start??index,section?.end??index+1).map(value=>value.entryId));
+            for(const member of this.arrangementPane.querySelectorAll('[data-entry-id]'))if(moving.has(member.dataset.entryId))member.classList.add('is-dragging');
+          });
+          handle.addEventListener('dragend',()=>this.clearArrangementDrag());
+          row.addEventListener('dragover',event=>{
+            const drag=this.currentArrangementDrag();if(!drag)return;
+            event.preventDefault();
+            for(const other of list.querySelectorAll('.is-drop-before,.is-drop-after'))other.classList.remove('is-drop-before','is-drop-after');
+            const rect=row.getBoundingClientRect(),after=event.clientY>rect.top+rect.height/2;
+            let indicator=row,side=after;
+            if(this.plan.entries.find(value=>value.entryId===drag.id)?.kind==='section'){
+              const targetSection=sections.find(value=>value.start<=index&&index<value.end)||sections[0];
+              if(!targetSection||targetSection.entryId===drag.id)return;
+              if(index<targetSection.start)side=false;
+              const target=this.plan.entries[side?targetSection.end-1:targetSection.start];
+              indicator=[...list.children].find(node=>node.dataset.entryId===target?.entryId);
+            }
+            indicator?.classList.add(side?'is-drop-after':'is-drop-before');
+          });
+          row.addEventListener('dragleave',event=>{
+            if(!row.contains(event.relatedTarget))for(const other of list.querySelectorAll('.is-drop-before,.is-drop-after'))other.classList.remove('is-drop-before','is-drop-after');
+          });
+          row.addEventListener('drop',event=>{
+            event.preventDefault();event.stopPropagation();
+            const rect=row.getBoundingClientRect();this.dropOrderingEntry(event,entry.entryId,row,event.clientY>rect.top+rect.height/2);
+          });
+          const jump=button('','jump',()=>{if(row.isConnected)this.selectOrderingEntry(entry.entryId,{reveal:true});});
+          this.el('span',jump,'mwb-assembly-order-label');this.el('span',jump,'mwb-assembly-order-title');this.el('span',jump,'mwb-assembly-order-meta');
+          for(const [action,text,direction] of [['up','↑',-1],['down','↓',1]]){
+            const node=button(text,action,()=>this.moveOrderingEntry(entry.entryId,(section?core.getSections(this.plan).findIndex(value=>value.entryId===entry.entryId):this.plan.entries.findIndex(value=>value.entryId===entry.entryId))+direction,row));
+            node.dataset.arrangementMutate='true';node.dataset.boundary=String(direction<0?(section?sectionIndex===0:index===0):(section?sectionIndex===sections.length-1:index===this.plan.entries.length-1));
+          }
+          row.addEventListener('keydown',event=>{
+            if(!event.altKey||!['ArrowUp','ArrowDown'].includes(event.key))return;
+            event.preventDefault();row.querySelector(`[data-order-action="${event.key==='ArrowUp'?'up':'down'}"]`)?.click();
+          });
+        }
+        row.querySelector('.mwb-assembly-order-label').textContent=label;
+        row.querySelector('.mwb-assembly-order-title').textContent=title;
+        const warning={changed:'来源已变化',missing:'来源缺失',conflict:'来源冲突','fragment-missing':'片段缺失','fragment-invalid':'片段有误'}[status];
+        row.querySelector('.mwb-assembly-order-meta').textContent=[section?`${section.end-section.start-1} 项 · 整区移动`:entry.role||item?.role||'',warning||''].filter(Boolean).join(' · ');
+        row.classList.toggle('has-warning',!!warning);
+        for(const [action,text] of [['drag',section?'拖动整个分区':'拖动排序'],['jump','定位'],['up',section?'上移整个分区':'上移'],['down',section?'下移整个分区':'下移']]){
+          const node=row.querySelector(`[data-order-action="${action}"]`);node.title=`${text}：${title}`;node.setAttribute('aria-label',`${text}：${title}`);
+        }
+      });
+      if(!resolved.entries.length)this.el('p',list,'mwb-assembly-order-hint','加入内容后，可在这里快速排序。');
+      if(!this.plan.entries.some(entry=>entry.entryId===this.orderingSelectedId))this.orderingSelectedId=this.plan.entries[0]?.entryId||null;
+      this.selectOrderingEntry(this.orderingSelectedId);this.updateOrderingDestination();
+      list.scrollTop=scrollTop;
+      if(focus&&!metadataOnly){
+        const row=[...list.children].find(node=>node.dataset.entryId===focus.id),target=row?.querySelector(`[data-order-action="${focus.action}"]`);
+        const next=target?.dataset.boundary!=='true'?target:row?.querySelector('[data-order-action="jump"]');
+        next?.focus({preventScroll:true});
+        if(row){const rect=row.getBoundingClientRect(),bounds=list.getBoundingClientRect();if(rect.top<bounds.top)list.scrollTop-=bounds.top-rect.top;else if(rect.bottom>bounds.bottom)list.scrollTop+=rect.bottom-bounds.bottom;}
+      }
     }
     renderArrangement() {
       this.clearArrangementDrag();
@@ -1228,6 +1609,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
             role.value=this.plan.entries.find(value=>value.entryId===entry.entryId)?.role||'';
           });
         }
+        if(entry.score!=null)this.el('span',header,'mwb-assembly-badge',entry.score+' 分');
+        if(entry.fragmentRef)this.el('span',header,'mwb-assembly-badge','选用 '+entry.fragmentRef.ids.length+' 个片段');
         const action=(parent,label,key,callback)=>{
           const button=this.button(parent,label,callback);button.dataset.arrangementAction=key;return button;
         };
@@ -1261,11 +1644,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         if(entry.kind!=='section'){
           const source=action(actions,'打开原文','source',()=>{if(row.isConnected)return service.openSource(item?.path||entry.sourcePath);});
           source.setAttribute('aria-label',`打开原文：${item?.path||entry.sourcePath}`);
+          this.renderEntryContentSettings(actions,row,entry,item,status);
         }
         if(entry.kind==='question'&&openFamily){
           const replace=action(actions,'同族换题','family',()=>{if(row.isConnected)openFamily(this,entry.entryId);});
           replace.dataset.arrangementMutate='true';
           replace.title=item?.familyState==='classified'?'选择同族题，保留位置、卷内标题和角色':'需有效 family_id；打开后可查看不能换题的原因';
+        }
+        if(entry.kind==='question'&&openSimilarity){
+          const replace=action(actions,'相似换题','similarity',()=>{if(row.isConnected)openSimilarity(this,{entryId:entry.entryId});});
+          replace.dataset.arrangementMutate='true';replace.title='按题族、考点或方法选择候选，并核对配额与来源';
         }
         const remove=action(actions,entry.kind==='section'?'移除分区标题':'移除','remove',()=>this.changeArrangement(entry.entryId,plan=>core.removeEntry(plan,entry.entryId),row));
         remove.dataset.arrangementMutate='true';remove.classList.add('mwb-assembly-remove');
@@ -1273,10 +1661,15 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.el('p',more,'mwb-assembly-muted',section?`第 ${sectionIndex+1} 个分区，共 ${sections.length} 个；整体移动标题及下方 ${section.end-section.start-1} 项内容，直到下一个分区。移除标题会保留内容。`:`第 ${index+1} 项，共 ${this.plan.entries.length} 项；位置包含题目、知识和分区。`);
         if(entry.kind!=='section'){
           this.el('div',more,'mwb-assembly-result-path',item?.path||entry.sourcePath);
-          const message={changed:'源文已变化。可打开原文核对，再点击“接受来源更新”。',missing:'找不到源文件，请恢复来源并刷新素材，或移除此项。',conflict:'来源身份冲突，请修正后刷新素材。'}[status];
+          const message={changed:'源文已变化。可打开原文核对，再点击“接受来源更新”。',missing:'找不到源文件，请恢复来源并刷新素材，或移除此项。',conflict:'来源身份冲突，请修正后刷新素材。', 'fragment-missing':'稳定片段已缺失；请恢复锚点或切回整题／整篇。','fragment-invalid':'来源片段契约有误，请打开原文核对。'}[status];
           if(message)this.el('p',row,'mwb-assembly-error',message);
           if(status==='ok'&&item){
-            const record=this.addInlinePreview(previews,row,item);
+            let previewItem=item;
+            if(entry.fragmentRef){
+              try{previewItem={...item,markdown:core.resolveFragment(item,entry.fragmentRef).markdown};}
+              catch(error){this.el('p',row,'mwb-assembly-error',errorText(error));return;}
+            }
+            const record=this.addInlinePreview(previews,row,previewItem);
             record.node.toggleAttribute('inert',!this.arrangementExpanded.has(entry.entryId));
             record.node.setAttribute('aria-label','已选内容正文');
             const expand=action(row,'展开全文','expand',()=>{
@@ -1290,6 +1683,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         }
       });
       list.scrollTop=scrollTop;
+      this.renderOrderingSidebar();
       this.updateSummary();
       if(focus){
         const row=[...list.children].find(node=>node.dataset.entryId===focus.id);
@@ -1316,6 +1710,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const index=await service.scan(this.settings);
         if(this.closed||generation!==this.scanGeneration)return;
         this.index=index;this.indexState='ready';this.limit=100;
+        if(usageService)await this.refreshUsage();
+        if(this.closed||generation!==this.scanGeneration)return;
         this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
         const issues=index.issues?.length||0;
         this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);

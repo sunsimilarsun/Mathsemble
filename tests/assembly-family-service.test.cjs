@@ -43,6 +43,50 @@ async function withRun({locked=false,originPlan=false,cap=1}={}) {
 }
 const replacementKey=(candidate,id='B')=>candidate.candidates.find(item=>item.id===id)?.key;
 
+test('score editing derives an exact saved quota run and keeps family locks instead of silently falling back',async()=>{
+  const f=await withRun({locked:true}),planPath=await f.service.savePlan(f.plan),oldPath=await f.service.saveBlueprintRun(f.run,{planPath}),oldText=f.nodes.get(oldPath).content;
+  const writes=f.writes.length,before=clone(f.plan),result=await f.service.updateEntryContent(f.plan,f.entryId,{score:8.25});
+  assert.equal(result.plan.schemaVersion,4);assert.equal(result.plan.entries.find(e=>e.entryId===f.entryId).score,8.25);
+  assert.notEqual(result.run.runId,f.run.runId);assert.equal(result.run.basePlanSnapshotDigest,f.run.resultPlanDigest);
+  assert.deepEqual(result.run.assignments,f.run.assignments);assert.deepEqual(result.run.locks,f.run.locks);assert.equal(result.run.planPathHint,null);
+  assert.equal(f.writes.length,writes);assert.equal(f.nodes.get(oldPath).content,oldText);assert.deepEqual(f.plan,before);
+  await f.service.verifyBlueprintRun(result.run,result.plan);
+  const locked=await f.service.prepareFamilyReplacement({plan:result.plan,entryId:f.entryId,run:result.run});assert.notEqual(locked.status,'ready');
+  const unlocked=await f.service.prepareFamilyReplacement({plan:result.plan,entryId:f.entryId,run:result.run,unlock:true});assert.deepEqual(unlocked.candidates.map(q=>q.id),['B']);
+  const changed=await f.service.applyFamilyReplacement(result.plan,unlocked,replacementKey(unlocked));
+  assert.equal(changed.plan.entries.find(e=>e.entryId===f.entryId).score,8.25);assert.equal(changed.run.locks.length,0);
+  const newPath=await f.service.savePlan(result.plan),newRunPath=await f.service.saveBlueprintRun(result.run,{planPath:newPath});
+  assert.notEqual(newRunPath,oldPath);assert.equal(f.nodes.get(oldPath).content,oldText);assert.equal(f.listeners.size,0);
+});
+test('content edits use explicit pending run and reject stale or ambiguous quota records atomically',async()=>{
+  const f=await withRun({locked:true}),planPath=await f.service.savePlan(f.plan);
+  await f.service.saveBlueprintRun(f.run,{planPath});await f.service.saveBlueprintRun(f.run,{planPath});
+  const writes=f.writes.length;
+  await assert.rejects(f.service.updateEntryContent(f.plan,f.entryId,{score:5}),error=>error.code==='BLUEPRINT_RUN_SELECTION_REQUIRED');
+  const result=await f.service.updateEntryContent(f.plan,f.entryId,{score:5},{run:f.run});assert.deepEqual(result.run.locks,f.run.locks);
+  await assert.rejects(f.service.updateEntryContent(f.plan,f.entryId,{score:5},{run:{...f.run,resultPlanDigest:'0'.repeat(64)}}),/不匹配/);
+  assert.equal(f.writes.length,writes);assert.equal(f.listeners.size,0);
+});
+test('a question already bound to a quota cannot be reduced to fragments through content editing',async()=>{
+  const f=await withRun(),before=clone(f.plan);
+  await assert.rejects(f.service.updateEntryContent(f.plan,f.entryId,{fragmentRef:{kind:'question-part',ids:['p1']}},{run:f.run}),
+    error=>error.code==='BLUEPRINT_FRAGMENT_BINDING_CONFLICT');
+  assert.deepEqual(f.plan,before);assert.equal(f.writes.length,0);assert.equal(f.listeners.size,0);
+});
+test('an unassigned entry may select fragments while a derived run retains other entries quota and lock',async()=>{
+  const body='<!-- mathsemble:stem -->\n\n共同条件\n\n<!-- mathsemble:end -->\n\n<!-- mathsemble:part proof -->\n\n证明小问\n\n> [!answer]- 答案\n> 完整步骤\n\n<!-- mathsemble:end -->';
+  const f=fixture({'题库/A.md':question('A'),'题库/D.md':question('D',{family:'另一族',type:'proof',body})}),index=await f.service.scan();
+  const base=core.addItem(core.createPlan(),index.items.find(item=>item.id==='D')),entryId=base.entries[0].entryId;
+  const blueprint={schemaVersion:1,blueprintId:'mixed-v4',revision:1,title:'整题配额',rows:[{rowId:'R',label:'单选',filters:{questionType:['choice']},count:1}],constraints:{uniqueQuestion:true,maxPerFamily:1}};
+  let candidate=await f.service.generateBlueprintCandidate({plan:base,blueprint,seed:'mixed'});
+  candidate=f.service.updateBlueprintLocks(candidate,candidate.allocation.assignments.map(clone));
+  const applied=await f.service.applyBlueprintCandidate(base,candidate),result=await f.service.updateEntryContent(applied.plan,entryId,
+    {fragmentRef:{kind:'question-part',ids:['proof'],scores:{proof:5}}},{run:applied.run});
+  assert.deepEqual(result.run.assignments,applied.run.assignments);assert.deepEqual(result.run.locks,applied.run.locks);
+  assert.equal(result.plan.entries.find(entry=>entry.entryId===entryId).score,5);
+  await f.service.verifyBlueprintRun(result.run,result.plan);assert.equal(f.writes.length,0);assert.equal(f.listeners.size,0);
+});
+
 test('ordinary same-family replacement changes only source reference fields and never writes source or sidecars',async()=>{
   const f=await ordinary(),before=clone(f.plan),source=[...f.nodes.values()].filter(n=>n.extension==='md').map(n=>[n.path,n.content]);
   const candidate=await f.service.prepareFamilyReplacement({plan:f.plan,entryId:f.entryId,filters:{questionType:['choice']}});

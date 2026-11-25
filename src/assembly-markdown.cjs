@@ -1,13 +1,12 @@
 'use strict';
 
+const fragments = typeof MWB_ASSEMBLY_FRAGMENTS !== 'undefined' ? MWB_ASSEMBLY_FRAGMENTS : require('./assembly-fragments.cjs');
+
 // Compile selected source snapshots, never mutate the source notes. The result
 // is a normal handout that uses Mathsemble's existing answer/print pipeline.
+const {splitFrontmatter} = fragments;
 function stripFrontmatter(text) {
-  const value = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-  if (!/^---\s*\n/.test(value)) return value;
-  const end = /^---\s*\n[\s\S]*?\n(?:---|\.\.\.)[ \t]*(?:\n|$)/.exec(value);
-  if (!end) throw new Error('源笔记 frontmatter 未闭合，无法安全组题');
-  return value.slice(end[0].length);
+  return splitFrontmatter(text).body;
 }
 function plainTitle(value) {
   return String(value || '').replace(/[\r\n\t]+/g, ' ').trim()
@@ -291,9 +290,10 @@ function relativePath(path, outputPath) {
   while (from.length && to.length && from[0] === to[0]) { from.shift(); to.shift(); }
   return [...from.map(() => '..'), ...to].join('/') || '.';
 }
-function encodePath(value) {
-  return value.split('/').map(part => encodeURIComponent(part).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())).join('/');
+function encodeComponent(value) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
 }
+function encodePath(value) { return value.split('/').map(encodeComponent).join('/'); }
 function isExternal(value) { return /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(value); }
 function splitTarget(value) {
   const index = value.indexOf('#');
@@ -304,7 +304,9 @@ async function mapTarget(raw, sourcePath, options, image, wiki = false) {
   if (isExternal(target)) return target;
   target = target.replace(/\\([()\[\] <>])/g, '$1');
   const parts = splitTarget(target);
-  const suffix = wiki ? parts.suffix : parts.suffix ? '#' + encodeURIComponent(parts.suffix.slice(1)) : '';
+  // A Markdown fragment can already contain URL escapes, including %25 itself.
+  let suffix = parts.suffix;
+  if (!wiki && suffix) suffix = '#' + encodeComponent(suffix.slice(1)).replace(/%25([0-9a-f]{2})/gi, '%$1');
   let decoded = parts.path;
   // Markdown destinations are URLs; Wiki targets are literal vault paths.
   // Pass a canonical path to the host resolver, which must not decode again.
@@ -455,7 +457,10 @@ async function compileMarkdown(plan, resolved, options = {}) {
     if (entry.kind === 'section') { blocks.push('## ' + plainTitle(entry.title || '分区')); origins.push(null); continue; }
     if (status !== 'ok' || !item) throw new Error(`来源${status === 'changed' ? '已变化，请先接受来源更新' : '缺失或冲突'}：${entry.title || entry.sourcePath || entry.sourceId}`);
     if (!['question','knowledge'].includes(entry.kind)) throw new Error('不支持的编排类型');
-    const source = stripFrontmatter(item.markdown);
+    const fragmentSource={...item,kind:entry.kind};
+    const projected=entry.fragmentRef?fragments.resolveFragment(fragmentSource,entry.fragmentRef):null;
+    const structural=projected?null:fragments.parseFragments(fragmentSource);
+    const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
     const protector = makeProtector(source);
     let body = protectLiterals(source,protector);
     body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
@@ -466,10 +471,17 @@ async function compileMarkdown(plan, resolved, options = {}) {
     else {
       const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
       const role = roles[entry.role || item.role || item.metadata?.role] || '题';
-      blocks.push(`##### ${role}${++questionNumber} ${display}\n\n${body}`);
+      const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
+      if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
+      blocks.push(`##### ${role}${++questionNumber} ${display}${score!=null?'（'+score+' 分）':''}\n\n${body}`);
     }
+    const fragmentReference=projected?Object.freeze({...projected.reference,
+      ids:Object.freeze([...projected.reference.ids]),
+      ...(projected.reference.scores?{scores:Object.freeze({...projected.reference.scores})}:{})}):null;
     origins.push(typeof item.path === 'string' && item.path ?
-      {entryId:entry.entryId,kind:entry.kind,path:item.path} : null);
+      {entryId:entry.entryId,kind:entry.kind,path:item.path,
+        ...(fragmentReference?{fragmentRef:fragmentReference}:{}),
+        ...(Object.hasOwn(entry,'score')?{score:entry.score}:{})} : null);
   }
   const markdown = blocks.join('\n\n') + '\n';
   if (typeof config.onSourceMap === 'function') {
@@ -487,4 +499,4 @@ async function compileMarkdown(plan, resolved, options = {}) {
   }
   return markdown;
 }
-module.exports = {compileMarkdown,collectMediaDependencies};
+module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds};

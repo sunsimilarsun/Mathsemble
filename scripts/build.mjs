@@ -13,6 +13,12 @@ if (!existsSync(input)) {
 if (!existsSync(resolve(root, 'styles.css'))) throw new Error('Missing styles.css; cannot generate printing stylesheet');
 const original = readFileSync(input, 'utf8');
 let source = original.replace(/\r\n?/g, '\n');
+if (source.includes('/* MWB_HANDOUT_EMBEDS_START */')) {
+  const embeds = readFileSync(resolve(root,'src/handout-embeds.cjs'),'utf8').replace(/\r\n?/g,'\n');
+  source = source.replace(/\/\* MWB_HANDOUT_EMBEDS_START \*\/[\s\S]*?\/\* MWB_HANDOUT_EMBEDS_END \*\//,
+    () => '/* MWB_HANDOUT_EMBEDS_START */\nconst MWB_HANDOUT_EMBEDS = (() => { const module = {exports:{}};\n' +
+      embeds + '\nreturn module.exports; })();\n/* MWB_HANDOUT_EMBEDS_END */');
+}
 if (source.includes('/* MWB_EXPORT_GENERATED_START */')) {
   const modules = ['resources','archive','host'].map(name => {
     const body = readFileSync(resolve(root, `src/export-${name}.cjs`), 'utf8').replace(/\r\n?/g, '\n');
@@ -22,10 +28,12 @@ if (source.includes('/* MWB_EXPORT_GENERATED_START */')) {
     () => '/* MWB_EXPORT_GENERATED_START */\n' + modules + '\n/* MWB_EXPORT_GENERATED_END */');
 }
 if (source.includes('/* MWB_ASSEMBLY_GENERATED_START */')) {
-  const modules = ['core','markdown','blueprint','family','service','blueprint-ui','family-ui','view'].map(name => {
+  const modules = ['fragments','core','markdown','blueprint','family','similarity-text','similarity','service','usage','usage-ui','library','library-ui','presentation','blueprint-ui','family-ui','similarity-ui','view'].map(name => {
     const body = readFileSync(resolve(root, `src/assembly-${name}.cjs`), 'utf8').replace(/\r\n?/g, '\n');
     const label = name.split('-').map(part=>part[0].toUpperCase()+part.slice(1)).join('');
-    return `const mwbAssembly${label} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();`;
+    const alias=name==='fragments'?'\nconst MWB_ASSEMBLY_FRAGMENTS = mwbAssemblyFragments;':
+      name==='similarity-text'?'\nconst MWB_ASSEMBLY_SIMILARITY_TEXT = mwbAssemblySimilarityText;':'';
+    return `const mwbAssembly${label} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();${alias}`;
   }).join('\n');
   source = source.replace(/\/\* MWB_ASSEMBLY_GENERATED_START \*\/[\s\S]*?\/\* MWB_ASSEMBLY_GENERATED_END \*\//,
     () => '/* MWB_ASSEMBLY_GENERATED_START */\n' + modules + '\n/* MWB_ASSEMBLY_GENERATED_END */');

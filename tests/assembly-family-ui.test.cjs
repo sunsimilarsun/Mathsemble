@@ -17,7 +17,9 @@ async function browserCases(sources) {
   const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
   const until=async(fn,message)=>{const end=Date.now()+3000;while(!fn()&&Date.now()<end)await pause(10);ok(fn(),message);};
   const nodeCrypto={randomUUID:()=>crypto.randomUUID(),createHash(name){ok(name==='sha256','unexpected hash algorithm');let text='';return {update(value){text+=value;return this;},digest(format){ok(format==='hex','unexpected digest format');const xhr=new XMLHttpRequest();xhr.open('POST','/sha256',false);xhr.send(text);ok(xhr.status===200,'SHA endpoint failed');return xhr.responseText;}};}};
-  const load=source=>{const module={exports:{}};new Function('module','require',source)(module,name=>{if(name==='node:crypto')return nodeCrypto;throw Error('Unexpected browser require '+name);});return module.exports;};
+  let fragmentApi;
+  const load=source=>{const module={exports:{}};new Function('module','require','MWB_ASSEMBLY_FRAGMENTS',source)(module,name=>{if(name==='node:crypto')return nodeCrypto;throw Error('Unexpected browser require '+name);},fragmentApi);return module.exports;};
+  fragmentApi=load(sources.fragments);
   const core=load(sources.core),blueprintEngine=load(sources.blueprint).createBlueprintEngine({core}),familyEngine=load(sources.family).createFamilyEngine({core});
   const createService=load(sources.service),createModal=load(sources.ui),createView=load(sources.view);
   const button=(node,label)=>[...node.querySelectorAll('button')].find(el=>el.textContent.trim()===label);
@@ -154,12 +156,76 @@ async function browserCases(sources) {
     ok(opened.length===1&&opened[0].view===view&&opened[0].entryId===f.entryId,'replacement entry callback used wrong identity');
     eq(Object.keys(view.plan).sort(),['course','entries','output','schemaVersion','title'],'family UI extended plan v3');await view.onClose();await other.onClose();
   });
+
+  const questionCards=view=>[...view.results.querySelectorAll('.mwb-assembly-result')];
+  const activeFilters=view=>Object.fromEntries(Object.entries(view.filters).filter(([key,value])=>key==='kind'||key==='query'||value!==''));
+  const familyButton=(view,path)=>button(questionCards(view).find(card=>card.dataset.sourcePath===path),'查看题族');
+  async function openNavigationView(f,extra={}) {
+    f.modal.close();const Type=createView({ItemView,Component,Notice:class{},core,service:f.service,renderMarkdown:f.renderMarkdown,...extra});
+    const view=new Type({app:f.app},f.plugin),close=f.close;f.realView=view;
+    f.close=async()=>{if(!view.closed)await view.onClose();await close();};
+    await view.onOpen();view.setPlan(clone(f.view.plan));return view;
+  }
+  const navigationSnapshot=f=>({plan:clone(f.realView.plan),writes:[...f.writes],sources:[...f.nodes.values()].filter(node=>node.extension==='md').map(node=>[node.path,node.content])});
+  const assertNoNavigationWrite=(f,before)=>eq(navigationSnapshot(f),before,'family navigation changed the plan or source notes');
+
+  await check('view-family click presents a focused family overview and re-enters an already selected family',async()=>{
+    const f=await fixture({open:false}),view=await openNavigationView(f),before=navigationSnapshot(f);
+    view.filters={kind:'question',query:'A',subject:'高中数学'};view.searchInput.value='A';view.populateFilters();view.renderResults();
+    familyButton(view,'题库/A.md').click();await pause();
+    const overview=view.results.querySelector('.mwb-assembly-family-overview'),heading=overview?.querySelector('.mwb-assembly-family-title');
+    ok(heading&&heading.textContent==='题族：同族甲','view-family click did not show the family destination');
+    eq(activeFilters(view),{kind:'question',query:'',familyId:'同族甲'},'family navigation retained old content filters');
+    ok(questionCards(view).length===3&&document.activeElement===heading,'family overview did not receive focus or show all three members');
+    ok(typeof view.showFamily==='function'&&typeof view.navigateQuestionResults==='function','family navigation is not routed through the shared navigation methods');
+    const sameFamilyButton=familyButton(view,'题库/A.md'),source=view.index.items.find(item=>item.id==='A');
+    await view.showItem(source,'results');view.resultsDisclosure.open=false;
+    view.workspaceAnchors.library={path:source.path,kind:'question',top:300};view.workspaceScroll.library=300;
+    view.switchPane('filters');
+    sameFamilyButton.click();await pause();
+    const nextHeading=view.results.querySelector('.mwb-assembly-family-title');
+    ok(view.workspaceMode==='library'&&view.activePane==='library','same-family click did not return to the selection pane');
+    ok(!view.center.classList.contains('is-previewing')&&!view.selectedItem&&!view.previewReturn,'old preview still hides the family list');
+    ok(view.resultsDisclosure.open&&document.activeElement===nextHeading,'same-family click did not expand and focus the destination');
+    ok(view.workspaceAnchors.library===null,'old reading anchor survived family navigation');
+    assertNoNavigationWrite(f,before);
+  });
+
+  for(const usageState of ['ready','error','loading'])await check('view-family clears P2 usage filtering in '+usageState+' state before showing the complete family',async()=>{
+    const f=await fixture({open:false}),usageCalls=[];
+    const usageService={loadUsage:async()=>({events:[]}),summarizeUsage:()=>[],filterUsage(items,ledger,options){usageCalls.push(options.mode);return options.mode==='all'?items:items.filter(item=>item.id==='A');}};
+    const view=await openNavigationView(f,{usageService}),before=navigationSnapshot(f);
+    view.usageFilter={classId:'C1',courseId:'M1',mode:'unused',days:30};view.usageState='ready';view.usageLedger={events:[]};view.renderResults();
+    ok(questionCards(view).length===1,'usage seam did not limit the initial visible cards');
+    const target=familyButton(view,'题库/A.md');
+    view.usageState=usageState;view.usageError='合成读取错误';if(usageState!=='ready')view.usageLedger=null;
+    const generation=view.usageGeneration;target.click();await pause();
+    ok(view.usageFilter.mode==='all'&&view.usageGeneration>generation,'view-family did not cancel the old usage condition');
+    ok(questionCards(view).length===3,'usage '+usageState+' state still hides members of the family');
+    ok(view.results.querySelector('.mwb-assembly-family-title')?.textContent==='题族：同族甲','usage state prevented family destination rendering');
+    ok(!view.results.textContent.includes('使用记录待核对'),'family destination is blocked by an irrelevant usage ledger');
+    assertNoNavigationWrite(f,before);
+  });
+
+  await check('single-member family explains the empty alternatives and return-all restores all four questions',async()=>{
+    const f=await fixture({open:false}),view=await openNavigationView(f),before=navigationSnapshot(f);
+    familyButton(view,'题库/D.md').click();await pause();
+    const overview=view.results.querySelector('.mwb-assembly-family-overview');
+    ok(overview?.querySelector('.mwb-assembly-family-title')?.textContent==='题族：另一族','singleton family destination missing');
+    ok(overview.textContent.includes('当前仅收录这一题，暂无其他同族题。'),'singleton family looks like a non-working button');
+    ok(questionCards(view).length===1&&questionCards(view)[0].dataset.sourcePath==='题库/D.md','singleton lookup removed its own source');
+    const back=button(overview,'返回全部题目');ok(back,'family overview has no return path');back.click();await pause();
+    eq(activeFilters(view),{kind:'question',query:''},'return-all retained a family or content filter');
+    ok(questionCards(view).length===4&&!view.results.querySelector('.mwb-assembly-family-overview'),'return-all did not restore the complete question list');
+    ok(view.workspaceMode==='library'&&view.activePane==='library'&&view.resultsDisclosure.open,'return-all did not make the destination visible');
+    assertNoNavigationWrite(f,before);
+  });
   const output=document.createElement('pre');output.id='mwb-test-results';output.textContent=JSON.stringify(results);document.body.append(output);
 }
 
 test('family modal and AssemblyView contracts with the actual service in Chromium',async t=>{
   if(!chrome){if(process.env.CI)throw Error('Chrome is required for family UI tests');t.skip('Set CHROME_PATH');return;}
-  const sources=Object.fromEntries([['core','assembly-core.cjs'],['blueprint','assembly-blueprint.cjs'],['family','assembly-family.cjs'],['service','assembly-service.cjs'],['ui','assembly-family-ui.cjs'],['view','assembly-view.cjs']].map(([key,file])=>[key,fs.readFileSync(path.join(root,'src',file),'utf8')]));
+  const sources=Object.fromEntries([['fragments','assembly-fragments.cjs'],['core','assembly-core.cjs'],['blueprint','assembly-blueprint.cjs'],['family','assembly-family.cjs'],['service','assembly-service.cjs'],['ui','assembly-family-ui.cjs'],['view','assembly-view.cjs']].map(([key,file])=>[key,fs.readFileSync(path.join(root,'src',file),'utf8')]));
   const script='('+browserCases.toString()+')('+JSON.stringify(sources)+').catch(error=>{const out=document.createElement("pre");out.id="mwb-test-results";out.textContent=JSON.stringify([{name:"fixture initialization",ok:false,error:String(error.stack||error)}]);document.body.append(out);});';
   const html='<!doctype html><meta charset="utf-8"><body><script>'+script.replace(/<\/script/gi,'<\\/script')+'</script>';
   const server=http.createServer((request,response)=>{

@@ -105,7 +105,7 @@ test('ID-less sources use exact paths and require review if a new identity appea
 test('validation rejects hostile properties, unknown versions and malformed references',()=>{
   const valid=core.createPlan();
   assert.throws(()=>core.validatePlan(JSON.parse('{"schemaVersion":1,"title":"x","entries":[],"__proto__":{}}')),/属性/);
-  assert.throws(()=>core.validatePlan({...valid,schemaVersion:4}),/版本/);
+  assert.throws(()=>core.validatePlan({...valid,schemaVersion:5}),/版本/);
   assert.throws(()=>core.validatePlan({...valid,extra:'bad'}),/未知字段/);
   const getter={schemaVersion:1,title:'x',get entries(){throw Error('getter must not execute');}};
   assert.throws(()=>core.validatePlan(getter),/不允许的属性/);

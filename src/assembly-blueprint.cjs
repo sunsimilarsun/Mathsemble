@@ -167,6 +167,7 @@ function createBlueprintEngine({core}={}) {
       occupiedSlots.add(lock.slotId);lockedPaths.add(lock.sourcePath);if(lock.sourceId)lockedIds.add(lock.sourceId);
       if(lock.origin==='plan') {
         const value=resolvedMap.get(lock.existingEntryId);
+        if(value?.entry.fragmentRef)fail('LOCK_PARTIAL_QUESTION','已选小问不能充抵整题配额；请先在编排中恢复整题');
         if(entryIds.has(lock.existingEntryId))fail('LOCK_DUPLICATE','已有编排项只能归属一行');entryIds.add(lock.existingEntryId);
         if(!value||value.entry.kind!=='question'||value.status!=='ok'||!sameSource(lock,sourceOf(value.item||{})))fail('LOCK_SOURCE_CHANGED','锁定的已有题缺失、冲突或来源已变化');
         else if(!safe(value.item)||!matches.get(value.item)?.has(lock.rowId)||exclude.has(identity(value.item)))fail('LOCK_FILTER_MISMATCH','锁定的已有题不满足本行条件');

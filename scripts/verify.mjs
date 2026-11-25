@@ -19,6 +19,10 @@ if (manifest.isDesktopOnly !== true) throw new Error('Node/Electron requires des
 if (!manifest.description.endsWith('.') || manifest.description.length>250) throw new Error('Invalid manifest description');
 if (!read('main.js').equals(read('src/plugin.js'))) throw new Error('Build differs from source');
 const pluginSource = read('src/plugin.js').toString('utf8');
+const embeds = read('src/handout-embeds.cjs').toString('utf8').replace(/\r\n?/g,'\n');
+if (!pluginSource.includes('/* MWB_HANDOUT_EMBEDS_START */\nconst MWB_HANDOUT_EMBEDS = (() => { const module = {exports:{}};\n' +
+    embeds + '\nreturn module.exports; })();\n/* MWB_HANDOUT_EMBEDS_END */'))
+  throw new Error('Embedded handout module is stale; run npm run build');
 if (pluginSource.includes('/* MWB_EXPORT_GENERATED_START */')) {
   const modules = ['resources','archive','host'].map(name => {
     const body = read(`src/export-${name}.cjs`).toString('utf8').replace(/\r\n?/g,'\n');
@@ -28,10 +32,12 @@ if (pluginSource.includes('/* MWB_EXPORT_GENERATED_START */')) {
     throw new Error('Embedded export modules are stale; run npm run build');
 }
 if (pluginSource.includes('/* MWB_ASSEMBLY_GENERATED_START */')) {
-  const modules = ['core','markdown','blueprint','family','service','blueprint-ui','family-ui','view'].map(name => {
+  const modules = ['fragments','core','markdown','blueprint','family','similarity-text','similarity','service','usage','usage-ui','library','library-ui','presentation','blueprint-ui','family-ui','similarity-ui','view'].map(name => {
     const body = read(`src/assembly-${name}.cjs`).toString('utf8').replace(/\r\n?/g,'\n');
     const label = name.split('-').map(part=>part[0].toUpperCase()+part.slice(1)).join('');
-    return `const mwbAssembly${label} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();`;
+    const alias=name==='fragments'?'\nconst MWB_ASSEMBLY_FRAGMENTS = mwbAssemblyFragments;':
+      name==='similarity-text'?'\nconst MWB_ASSEMBLY_SIMILARITY_TEXT = mwbAssemblySimilarityText;':'';
+    return `const mwbAssembly${label} = (() => { const module = {exports:{}};\n${body}\nreturn module.exports; })();${alias}`;
   }).join('\n');
   const expected = '/* MWB_ASSEMBLY_GENERATED_START */\n' + modules + '\n/* MWB_ASSEMBLY_GENERATED_END */';
   if (!pluginSource.includes(expected)) throw new Error('Embedded assembly modules are stale; run npm run build');
