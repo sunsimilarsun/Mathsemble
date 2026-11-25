@@ -22,10 +22,10 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
  const records=[{path:'知识/集合.md',kind:'knowledge',metadata:{id:'K1',title:'集合',subject:'高中数学',teaching_tier:['基础','培优'],knowledge_nodes:['集合表示法']},markdown:'# 集合\\n完整知识正文'},
  {path:'题库/第一题.md',kind:'question',metadata:{id:'Q1',subject:'高中数学',question_type:'choice',role:'训练',knowledge_nodes:['集合表示法','[[~]]'],methods:['[[分类讨论]]',[]]},markdown:'题干（!{B}）'},
  {path:'知识/集合辨析.md',kind:'knowledge',metadata:{id:'K2',title:'集合辨析',subject:'高中数学',knowledge_nodes:['集合表示法']},markdown:'# 集合辨析\\n补充知识正文'}];
- let index=core.buildIndex(records),saved=null,lastSavePath=null;
+ let index=core.buildIndex(records),saved=null,lastSavePath=null;const markdownFormats=[];
  const service={loadSettings:async()=>({questionRoots:['题库'],knowledgeRoots:['知识'],recursive:true}),saveSettings:async()=>{},scan:async()=>index,
  listPlans:async()=>saved?[{path:'方案/test.json',title:saved.title}]:[],savePlan:async (plan,path)=>{lastSavePath=path;saved=JSON.parse(JSON.stringify(plan));return '方案/test.json';},loadPlan:async()=>saved,
- exportMarkdown:async()=> 'out/test.md',preview:async()=>{},openSource:async()=>{}};
+ exportMarkdown:async(plan,index,options)=>{markdownFormats.push(options.questionFormat);return 'out/test.md';},preview:async()=>{},openSource:async()=>{}};
  let sessions=0,sessionWrites=0,sessionReads=0;
  service.createPlanSession=()=>{sessions++;return {
    savePlan:async(...args)=>{sessionWrites++;return service.savePlan(...args);},
@@ -51,6 +51,8 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
  await view.showItem(index.items[0]);check(view.preview.textContent.includes('完整知识正文'),'whole knowledge preview');
  const before=JSON.stringify(view.plan);view.add(index.items[0]);check(JSON.stringify(view.plan)===before,'duplicate rejected without changing plan');
  const click=async label=>{[...view.root.querySelectorAll('button')].find(b=>b.textContent===label).click();await new Promise(resolve=>setTimeout(resolve,10));};
+ await click('保存讲义（引用题卡）');await click('保存展开副本');
+ check(markdownFormats.join(',')==='reference,expanded'&&JSON.stringify(view.plan)===before,'reference and expanded actions preserve the draft');
  await click('保存方案');check(saved&&view.dirty===false&&sessionWrites===1,'explicit session save clears dirty');
  await click('另存方案');check(lastSavePath===undefined&&view.dirty===false&&view.planPath==='方案/test.json','save as creates a new plan without overwrite path');
  await click('预览编排');
@@ -71,6 +73,6 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
   const file=path.join(dir,'ui.html');fs.writeFileSync(file,html);
   const result=await runChromeDocument(chrome,file,path.join(dir,'profile'));
   assert.equal(result.passed,true,result.error);
-  assert.equal(result.checks.length,23);
+  assert.equal(result.checks.length,24);
  } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });

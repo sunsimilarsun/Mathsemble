@@ -107,3 +107,61 @@ test('detects cycles by resolved file and fragment and allows repetition outside
   const options = host({'bank/a.md':'![[b]]','bank/b.md':'![[a|循环]]'});
   await assert.rejects(expandHandoutEmbeds('![[a]]',entry,options), /循环嵌入.*bank\/a.md → bank\/b.md → bank\/a.md/);
 });
+
+test('whole question embeds use one ordinal per occurrence and respect outer and original H5 labels', async () => {
+  const plain = '---\nobject_type: item\n---\n题干 $x$。\n\n## 题内提示\n内容';
+  const named = '---\nobject_type: item\n---\n# 原题卡\n\n##### 【自设题标】\n已给题干\n\n##### 小问\n第二问';
+  const options = host({'bank/A.md':plain,'bank/B.md':named,'bank/知识.md':'知识正文'});
+  options.isQuestionNote = text => text.includes('object_type: item');
+  const source = ['![[bank/A.md]]','![[bank/知识.md]]','![[bank/B.md]]','##### 教师自设标题','',
+    '![[bank/B.md]]','讲解仍在外层显式 H5 内。','![[bank/A.md]]','独立点评。'].join('\n');
+  const result = await expandHandoutEmbeds(source,entry,options);
+  assert.deepEqual(result.markdown.match(/^##### .+$/gm),[
+    '##### <span class="mwb-auto-question-number">1.</span>', '##### 【自设题标】', '##### 教师自设标题',
+    '##### <span class="mwb-auto-question-number">4.</span>']);
+  assert.equal((result.markdown.match(/^###### 小问$/gm)||[]).length,2);
+  assert.equal((result.markdown.match(/^###### 题内提示$/gm)||[]).length,2);
+  assert.doesNotMatch(result.markdown,/^# 原题卡$/m);
+  assert.equal((result.markdown.match(/data-mwb-embed-end=/g)||[]).length,3);
+  assert.match(result.markdown,/<span data-mwb-embed-end=""><\/span>\n\n知识正文|<span data-mwb-embed-end=""><\/span>\n\n\n知识正文/);
+  assert.equal(result.dependencies.find(row=>row.path==='bank/B.md').markdown,named);
+  const expanded = result.markdown.split('\n');
+  assert.equal(result.rootLines.length,expanded.length);
+  assert.equal(result.rootLines[expanded.indexOf('独立点评。')],source.split('\n').length);
+  assert.equal(result.rootLines[expanded.findIndex(line=>line.includes('4.</span>'))],8);
+});
+
+test('fragment, nested, quote, list and media embeds do not count as root question occurrences',async () => {
+  const card = '---\nobject_type: item\n---\n题干', options = host({'Q.md':card,'knowledge.md':'![[Q]]','fig.png':''});
+  options.isQuestionNote = text => text.includes('object_type: item');
+  options.selectSubpath = () => '题卡摘录';
+  const result = await expandHandoutEmbeds(['![[knowledge]]','![[Q#标题]]','> ![[Q]]','- 材料','  ![[Q]]',
+    '![[fig.png]]','##### 方法总结','回顾知识。','![[Q]]'].join('\n'),entry,options);
+  assert.deepEqual(result.markdown.match(/class="mwb-auto-question-number">\d+\./g),['class="mwb-auto-question-number">1.']);
+  assert.equal((result.markdown.match(/data-mwb-embed-end=/g)||[]).length,1);
+  assert.match(result.markdown,/题卡摘录/);
+  assert.match(result.markdown,/> 题干/);
+});
+
+test('expanded fragments and hand-written question labels share ordinals with following references',async () => {
+  const options = host({'q.md':'题干'});
+  options.isQuestionNote = () => true;
+  options.isQuestionTitle = label => label.startsWith('【例1】 ');
+  const result = await expandHandoutEmbeds(['##### 方法总结','总结说明','##### 【例1】手写题','第一题手写题干',
+    '<!-- mathsemble:compiled-question -->','##### 我为片段起的题标','片段题干',
+    '##### <span class="mwb-auto-question-number">9.</span>','固定片段','![[q.md]]',
+    '##### 5.手工题标','','![[q.md]]','![[q.md]]'].join('\n'),entry,options);
+  assert.deepEqual(Array.from(result.markdown.matchAll(/class="mwb-auto-question-number">(\d+)\./g),m=>m[1]),['3','4','6']);
+});
+
+test('reordering whole and expanded questions updates automatic numbers while preserving per-question points',async () => {
+  const options = host({'A.md':'第一题题干','B.md':'第二题题干'});
+  options.isQuestionNote = () => true;
+  const auto = (n, score) => `##### <span class="mwb-auto-question-number">${n}.</span>（${score} 分）`;
+  const source = ['![[B]]',auto(7,4.5),'![[A]]',auto(1,0),'展开片段','##### 自定义题标（2 分）','![[B]]','![[A]]'].join('\n');
+  const result = await expandHandoutEmbeds(source,entry,options);
+  assert.deepEqual(result.markdown.match(/^##### .+$/gm),['##### <span class="mwb-auto-question-number">1.</span>',
+    auto(2,4.5),auto(3,0),'##### 自定义题标（2 分）','##### <span class="mwb-auto-question-number">5.</span>']);
+  const fixed = await expandHandoutEmbeds([auto(12,0),'已展开的题干'].join('\n'),entry,options);
+  assert.equal(fixed.markdown,[auto(1,0),'已展开的题干'].join('\n'));
+});

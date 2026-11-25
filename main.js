@@ -897,6 +897,7 @@ function mwbHandoutQuestionPlan(markdown) {
   let hash = 2166136261;
   for (let i=0;i<text.length;i++) hash = Math.imul(hash ^ text.charCodeAt(i),16777619);
   const token = 'mwb-h5-' + (hash >>> 0).toString(16);
+  const embedEnds = [];
   let yaml = lines[0]?.replace(/^\uFEFF/,'').trim()==='---';
   let fence = null, html = null, comment = false, displayMath = false, bracketMath = false;
   let current = null;
@@ -930,6 +931,13 @@ function mwbHandoutQuestionPlan(markdown) {
     if(/^ {0,3}>/.test(line)||/^(?: {4}| {0,3}\t)/.test(line))continue;
     const open=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if(open&&!(open[1][0]==='`'&&open[2].includes('`'))){fence=open[1];continue;}
+    // An expanded whole-card reference owns only its source content. Close it
+    // before any ordinary prose or knowledge following the embed in the handout.
+    if(line==='<span data-mwb-embed-end=""></span>') {
+      embedEnds.push({index:i,level:0,token:token+'-end-'+embedEnds.length});
+      close(i);
+      continue;
+    }
     const commentAt=line.indexOf('<!--');
     if(commentAt>=0){comment=line.indexOf('-->',commentAt+4)<0;continue;}
     const raw=/^ {0,3}<(script|pre|style|textarea)(?:\s|>|$)/i.exec(line);
@@ -985,7 +993,7 @@ function mwbHandoutQuestionPlan(markdown) {
   for(const group of groups) {
     if(!lines.slice(group.start+1,group.end).join('\n').replace(/<!--[\s\S]*?-->/g,'').trim())
       errors.push({line:group.start+1,code:'empty-block',message:'五级块标题后没有正文：'+(group.title||'(空标题)')});
-    group.endToken=headings.find(h=>h.index===group.end)?.token || null;
+    group.endToken=headings.find(h=>h.index===group.end)?.token || embedEnds.find(e=>e.index===group.end)?.token || null;
   }
   const projected=[...lines];
   for(const heading of headings){
@@ -996,21 +1004,25 @@ function mwbHandoutQuestionPlan(markdown) {
       ? projected[i].replace(/^(#{1,6})(?:[ \t]+|$)/, '$1 '+mark+' ')
       : projected[i]+' '+mark;
   }
-  return {markdown:projected.join('\n'),groups,headings,warnings,errors,lineCount:lines.length,token,candidates};
+  for(const end of embedEnds)
+    projected[end.index]='<span data-mwb-heading-token="'+end.token+'" aria-hidden="true"></span>';
+  return {markdown:projected.join('\n'),groups,headings,embedEnds,warnings,errors,lineCount:lines.length,token,candidates};
 }
 function mwbApplyHandoutQuestions(root,plan,sourcePath='',validateOnly=false) {
   if(plan.errors.length)throw new Error(plan.errors.map(e=>'第 '+e.line+' 行：'+e.message).join('；'));
   const spans=Array.from(root.querySelectorAll('[data-mwb-heading-token]')).filter(el=>el.getAttribute('data-mwb-heading-token')?.startsWith(plan.token+'-'));
-  if(spans.length!==plan.headings.length)throw new Error('五级块标题源码/渲染映射数量不一致，已停止严格分页');
+  const embedEnds=plan.embedEnds || [];
+  const boundaries=embedEnds.length ? [...plan.headings,...embedEnds].sort((a,b)=>a.index-b.index) : plan.headings;
+  if(spans.length!==boundaries.length)throw new Error('五级块标题源码/渲染映射数量不一致，已停止严格分页');
   const nodes=new Map(),seen=new Set();
   const visibleHeaders=Array.from(root.querySelectorAll('h1,h2,h3,h4,h5')).filter(h=>!h.closest('.callout,li,blockquote,pre,code'));
   if(visibleHeaders.length!==plan.headings.length)throw new Error('存在无法映射的顶层标题（如缩进、原生 HTML 或特殊扩展），已停止严格分页');
   const order=Array.from(root.children);let lastIndex=-1;
-  for(const header of plan.headings){
+  for(const header of boundaries){
     const matches=spans.filter(s=>s.getAttribute('data-mwb-heading-token')===header.token);
     if(matches.length!==1)throw new Error('块边界标记重复或缺失：第 '+(header.index+1)+' 行');
-    const mark=matches[0],heading=mark.closest('h1,h2,h3,h4,h5');
-    if(!heading || heading.tagName!=='H'+header.level || heading.closest('.callout,li,blockquote,pre,code'))
+    const mark=matches[0],heading=header.level ? mark.closest('h1,h2,h3,h4,h5') : mark;
+    if(!heading || (header.level && heading.tagName!=='H'+header.level) || heading.closest('.callout,li,blockquote,pre,code'))
       throw new Error('第 '+(header.index+1)+' 行不是顶层标题，不能安全分组');
     let outer=heading;
     while(outer.parentElement&&outer.parentElement!==root){
@@ -1027,7 +1039,7 @@ function mwbApplyHandoutQuestions(root,plan,sourcePath='',validateOnly=false) {
   // Validate all boundaries before moving any user content. Tokens are only
   // in the temporary projection; neither Markdown nor PDF retains them.
   if(validateOnly)return {spans,nodes};
-  for(const span of spans)span.remove();
+  for(const span of spans)if(!span.getAttribute('data-mwb-heading-token').startsWith(plan.token+'-end-'))span.remove();
   for(const group of plan.groups){
     const start=nodes.get(group.headingToken),end=group.endToken?nodes.get(group.endToken):null;
     if(!start||start.parentElement!==root||(end&&end.parentElement!==root))throw new Error('块范围映射失效');
@@ -1047,7 +1059,24 @@ function mwbApplyHandoutQuestions(root,plan,sourcePath='',validateOnly=false) {
     let item=start;
     while(item&&item!==end){const next=item.nextSibling;content.appendChild(item);item=next;}
     if(end&&item!==end)throw new Error('题目结束边界不在同一渲染层级');
+    const autoNumber = heading?.querySelector('span.mwb-auto-question-number');
+    if (autoNumber && /^\d+\.$/.test(autoNumber.textContent) && label.startsWith(autoNumber.textContent) &&
+        /^(?:（\d+(?:\.\d+)? 分）)?$/.test(label.slice(autoNumber.textContent.length))) {
+      const first = start.nextElementSibling;
+      const stem = first?.matches('p') ? first : first?.matches('div') && first.children.length === 1 &&
+        first.firstElementChild.matches('p') ? first.firstElementChild : null;
+      if (stem) {
+        stem.prepend(label + ' ');
+        start.remove();
+      } else {
+        // A display equation, table or list cannot accept inline prose.
+        const paragraph = root.ownerDocument.createElement('p');
+        paragraph.textContent = label;
+        start.replaceWith(paragraph);
+      }
+    }
   }
+  for(const end of embedEnds)nodes.get(end.token).remove();
   root.setAttribute('data-mwb-question-policy','strict-h5');
   root.setAttribute('data-mwb-question-count',String(plan.groups.length));
   return plan.groups.length;
@@ -4506,10 +4535,15 @@ function markShortQuestions(root, getStyle = (el) => el.ownerDocument?.defaultVi
 // block which creates an unwanted line break and orphaned number.
 function insertQuestionNumber(content, number, doc = content.ownerDocument) {
   if (!Number.isInteger(number) || number < 1) throw new Error('无效题号');
+  const first = content.firstElementChild;
+  // The folder shortcut renders each card separately. Obsidian may wrap
+  // a rendered heading in a div, including the optional leading file title.
+  const isHeading = (node, tag) => node?.tagName === tag ||
+    (node?.tagName === 'DIV' && node.childElementCount === 1 && node.firstElementChild?.tagName === tag);
+  if (isHeading(isHeading(first,'H1') ? first.nextElementSibling : first,'H5')) return null;
   const span = doc.createElement('span');
   span.className = 'mwb-question-index';
   span.textContent = `${number}.`;
-  const first = content.firstElementChild;
   if (first && first.tagName?.toUpperCase() === 'P') {
     first.prepend(span);
   } else {
@@ -5260,6 +5294,11 @@ async function mwbReadSourceSnapshot(vault, scope, {signal, timeoutMs = 60000, r
           return scope.resolveLink(target, fromPath);
         },
         selectSubpath:scope.selectSubpath,
+        isQuestionNote:markdown => {
+          const meta = mwbSourceMetadata(markdown);
+          return isQuestion(meta) || meta.type === '题卡';
+        },
+        isQuestionTitle:mwbQuestionTitle,
         readFile:async file => {
           check();
           dependencies.set(file.path, mwbSourceStamp(file));
@@ -6502,21 +6541,94 @@ async function rewriteLinks(source, path, prefix, options, protector) {
   return text;
 }
 
-function normalizeHeadings(text, kind) {
+function normalizeHeadings(text, kind, takeQuestionHeading) {
   const lines = text.split('\n');
-  let firstContent = true;
+  let firstContent = true, afterTitle = true, previousProse = false;
   for (let i=0;i<lines.length;i++) {
-    if (!lines[i].trim()) continue;
+    if (!lines[i].trim()) { previousProse=false; continue; }
     const atx = /^(#{1,6})[ \t]+(.*)$/.exec(lines[i]);
-    const setext = i+1 < lines.length && /^(?:=+|-+)[ \t]*$/.test(lines[i+1]) && lines[i+1] !== '------' &&
-      !/^(?:[> \t]|MWBPROTECTEDTOKEN)/.test(lines[i]);
+    const rule = /^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(lines[i]);
+    const prose = !atx && !rule && !/^(?:[> \t]|MWBPROTECTEDTOKEN)/.test(lines[i]);
+    // Obsidian treats --- after a multi-line paragraph as a horizontal rule.
+    const setext = prose && !previousProse && i+1 < lines.length &&
+      /^(?:=+|-+)[ \t]*$/.test(lines[i+1]) && lines[i+1] !== '------';
+    previousProse = prose && !setext;
     if (firstContent && atx?.[1] === '#') { lines[i] = ''; firstContent = false; continue; }
     if (firstContent && setext && lines[i+1][0] === '=') { lines[i] = ''; lines[++i] = ''; firstContent = false; continue; }
     firstContent = false;
+    if (afterTitle && takeQuestionHeading && atx?.[1] === '#####') {
+      takeQuestionHeading(lines[i]);
+      lines[i] = ''; afterTitle = false; continue;
+    }
+    afterTitle = false;
     if (atx) lines[i] = '#'.repeat(kind === 'question' ? 6 : Math.min(4, atx[1].length + 1)) + ' ' + atx[2];
     else if (setext) { lines[i] = (kind === 'question' ? '###### ' : '### ') + lines[i]; lines[++i] = ''; }
   }
-  return lines.join('\n').trim();
+  return lines.join('\n');
+}
+
+function splitQuestionHeading(protectedSource) {
+  let heading = '';
+  const body = normalizeHeadings(protectedSource, 'question', value => { heading = value; });
+  return {heading,body};
+}
+
+function numberedQuestionHeading(number,score) {
+  return `##### <span class="mwb-auto-question-number">${number}.</span>` + (score == null ? '' : '（' + score + ' 分）');
+}
+
+function occurrenceHeading(entry, item, number, sourceHeading) {
+  const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
+  const sourceRole = roles[item.role || item.metadata?.role] || '';
+  const changedRole = !!entry.role && roles[entry.role] !== sourceRole;
+  const changedTitle = !!entry.title && entry.title !== item.title;
+  let heading = sourceHeading;
+  if (changedRole || changedTitle) {
+    const parts = [];
+    if (changedRole) parts.push(roles[entry.role] + number);
+    if (entry.title) parts.push(plainTitle(entry.title));
+    heading = '##### ' + parts.join(' ');
+  }
+  return heading;
+}
+
+function headingWithScore(heading,number,score) {
+  if (score == null) return heading;
+  return heading ? heading + '（' + score + ' 分）' : numberedQuestionHeading(number,score);
+}
+
+async function questionEmbed(path, config) {
+  // Include the vault path and extension so another folder's namesake cannot
+  // silently become this lesson's question. Markdown URLs handle Wiki delimiters.
+  const wiki = !/[#^|\[\]\\\r\n]/.test(path);
+  const target = wiki ? path : relativePath(path, config.outputPath);
+  const resolved = await config.resolveLink(target, config.outputPath);
+  if (resolved?.path !== path) throw new Error('无法从讲义准确引用题卡：' + path + '；请核对路径，或保存展开副本');
+  return wiki ? '![[' + path + ']]' : '![](' + encodePath(target) + ')';
+}
+
+async function referenceQuestionBlock(entry,item,number,prefix,config) {
+  const embed = await questionEmbed(item.path,config);
+  const score = Object.hasOwn(entry,'score') ? fragments.validateScore(entry.score) : null;
+  let heading = occurrenceHeading(entry,item,number,'');
+  if (!heading && score != null) {
+    // Only a carried-over manual heading needs rebasing. The linked note's
+    // remaining media and nested note embeds belong to its later render.
+    const lines = stripFrontmatter(item.markdown).replace(/\r\n?/g,'\n').split('\n');
+    let first=lines.findIndex(line=>line.trim());
+    if (first>=0) {
+      if (/^#[ \t]+/.test(lines[first])) first++;
+      else if (!/^[> \t]/.test(lines[first]) && /^=+[ \t]*$/.test(lines[first+1]||'')) first+=2;
+      while (first<lines.length && !lines[first].trim()) first++;
+      if (/^#####[ \t]+/.test(lines[first]||'')) {
+        const protect = makeProtector(lines[first]);
+        const titled = protectLiterals(lines[first],protect);
+        heading = protect.restore(await rewriteLinks(titled,item.path,prefix,config,protect));
+      }
+    }
+  }
+  heading = headingWithScore(heading,number,score);
+  return heading ? heading + '\n\n' + embed : embed;
 }
 
 async function compileMarkdown(plan, resolved, options = {}) {
@@ -6543,21 +6655,30 @@ async function compileMarkdown(plan, resolved, options = {}) {
     if (!['question','knowledge'].includes(entry.kind)) throw new Error('不支持的编排类型');
     const fragmentSource={...item,kind:entry.kind};
     const projected=entry.fragmentRef?fragments.resolveFragment(fragmentSource,entry.fragmentRef):null;
-    const structural=projected?null:fragments.parseFragments(fragmentSource);
-    const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
-    const protector = makeProtector(source);
-    let body = protectLiterals(source,protector);
-    body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
-    body = protector.restore(normalizeHeadings(body,entry.kind));
-    if (!body.trim()) throw new Error('来源正文为空：' + item.path);
-    const display = plainTitle(entry.title || item.title || item.path.split('/').pop().replace(/\.md$/i,''));
-    if (entry.kind === 'knowledge') blocks.push('## ' + display + '\n\n' + body);
-    else {
-      const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
-      const role = roles[entry.role || item.role || item.metadata?.role] || '题';
-      const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
-      if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
-      blocks.push(`##### ${role}${++questionNumber} ${display}${score!=null?'（'+score+' 分）':''}\n\n${body}`);
+    if (entry.kind === 'question') questionNumber++;
+    if (entry.kind === 'question' && !projected && config.questionFormat === 'reference') {
+      blocks.push(await referenceQuestionBlock(entry,item,questionNumber,`mwb-${i+1}`,config));
+    } else {
+      const structural=projected?null:fragments.parseFragments(fragmentSource);
+      const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
+      const protector = makeProtector(source);
+      let body = protectLiterals(source,protector);
+      body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
+      const question = entry.kind === 'question' ? splitQuestionHeading(body) : null;
+      const sourceHeading = question ? protector.restore(question.heading) : '';
+      body = protector.restore((question ? question.body : normalizeHeadings(body,entry.kind)).trim());
+      if (!body.trim()) throw new Error('来源正文为空：' + item.path);
+      if (entry.kind === 'knowledge') {
+        const display = plainTitle(entry.title || item.title || item.path.split('/').pop().replace(/\.md$/i,''));
+        blocks.push('## ' + display + '\n\n' + body);
+      } else {
+        const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
+        if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
+        const heading = occurrenceHeading(entry,item,questionNumber,sourceHeading);
+        const boundary = headingWithScore(heading,questionNumber,score) || numberedQuestionHeading(questionNumber);
+        const hint = heading && config.questionFormat === 'reference' ? '<!-- mathsemble:compiled-question -->\n' : '';
+        blocks.push(hint + boundary + '\n\n' + body);
+      }
     }
     const fragmentReference=projected?Object.freeze({...projected.reference,
       ids:Object.freeze([...projected.reference.ids]),
@@ -6583,7 +6704,7 @@ async function compileMarkdown(plan, resolved, options = {}) {
   }
   return markdown;
 }
-module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds};
+module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds,splitQuestionHeading,numberedQuestionHeading};
 
 return module.exports; })();
 const mwbAssemblyBlueprint = (() => { const module = {exports:{}};
@@ -8029,7 +8150,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       const {result,sources} = await readResolvedSources(plan,config,io);
       let sourceMap = Object.freeze([]);
       const outputPath = options.outputPath || `${outputFolder}/讲义.md`;
-      const markdown = await io.run(()=>compileMarkdown(plan,result.entries,{outputPath,
+      const markdown = await io.run(()=>compileMarkdown(plan,result.entries,{outputPath,questionFormat:options.questionFormat,
         onSourceMap:rows => {sourceMap = Object.freeze(rows.map(row=>Object.freeze({...row})));},
         resolveLink:async (target,sourcePath) => {
           io.check();
@@ -8041,9 +8162,11 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       return {markdown,sources,sourceMap};
     } finally {guard?.dispose();io.close();}
   }
-  async function exportMarkdown(plan,index) {
-    const path = uniquePath(outputFolder,plan.title,'md');
-    const {markdown} = await compile(plan,index,{outputPath:path});
+  async function exportMarkdown(plan,index,{questionFormat = 'reference'} = {}) {
+    if (!['reference','expanded'].includes(questionFormat)) throw new Error('未知的讲义保存格式');
+    const title = questionFormat === 'expanded' ? plan.title + '（展开副本）' : plan.title;
+    const path = uniquePath(outputFolder,title,'md');
+    const {markdown} = await compile(plan,index,{outputPath:path,questionFormat});
     await ensureFolder(outputFolder); await vault.create(path,markdown); return path;
   }
   async function preview(raw,index,options = {}) {
@@ -9979,9 +10102,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       save.title=planSaveHint;
       const pdf=this.button(primary, '预览 A4', () => this.runAction('准备临时 A4 预览', async () => {
         await service.preview(core.validatePlan(this.plan), this.index,this.bindPreviewContext());
-        this.setStatus('临时 A4 预览已打开，可选择学生版或教师版并导出 PDF；如需 Markdown，请保存讲义副本。');
+        this.setStatus('临时 A4 预览已打开。需要 Markdown 时，请在方案操作中保存讲义。');
       }),'mod-cta');
-      pdf.title='查看当前内容的临时预览，不新增 Markdown，也不保存编排方案；需要文件时使用“保存讲义副本”。';
+      pdf.title='按当前编排预览并导出 PDF 或 HTML。';
       const menu=this.el('details',primary,'mwb-assembly-plan-menu');
       this.planMenu=menu;
       this.el('summary',menu,'','方案操作');
@@ -10002,11 +10125,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.savedSelect = this.field(menuBody, '已保存方案', 'select');
       this.populatePlans();
       this.button(menuBody, '打开方案', () => this.loadSelectedPlan());
-      const exportMarkdown=this.button(menuBody, '保存讲义副本', () => this.runAction('保存讲义副本', async () => {
-        const path = await service.exportMarkdown(core.validatePlan(this.plan), this.index);
-        if (!this.closed) { this.setStatus('讲义副本已保存：' + path); this.notice('讲义副本已保存：' + path); }
-      }));
-      exportMarkdown.title='按当前编排新建一份 Markdown；已有讲义副本不自动更新。';
+      for (const [format,label,hint] of [
+        ['reference','保存讲义（引用题卡）','整题链接到源题卡；知识和所选小问保存本次正文。'],
+        ['expanded','保存展开副本','按当前编排新建 Markdown，保存所有条目的本次正文。']
+      ]) {
+        const saveHandout=this.button(menuBody,label,()=>this.runAction(label,async()=>{
+          const path = await service.exportMarkdown(core.validatePlan(this.plan),this.index,{questionFormat:format});
+          if (!this.closed) { this.setStatus('已保存：' + path); this.notice('已保存：' + path); }
+        }));
+        saveHandout.title=hint;
+      }
       menu.addEventListener('keydown',event=>{if(event.key==='Escape'){menu.open=false;menu.querySelector('summary').focus();}});
       menu.addEventListener('toggle',()=>this.resizePlanMenu());
       const MenuObserver=this.contentEl.ownerDocument.defaultView?.ResizeObserver;
@@ -12070,7 +12198,8 @@ return module.exports; })();
 const MWB_HANDOUT_EMBEDS = (() => { const module = {exports:{}};
 'use strict';
 
-const {stripFrontmatter, makeProtector, protectLiterals, rewriteLinks, escapedAt, markdownLinkBounds} =
+const {stripFrontmatter, makeProtector, protectLiterals, rewriteLinks, escapedAt, markdownLinkBounds,
+  splitQuestionHeading, numberedQuestionHeading} =
   typeof mwbAssemblyMarkdown !== 'undefined' ? mwbAssemblyMarkdown : require('./assembly-markdown.cjs');
 
 function destination(text) {
@@ -12102,12 +12231,12 @@ function* lineEmbeds(line, protect) {
 
 // All paths are vault paths. The host owns Obsidian's link resolution and
 // heading/block boundaries. Expanded text exists only for this render.
-async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile, selectSubpath}) {
+async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile, selectSubpath, isQuestionNote, isQuestionTitle}) {
   const snapshots = new Map(), embeddedLinks = [];
-  let occurrence = 0, rootLines;
+  let occurrence = 0, questionNumber = 0, rootLines;
 
   async function visit(raw, path, file, chain, isRoot, excerpt = false) {
-    if (isRoot && !raw.includes('![')) return raw;
+    if (isRoot && !raw.includes('![') && !raw.includes('mwb-auto-question-number')) return raw;
     const normalized = raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
     const body = excerpt ? normalized : stripFrontmatter(normalized);
     const frontmatter = isRoot ? normalized.slice(0, normalized.length - body.length) : '';
@@ -12121,9 +12250,33 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
     const children = [];
     const lines = scanned.split('\n');
     const namespace = 'mwb-embed-' + ++occurrence;
+    let previousContent = -1, lastHeading, listIndent = 0, renumbered = false;
 
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
+      const previous = previousContent;
+      if (line.trim()) previousContent = index;
+      if (isRoot && line.trim()) {
+        const list = /^( {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line);
+        if (list) listIndent = list[1].length;
+        else if (line.length - line.trimStart().length < listIndent) listIndent = 0;
+        if (/^#####(?:[ \t]|$)/.test(line)) {
+          const label = protect.restore(line).replace(/^#####[ \t]*/, '').replace(/[ \t]+#+[ \t]*$/, '').trim();
+          const auto = /^<span class="mwb-auto-question-number">\d+\.<\/span>(（\d+(?:\.\d+)? 分）)?$/.exec(label);
+          const compiled = previous >= 0 && protect.restore(lines[previous]).trim() === '<!-- mathsemble:compiled-question -->';
+          // "【例 1】求值" is the same explicit question label as "【例 1】 求值".
+          const numberedTitle = label.replace(/^([【\[][^】\]]+[】\]])(?=\S)/, '$1 ');
+          const counted = auto || compiled || /^\d+[.．、](?!\d)/.test(label) || !!isQuestionTitle?.(numberedTitle);
+          if (counted) questionNumber++;
+          // A saved handout may interleave expanded fragments and live references.
+          if (auto) {
+            const heading = numberedQuestionHeading(questionNumber) + (auto[1] || '');
+            if (heading !== protect.restore(line)) { lines[index] = heading; renumbered = true; }
+          }
+          lastHeading = {index, counted, compiled, auto};
+          continue;
+        }
+      }
       for (const match of lineEmbeds(line, protect)) {
         const rawTarget = match.target;
         const hash = rawTarget.indexOf('#');
@@ -12159,18 +12312,37 @@ async function expandHandoutEmbeds(markdown, sourcePath, {resolveLink, readFile,
             throw new Error('无法定位嵌入的标题或块：' + where);
         }
         embeddedLinks.push({sourcePath:path, target:link+rawSubpath, ...(wiki ? {} : {syntax:match.syntax})});
-        const expanded = await visit(contents, target.path, target, [...chain,key], false, !!subpath);
+        let expanded = await visit(contents, target.path, target, [...chain,key], false, !!subpath);
+        const wholeQuestion = isRoot && !prefix.trim() && !listIndent && !subpath && isQuestionNote?.(contents);
+        let title = '', closeQuestion = false;
+        if (wholeQuestion) {
+          const outer = lastHeading?.index === previous ? lastHeading : null;
+          if (!outer?.counted) questionNumber++;
+          const literal = makeProtector(expanded);
+          const protectedBody = protectLiterals(expanded, literal)
+            .replace(/%%[\s\S]*?(?:%%|$)/g, value => literal.save(value));
+          const split = splitQuestionHeading(protectedBody);
+          if (!outer) title = split.heading ? literal.restore(split.heading) : numberedQuestionHeading(questionNumber);
+          expanded = literal.restore(split.body);
+          // Explicit hand-written H5 blocks can include teaching notes after the
+          // embed. Preserve their existing scope; generated blocks end with the card.
+          closeQuestion = !outer || outer.compiled || outer.auto;
+        }
         const quote = prefix.trimEnd();
         const quoted = expanded.trimEnd().split('\n').map(row => row ? prefix + row : quote);
         // Delimit a transclusion on both sides. Adjacent standalone embeds,
         // including ones inside a quote, stay independent Markdown blocks.
-        const child = [quote, ...quoted, quote].join('\n');
+        const block = [quote];
+        if (title) block.push(title, '');
+        block.push(...quoted, quote);
+        if (closeQuestion) block.push('<span data-mwb-embed-end=""></span>', '');
+        const child = block.join('\n');
         lines[index] = marker + children.length + 'END';
         children.push(child);
         break;
       }
     }
-    if (isRoot && !children.length) return raw;
+    if (isRoot && !children.length && !renumbered) return raw;
     if (isRoot) {
       let original = frontmatter.split('\n').length;
       rootLines = Array.from({length:original - 1}, (_, i) => i + 1);
@@ -13433,7 +13605,7 @@ class PreviewModal extends Modal {
           : teachingRoleSummary([{ markdown:this.markdown }]);
         const previewInfo = extra + '；教学角色：' + roles +
           '；留白几何核验 ' + this.spaceDiagnostics.length + ' 项' + previewNote +
-          (this.questionPlan ? `；按五级标题识别 ${this.questionPlan.groups.length} 个块，${this.questionPlan.warnings.length} 处边界提示` : '') + '。' +
+          (this.questionPlan ? `；已识别 ${this.questionPlan.groups.length} 个内容块，${this.questionPlan.warnings.length} 处边界提示` : '') + '。' +
           (this.exam ? ` 共 ${this.exam.items.length} 题。` : this.documentMode ? ` 文档 ${this.markdown.length} 字符。` : '');
         const warnings = [...new Set(this.renderWarnings)];
         this.renderWarnings = warnings;

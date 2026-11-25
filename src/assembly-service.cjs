@@ -688,7 +688,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       const {result,sources} = await readResolvedSources(plan,config,io);
       let sourceMap = Object.freeze([]);
       const outputPath = options.outputPath || `${outputFolder}/讲义.md`;
-      const markdown = await io.run(()=>compileMarkdown(plan,result.entries,{outputPath,
+      const markdown = await io.run(()=>compileMarkdown(plan,result.entries,{outputPath,questionFormat:options.questionFormat,
         onSourceMap:rows => {sourceMap = Object.freeze(rows.map(row=>Object.freeze({...row})));},
         resolveLink:async (target,sourcePath) => {
           io.check();
@@ -700,9 +700,11 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       return {markdown,sources,sourceMap};
     } finally {guard?.dispose();io.close();}
   }
-  async function exportMarkdown(plan,index) {
-    const path = uniquePath(outputFolder,plan.title,'md');
-    const {markdown} = await compile(plan,index,{outputPath:path});
+  async function exportMarkdown(plan,index,{questionFormat = 'reference'} = {}) {
+    if (!['reference','expanded'].includes(questionFormat)) throw new Error('未知的讲义保存格式');
+    const title = questionFormat === 'expanded' ? plan.title + '（展开副本）' : plan.title;
+    const path = uniquePath(outputFolder,title,'md');
+    const {markdown} = await compile(plan,index,{outputPath:path,questionFormat});
     await ensureFolder(outputFolder); await vault.create(path,markdown); return path;
   }
   async function preview(raw,index,options = {}) {

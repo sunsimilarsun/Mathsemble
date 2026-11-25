@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {runChromeDocument}=require('./helpers/run-chromium.cjs');
 const source=fs.readFileSync(path.resolve(__dirname,'../main.js'),'utf8');
 const stub=`const module={exports:{}};const stub={Plugin:class{},Modal:class{constructor(app){this.app=app;}},Notice:class{},MarkdownRenderer:{},MarkdownView:class{},finishRenderMath:()=>Promise.resolve(),renderMath:()=>{throw Error('not Obsidian');}};function require(n){return n==='obsidian'?stub:{};}`;
-const load=stub+'\n'+source+'\nglobalThis.h5={mwbHandoutQuestionPlan,mwbApplyHandoutQuestions,mwbQuestionTitle,mwbQuestionHeadingEdit,mwbWrapSingleQuestion,handoutPlan,studentSpacePlan,mwbTeacherMeasurementPlan,injectSpaceNodes,exportHtml,PreviewModal,paginate:paginatePreviewDocument};globalThis.mockObsidian=stub;';
+const load=stub+'\n'+source+'\nglobalThis.h5={mwbHandoutQuestionPlan,mwbApplyHandoutQuestions,mwbQuestionTitle,mwbQuestionHeadingEdit,mwbWrapSingleQuestion,insertQuestionNumber,handoutPlan,studentSpacePlan,mwbTeacherMeasurementPlan,injectSpaceNodes,exportHtml,PreviewModal,paginate:paginatePreviewDocument};globalThis.mockObsidian=stub;';
 const ctx={console,Buffer};vm.runInNewContext(load,ctx);const a=ctx.h5;
 const setextSources=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/strict-h5-setext-sources.json'),'utf8'));
 const named=['例1','例一','例题１','变式1','变式一','练习1','练习题2','检测1','检测题3','题1','第1题','例1 二次函数','【例1】 标题'];
@@ -194,6 +194,17 @@ async function browserCases(fixtures,math,setextSources){
   const q='<section class="mwb-exam-question" data-mwb-source-path="q.md"><div class="mwb-exam-question-content">'+p('s',20).replace('>s<','><span class="mwb-question-index">1.</span>题干<')+ans(Array.from({length:8},(_,i)=>p('a'+i,35)))+'</div></section>';
   const r=layout(p('f',10)+q);ok(r.pageOf('s')===1,'exam did not start new');ok(r.root.querySelectorAll('.mwb-question-index').length===1,'question number duplicated');
  });
+ await check('folder exam respects a leading H5 and still numbers a later plain card',()=>{
+  const card=document.createElement('div');
+  for(const html of ['<h5>变式 1-1</h5><p>题干</p>','<div><h1>源标题</h1></div><div><h5>变式 1-1</h5></div><p>题干</p>']){
+    card.innerHTML=html;
+    a.insertQuestionNumber(card,2);
+    ok(!card.querySelector('.mwb-question-index')&&card.querySelector('h5').textContent==='变式 1-1','manual H5 was double-numbered');
+  }
+  card.innerHTML='<p>下一道题</p><h5>内部附注</h5>';
+  a.insertQuestionNumber(card,3);
+  ok(card.querySelector('p > .mwb-question-index')?.textContent==='3.','internal header consumed folder question number');
+ });
  await check('strict short question retains the existing MathJax SVG without re-typesetting',()=>{
   const r=layout(p('f',225)+question('Q1',[p('s',10),`<div data-key="math">${math}</div>`,ans([p('a',15)])]));
   ok(r.pageOf('s')===r.pageOf('a')&&r.pageOf('s')===r.pageOf('math'),'formula separated from short question');
@@ -226,6 +237,43 @@ async function browserCases(fixtures,math,setextSources){
   const root=raw();root.querySelector('[data-mwb-heading-token]').remove();const html=root.innerHTML;
   let failed=false;try{a.mwbApplyHandoutQuestions(root,plan);}catch(e){failed=true;}
   ok(failed&&html===root.innerHTML,'unsafe fallback or mutation');
+ });
+ await check('a standalone embed ends before handout prose; its end markers never print',()=>{
+  const marker='<span data-mwb-embed-end=""></span>';
+  const source=['##### 第一题','题干一',marker,'课间讲解','##### 第二题','题干二',marker,'课后小结'].join('\n\n');
+  const plan=a.mwbHandoutQuestionPlan(source);
+  ok(plan.groups.length===2&&plan.embedEnds.length===2,'missing source boundaries');
+  const root=document.createElement('div');
+  for(const line of plan.markdown.split('\n\n')){
+    const header=line.startsWith('##### ');
+    const node=document.createElement(header?'h5':'p');
+    node.innerHTML=header?line.slice(6):line;
+    root.appendChild(node);
+  }
+  a.mwbApplyHandoutQuestions(root,plan,'讲义.md');
+  const children=Array.from(root.children);
+  ok(children.map(node=>node.tagName).join(' ')==='SECTION P SECTION P','trailing prose grouped with embed');
+  ok(children[0].textContent.trim()==='第一题题干一'&&children[2].textContent.trim()==='第二题题干二','lost card content: '+root.textContent);
+  ok(children[1].textContent==='课间讲解'&&children[3].textContent==='课后小结','lost handout prose');
+  ok(!root.querySelector('[data-mwb-heading-token]'),'marker left in print');
+ });
+ await check('automatic labels join text stems and stay visible before a display-only stem',()=>{
+  const title=n=>'<span class="mwb-auto-question-number">'+n+'.</span>';
+  const plan=a.mwbHandoutQuestionPlan('##### '+title(1)+'\n\nFirst stem\n\n##### '+title(2)+'\n\n| x |\n| --- |\n| 1 |');
+  const root=document.createElement('div');
+  for(const [i,header] of plan.headings.entries()){
+    const heading=document.createElement('h5');
+    heading.innerHTML='<span data-mwb-heading-token="'+header.token+'"></span> '+header.title;
+    root.appendChild(heading);
+    const body=document.createElement(i===0?'p':'table');
+    body.innerHTML=i===0?'First <em>stem</em>':'<tbody><tr><td>1</td></tr></tbody>';
+    root.appendChild(body);
+  }
+  a.mwbApplyHandoutQuestions(root,plan,'mixed.md');
+  const groups=root.querySelectorAll('.mwb-exam-question-content');
+  ok(groups[0].firstElementChild.matches('p')&&groups[0].firstElementChild.textContent==='1. First stem'&&groups[0].querySelector('em'),'number should be inline with existing stem');
+  ok(groups[1].firstElementChild.textContent==='2.'&&groups[1].children[1].matches('table'),'display-only stem lost its number or structure');
+  ok(!root.querySelector('h5,.mwb-auto-question-number'),'internal number heading left behind');
  });
  await check('unexpected or reordered headings abort rather than guessing',()=>{
   for(const reverse of [false,true]){

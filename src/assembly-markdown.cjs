@@ -418,21 +418,94 @@ async function rewriteLinks(source, path, prefix, options, protector) {
   return text;
 }
 
-function normalizeHeadings(text, kind) {
+function normalizeHeadings(text, kind, takeQuestionHeading) {
   const lines = text.split('\n');
-  let firstContent = true;
+  let firstContent = true, afterTitle = true, previousProse = false;
   for (let i=0;i<lines.length;i++) {
-    if (!lines[i].trim()) continue;
+    if (!lines[i].trim()) { previousProse=false; continue; }
     const atx = /^(#{1,6})[ \t]+(.*)$/.exec(lines[i]);
-    const setext = i+1 < lines.length && /^(?:=+|-+)[ \t]*$/.test(lines[i+1]) && lines[i+1] !== '------' &&
-      !/^(?:[> \t]|MWBPROTECTEDTOKEN)/.test(lines[i]);
+    const rule = /^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(lines[i]);
+    const prose = !atx && !rule && !/^(?:[> \t]|MWBPROTECTEDTOKEN)/.test(lines[i]);
+    // Obsidian treats --- after a multi-line paragraph as a horizontal rule.
+    const setext = prose && !previousProse && i+1 < lines.length &&
+      /^(?:=+|-+)[ \t]*$/.test(lines[i+1]) && lines[i+1] !== '------';
+    previousProse = prose && !setext;
     if (firstContent && atx?.[1] === '#') { lines[i] = ''; firstContent = false; continue; }
     if (firstContent && setext && lines[i+1][0] === '=') { lines[i] = ''; lines[++i] = ''; firstContent = false; continue; }
     firstContent = false;
+    if (afterTitle && takeQuestionHeading && atx?.[1] === '#####') {
+      takeQuestionHeading(lines[i]);
+      lines[i] = ''; afterTitle = false; continue;
+    }
+    afterTitle = false;
     if (atx) lines[i] = '#'.repeat(kind === 'question' ? 6 : Math.min(4, atx[1].length + 1)) + ' ' + atx[2];
     else if (setext) { lines[i] = (kind === 'question' ? '###### ' : '### ') + lines[i]; lines[++i] = ''; }
   }
-  return lines.join('\n').trim();
+  return lines.join('\n');
+}
+
+function splitQuestionHeading(protectedSource) {
+  let heading = '';
+  const body = normalizeHeadings(protectedSource, 'question', value => { heading = value; });
+  return {heading,body};
+}
+
+function numberedQuestionHeading(number,score) {
+  return `##### <span class="mwb-auto-question-number">${number}.</span>` + (score == null ? '' : '（' + score + ' 分）');
+}
+
+function occurrenceHeading(entry, item, number, sourceHeading) {
+  const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
+  const sourceRole = roles[item.role || item.metadata?.role] || '';
+  const changedRole = !!entry.role && roles[entry.role] !== sourceRole;
+  const changedTitle = !!entry.title && entry.title !== item.title;
+  let heading = sourceHeading;
+  if (changedRole || changedTitle) {
+    const parts = [];
+    if (changedRole) parts.push(roles[entry.role] + number);
+    if (entry.title) parts.push(plainTitle(entry.title));
+    heading = '##### ' + parts.join(' ');
+  }
+  return heading;
+}
+
+function headingWithScore(heading,number,score) {
+  if (score == null) return heading;
+  return heading ? heading + '（' + score + ' 分）' : numberedQuestionHeading(number,score);
+}
+
+async function questionEmbed(path, config) {
+  // Include the vault path and extension so another folder's namesake cannot
+  // silently become this lesson's question. Markdown URLs handle Wiki delimiters.
+  const wiki = !/[#^|\[\]\\\r\n]/.test(path);
+  const target = wiki ? path : relativePath(path, config.outputPath);
+  const resolved = await config.resolveLink(target, config.outputPath);
+  if (resolved?.path !== path) throw new Error('无法从讲义准确引用题卡：' + path + '；请核对路径，或保存展开副本');
+  return wiki ? '![[' + path + ']]' : '![](' + encodePath(target) + ')';
+}
+
+async function referenceQuestionBlock(entry,item,number,prefix,config) {
+  const embed = await questionEmbed(item.path,config);
+  const score = Object.hasOwn(entry,'score') ? fragments.validateScore(entry.score) : null;
+  let heading = occurrenceHeading(entry,item,number,'');
+  if (!heading && score != null) {
+    // Only a carried-over manual heading needs rebasing. The linked note's
+    // remaining media and nested note embeds belong to its later render.
+    const lines = stripFrontmatter(item.markdown).replace(/\r\n?/g,'\n').split('\n');
+    let first=lines.findIndex(line=>line.trim());
+    if (first>=0) {
+      if (/^#[ \t]+/.test(lines[first])) first++;
+      else if (!/^[> \t]/.test(lines[first]) && /^=+[ \t]*$/.test(lines[first+1]||'')) first+=2;
+      while (first<lines.length && !lines[first].trim()) first++;
+      if (/^#####[ \t]+/.test(lines[first]||'')) {
+        const protect = makeProtector(lines[first]);
+        const titled = protectLiterals(lines[first],protect);
+        heading = protect.restore(await rewriteLinks(titled,item.path,prefix,config,protect));
+      }
+    }
+  }
+  heading = headingWithScore(heading,number,score);
+  return heading ? heading + '\n\n' + embed : embed;
 }
 
 async function compileMarkdown(plan, resolved, options = {}) {
@@ -459,21 +532,30 @@ async function compileMarkdown(plan, resolved, options = {}) {
     if (!['question','knowledge'].includes(entry.kind)) throw new Error('不支持的编排类型');
     const fragmentSource={...item,kind:entry.kind};
     const projected=entry.fragmentRef?fragments.resolveFragment(fragmentSource,entry.fragmentRef):null;
-    const structural=projected?null:fragments.parseFragments(fragmentSource);
-    const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
-    const protector = makeProtector(source);
-    let body = protectLiterals(source,protector);
-    body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
-    body = protector.restore(normalizeHeadings(body,entry.kind));
-    if (!body.trim()) throw new Error('来源正文为空：' + item.path);
-    const display = plainTitle(entry.title || item.title || item.path.split('/').pop().replace(/\.md$/i,''));
-    if (entry.kind === 'knowledge') blocks.push('## ' + display + '\n\n' + body);
-    else {
-      const roles = {example:'例题',variant:'变式',practice:'训练',problem:'训练','例题':'例题','变式':'变式','训练':'训练'};
-      const role = roles[entry.role || item.role || item.metadata?.role] || '题';
-      const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
-      if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
-      blocks.push(`##### ${role}${++questionNumber} ${display}${score!=null?'（'+score+' 分）':''}\n\n${body}`);
+    if (entry.kind === 'question') questionNumber++;
+    if (entry.kind === 'question' && !projected && config.questionFormat === 'reference') {
+      blocks.push(await referenceQuestionBlock(entry,item,questionNumber,`mwb-${i+1}`,config));
+    } else {
+      const structural=projected?null:fragments.parseFragments(fragmentSource);
+      const source = projected?projected.markdown:structural.supported&&structural.valid?structural.wholeMarkdown:stripFrontmatter(item.markdown);
+      const protector = makeProtector(source);
+      let body = protectLiterals(source,protector);
+      body = await rewriteLinks(body,item.path,`mwb-${i+1}`,config,protector);
+      const question = entry.kind === 'question' ? splitQuestionHeading(body) : null;
+      const sourceHeading = question ? protector.restore(question.heading) : '';
+      body = protector.restore((question ? question.body : normalizeHeadings(body,entry.kind)).trim());
+      if (!body.trim()) throw new Error('来源正文为空：' + item.path);
+      if (entry.kind === 'knowledge') {
+        const display = plainTitle(entry.title || item.title || item.path.split('/').pop().replace(/\.md$/i,''));
+        blocks.push('## ' + display + '\n\n' + body);
+      } else {
+        const score=Object.hasOwn(entry,'score')?fragments.validateScore(entry.score):projected?.score;
+        if(projected?.score!=null&&score!==projected.score)throw new Error('整题分值与小问分值合计不一致');
+        const heading = occurrenceHeading(entry,item,questionNumber,sourceHeading);
+        const boundary = headingWithScore(heading,questionNumber,score) || numberedQuestionHeading(questionNumber);
+        const hint = heading && config.questionFormat === 'reference' ? '<!-- mathsemble:compiled-question -->\n' : '';
+        blocks.push(hint + boundary + '\n\n' + body);
+      }
     }
     const fragmentReference=projected?Object.freeze({...projected.reference,
       ids:Object.freeze([...projected.reference.ids]),
@@ -499,4 +581,4 @@ async function compileMarkdown(plan, resolved, options = {}) {
   }
   return markdown;
 }
-module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds};
+module.exports = {compileMarkdown,collectMediaDependencies,stripFrontmatter,makeProtector,protectLiterals,rewriteLinks,escapedAt,markdownLinkBounds,splitQuestionHeading,numberedQuestionHeading};

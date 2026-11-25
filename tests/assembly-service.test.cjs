@@ -279,14 +279,29 @@ test('source edits during asynchronous compilation prevent output writes',async(
   assert.equal(f.writes.length,0);
 });
 
-test('explicit Markdown export creates unique snapshots and preserves all source bytes',async()=>{
+test('default Markdown export links whole questions, while the expanded copy and preview freeze their content',async()=>{
   const f=await prepared();const before=new Map([...f.nodes].filter(([,n])=>n.extension==='md').map(([p,n])=>[p,n.content]));
   const first=await f.service.exportMarkdown(f.plan,f.index),second=await f.service.exportMarkdown(f.plan,f.index);
   assert.notEqual(first,second);assert.match(first,/^Mathsemble\/讲义\/.*\.md$/);
   assert.match(f.nodes.get(first).content,/完整知识正文/);
+  assert.match(f.nodes.get(first).content,/^!\[\[题库\/题\.md\]\]$/m);
+  assert(!f.nodes.get(first).content.includes('最小值'));
+  const expanded=await f.service.exportMarkdown(f.plan,f.index,{questionFormat:'expanded'});
+  assert.match(f.nodes.get(expanded).content,/函数最小值为 \?\{1\}/);
+  assert(!f.nodes.get(expanded).content.includes('![[题库/题.md]]'));
+  assert.match((await f.service.compile(f.plan,f.index)).markdown,/函数最小值为 \?\{1\}/);
   for(const [path,content]of before)assert.equal(f.nodes.get(path).content,content);
   assert(f.writes.every(([,path])=>path.startsWith('Mathsemble')));
   assert.equal((await f.service.scan()).items.length,2,'Generated files must not become source records');
+});
+
+test('saving a whole-card link does not resolve nested note embeds or copy broken images',async()=>{
+  const f=await prepared({'题库/外层.md':q('Q2','嵌套整题\n\n![[题库/题]]\n\n![旧配图](未捕获.png)')});
+  const plan=core.addItem(core.createPlan('嵌入示例'),f.index.items.find(item=>item.id==='Q2'));
+  const path=await f.service.exportMarkdown(plan,f.index);
+  assert.deepEqual(f.nodes.get(path).content.split('\n').filter(l=>l.startsWith('!')),['![[题库/外层.md]]']);
+  assert(!f.nodes.get(path).content.includes('嵌套整题'));
+  await assert.rejects(f.service.exportMarkdown(plan,f.index,{questionFormat:'expanded'}),/暂不支持嵌入 Markdown/);
 });
 
 test('repeated previews stay in memory, and openSource uses the original file',async()=>{

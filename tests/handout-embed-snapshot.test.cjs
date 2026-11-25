@@ -9,11 +9,11 @@ const {previewEvidence} = require('../src/export-host.cjs');
 const {collectMediaDependencies} = require('../src/assembly-markdown.cjs');
 
 const plugin = fs.readFileSync(path.join(__dirname,'..','main.js'),'utf8');
-const obsidian = {Plugin:class {}, Modal:class {}, Notice:class {}, ItemView:class {}, parseYaml:() => ({}),
+const obsidian = {Plugin:class {}, Modal:class {}, Notice:class {}, ItemView:class {},
   resolveSubpath:(cache, subpath) => cache[subpath]};
 const context = {module:{exports:{}}, require:name => name === 'obsidian' ? obsidian : require(name),
   performance, setTimeout, clearTimeout, console};
-const api = vm.runInNewContext(plugin + '\n({mwbHandoutScope,mwbReadSourceSnapshot,mwbSameSourceSnapshot,mwbWatchSource,handoutPlan})',context);
+const api = vm.runInNewContext(plugin + '\n({mwbHandoutScope,mwbReadSourceSnapshot,mwbSameSourceSnapshot,mwbWatchSource,mwbHandoutQuestionPlan,handoutPlan})',context);
 
 function fixture() {
   const file = {path:'lecture/M02.md',extension:'md',body:'##### Example\n\n![[Card]]\n\n##### More\n\nText'};
@@ -78,4 +78,24 @@ test('a block link selecting a line inside a hidden answer retains its enclosing
   const snapshot = await api.mwbReadSourceSnapshot(vault,api.mwbHandoutScope({vault,metadataCache},file));
   assert.doesNotMatch(api.handoutPlan(snapshot.expandedMarkdown,'student').markdown,/Do not print/);
   assert.match(api.handoutPlan(snapshot.expandedMarkdown,'teacher').markdown,/Do not print/);
+});
+
+test('direct handout identifies legacy type: 题卡 from the saved file and bounds each occurrence before later prose', async () => {
+  const {vault,file,card,scope} = fixture();
+  card.body = '---\ntype: 题卡\n---\n题干。\n\n> [!answer]-\n> 参考答案';
+  file.body = '##### 方法总结\n\n方法说明。\n\n![[Card]]\n\n![](../bank/Card.md)\n\n题外讲解。';
+  const snapshot = await api.mwbReadSourceSnapshot(vault,scope);
+  const lines = snapshot.expandedMarkdown.split('\n');
+  const plan = api.mwbHandoutQuestionPlan(snapshot.expandedMarkdown);
+  assert.deepEqual(Array.from(plan.errors),[]);
+  assert.equal(plan.groups.length,3);
+  assert.deepEqual(Array.from(plan.groups.slice(1),group=>lines[group.start]),[
+    '##### <span class="mwb-auto-question-number">1.</span>', '##### <span class="mwb-auto-question-number">2.</span>']);
+  assert.deepEqual(Array.from(plan.groups.slice(1),group=>snapshot.rootLines[group.start]),[5,7]);
+  assert.ok(plan.groups.at(-1).end < lines.indexOf('题外讲解。'));
+  assert.doesNotMatch(api.handoutPlan(plan.markdown,'student').markdown,/参考答案/);
+  assert.equal((api.handoutPlan(plan.markdown,'teacher').markdown.match(/参考答案/g)||[]).length,2);
+  card.body = '---\ntype: 知识点\n---\n知识说明';
+  const knowledge = await api.mwbReadSourceSnapshot(vault,scope);
+  assert.doesNotMatch(knowledge.expandedMarkdown,/mwb-auto-question-number|mwb-embed-end/);
 });

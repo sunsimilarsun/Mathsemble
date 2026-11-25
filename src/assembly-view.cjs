@@ -572,9 +572,9 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       save.title=planSaveHint;
       const pdf=this.button(primary, '预览 A4', () => this.runAction('准备临时 A4 预览', async () => {
         await service.preview(core.validatePlan(this.plan), this.index,this.bindPreviewContext());
-        this.setStatus('临时 A4 预览已打开，可选择学生版或教师版并导出 PDF；如需 Markdown，请保存讲义副本。');
+        this.setStatus('临时 A4 预览已打开。需要 Markdown 时，请在方案操作中保存讲义。');
       }),'mod-cta');
-      pdf.title='查看当前内容的临时预览，不新增 Markdown，也不保存编排方案；需要文件时使用“保存讲义副本”。';
+      pdf.title='按当前编排预览并导出 PDF 或 HTML。';
       const menu=this.el('details',primary,'mwb-assembly-plan-menu');
       this.planMenu=menu;
       this.el('summary',menu,'','方案操作');
@@ -595,11 +595,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.savedSelect = this.field(menuBody, '已保存方案', 'select');
       this.populatePlans();
       this.button(menuBody, '打开方案', () => this.loadSelectedPlan());
-      const exportMarkdown=this.button(menuBody, '保存讲义副本', () => this.runAction('保存讲义副本', async () => {
-        const path = await service.exportMarkdown(core.validatePlan(this.plan), this.index);
-        if (!this.closed) { this.setStatus('讲义副本已保存：' + path); this.notice('讲义副本已保存：' + path); }
-      }));
-      exportMarkdown.title='按当前编排新建一份 Markdown；已有讲义副本不自动更新。';
+      for (const [format,label,hint] of [
+        ['reference','保存讲义（引用题卡）','整题链接到源题卡；知识和所选小问保存本次正文。'],
+        ['expanded','保存展开副本','按当前编排新建 Markdown，保存所有条目的本次正文。']
+      ]) {
+        const saveHandout=this.button(menuBody,label,()=>this.runAction(label,async()=>{
+          const path = await service.exportMarkdown(core.validatePlan(this.plan),this.index,{questionFormat:format});
+          if (!this.closed) { this.setStatus('已保存：' + path); this.notice('已保存：' + path); }
+        }));
+        saveHandout.title=hint;
+      }
       menu.addEventListener('keydown',event=>{if(event.key==='Escape'){menu.open=false;menu.querySelector('summary').focus();}});
       menu.addEventListener('toggle',()=>this.resizePlanMenu());
       const MenuObserver=this.contentEl.ownerDocument.defaultView?.ResizeObserver;

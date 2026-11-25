@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {compileMarkdown} = require('../src/assembly-markdown.cjs');
+const {compileMarkdown,numberedQuestionHeading,splitQuestionHeading} = require('../src/assembly-markdown.cjs');
 const core = require('../src/assembly-core.cjs');
 function fixture(contents) {
   const entries = contents.map((o,i)=>({entryId:'e'+i,kind:o.kind||'question',title:o.title||'测试 '+i,role:o.role||'例题',sourcePath:o.path||'题库/q'+i+'.md'}));
@@ -32,7 +32,7 @@ test('selected parts compile shared resources and answers with total and per-par
     {fragmentRef:{kind:'question-part',ids:['p-a'],scores:{'p-a':4.25}}});
   const calls=[],sourceMaps=[];const before=JSON.stringify({plan,index});
   const out=await compileMarkdown(plan,core.resolvePlan(plan,index).entries,{resolveLink:async target=>{calls.push(target);return{path:'图/'+target,extension:'png'};},onSourceMap:rows=>sourceMaps.push(rows)});
-  assert.match(out,/##### 题1 .*（4.25 分）/);assert.match(out,/###### 小问甲（4.25 分）/);assert.match(out,/甲步骤/);
+  assert(out.includes(numberedQuestionHeading(1,4.25)));assert.match(out,/###### 小问甲（4.25 分）/);assert.match(out,/甲步骤/);
   assert(!out.includes('未选'));assert(!out.includes('mathsemble:'));assert.deepEqual(calls,['stem.png','answer.png']);
   assert.deepEqual(sourceMaps[0][0].fragmentRef,plan.entries[0].fragmentRef);assert.equal(sourceMaps[0][0].score,4.25);
   assert.throws(()=>sourceMaps[0][0].fragmentRef.ids.push('p-b'),TypeError);
@@ -164,12 +164,104 @@ test('image nested inside a link resolves both destinations',async()=>{
  const out=await run([{markdown:'[![图](图.png)](note)'}],{resolveLink:resolver});
  assert(out.includes('[![图](../../%E9%A2%98%E5%BA%93/'));assert(out.includes(')](../../%E7%9F%A5%E8%AF%86/note.md)'));
 });
-test('empty occurrence role inherits source role while explicit overrides stay local',async()=>{
+test('an inherited role keeps the ordinary number while explicit overrides stay local',async()=>{
  const {plan,resolved}=fixture([{markdown:'题干'}]);plan.entries[0].role='';resolved[0].item.role='训练';
- let out=await compileMarkdown(plan,resolved);assert(out.includes('##### 训练1'));
+ let out=await compileMarkdown(plan,resolved);assert(out.includes(numberedQuestionHeading(1)));assert(!out.includes('训练1'));
  plan.entries[0].role='变式';out=await compileMarkdown(plan,resolved);assert(out.includes('##### 变式1'));assert.equal(resolved[0].item.role,'训练');
  plan.entries[0].role='';delete resolved[0].item.role;resolved[0].item.metadata={role:'example'};
- out=await compileMarkdown(plan,resolved);assert(out.includes('##### 例题1'));
+ out=await compileMarkdown(plan,resolved);assert(out.includes(numberedQuestionHeading(1)));assert(!out.includes('例题1'));
+});
+
+test('whole question references contain one exact file link and only explicit occurrence labels',async()=>{
+  const data=fixture([
+    {path:'题库/甲/同名.md',markdown:'\n> [!answer]-\n> 私有步骤'},
+    {path:'题库/乙/同名.md',markdown:'# 源卡名\n\n##### 例 A\n\n第二题'},
+    {path:'题库/丙/自定义.md',markdown:'第三题'}
+  ]);
+  for (const {item,entry} of data.resolved) item.role=entry.role;
+  data.plan.entries[2].title='变式（口答）';data.plan.entries[2].score=3;
+  const options={questionFormat:'reference',resolveLink:async path=>({path,extension:'md'})};
+  const linked=await compileMarkdown(data.plan,data.resolved,options);
+  assert.deepEqual(linked.split('\n').filter(l=>l.startsWith('![[')),data.resolved.map(r=>'![['+r.item.path+']]'));
+  assert.deepEqual(linked.split('\n').filter(l=>l.startsWith('##### ')),['##### 变式（口答）（3 分）']);
+  for (const inside of ['私有步骤','例 A','第二题','第三题','mwb-auto-question-number']) assert(!linked.includes(inside));
+  const fixed=await compileMarkdown(data.plan,data.resolved);
+  for (const expected of [numberedQuestionHeading(1),'##### 例 A','##### 变式（口答）（3 分）','私有步骤','第三题']) assert(fixed.includes(expected));
+  assert(!fixed.includes('# 源卡名'));assert(!fixed.includes('![['));
+});
+
+test('non Wiki-safe note paths use an encoded Markdown reference and reject an ambiguous resolution',async()=>{
+  const path='题库/含#字号与[括号] 和百分%25.md';
+  const data=fixture([{path,markdown:'题干'}]);data.resolved[0].item.role=data.plan.entries[0].role;
+  const options={questionFormat:'reference',outputPath:'讲义/本节.md',resolveLink:async(target,from)=>{
+    assert.equal(target,'../'+path);assert.equal(from,'讲义/本节.md');return {path,extension:'md'};
+  }};
+  const text=await compileMarkdown(data.plan,data.resolved,options);
+  const url=/^!\[\]\(([^)]+)\)$/m.exec(text)[1];
+  assert.equal(decodeURIComponent(url),'../'+path);assert(!url.includes('#'));assert(url.includes('%2525'));
+  await assert.rejects(compileMarkdown(data.plan,data.resolved,{...options,resolveLink:async()=>({path:'同名.md'})}),/准确引用/);
+});
+
+test('source question heading extraction keeps literal bodies and exact forced page breaks',()=>{
+  const plain='\nMWBPROTECTEDTOKEN0ENDTOKEN\n\n------\n正文\n';
+  assert.deepEqual(splitQuestionHeading(plain),{heading:'',body:plain});
+  const selected=splitQuestionHeading('# 原卡\n\n##### 例 6\n\n题目\n------\n\n## 说明\n补充');
+  assert.equal(selected.heading,'##### 例 6');assert(selected.body.includes('题目\n------\n'));assert(selected.body.includes('###### 说明'));
+  const prose='第一行\n第二行\n---\n正文\n\n***\n方法\n---\n继续';
+  assert.equal(splitQuestionHeading(prose).body,prose.replace('方法\n---','###### 方法\n'));
+});
+
+test('moving saved score-only question references renumbers both while retaining each original score',async()=>{
+  const {expandHandoutEmbeds}=require('../src/handout-embeds.cjs');
+  const data=fixture([{path:'题库/甲.md',markdown:'甲题'},{path:'题库/乙.md',markdown:'乙题'}]);
+  for(const {entry,item} of data.resolved) item.role=entry.role;
+  data.plan.entries[0].score=4.5;data.plan.entries[1].score=0;
+  const files=new Map(data.resolved.map(({item})=>[item.path,{...item,extension:'md'}]));
+  const resolveLink=async p=>files.get(p);
+  const fixed=await compileMarkdown(data.plan,data.resolved);
+  const linked=await compileMarkdown(data.plan,data.resolved,{questionFormat:'reference',resolveLink});
+  for(const output of [fixed,linked]) {
+    assert(output.includes(numberedQuestionHeading(1,4.5)));assert(output.includes(numberedQuestionHeading(2,0)));
+  }
+  const blocks=linked.split(/(?=^##### )/m);
+  assert.equal(blocks.length,3);
+  const reordered=[blocks[0],blocks[2].trimEnd(),blocks[1]].join('\n\n');
+  const result=await expandHandoutEmbeds(reordered,'成品/换序.md',{
+    resolveLink,readFile:async file=>file.markdown,isQuestionNote:()=>true
+  });
+  assert.deepEqual(result.markdown.split('\n').filter(l=>l.startsWith('##### ')),[
+    numberedQuestionHeading(1,0),numberedQuestionHeading(2,4.5)
+  ]);
+  assert(result.markdown.indexOf('乙题')<result.markdown.indexOf('甲题'));
+});
+
+test('reopening a mixed reference handout preserves inline numbering, selected fragments and knowledge scope',async()=>{
+  const {expandHandoutEmbeds}=require('../src/handout-embeds.cjs');
+  const part=(marker,body)=>'<!-- mathsemble:'+marker+' -->\n\n'+body+'\n\n<!-- mathsemble:end -->';
+  const sources=[
+    {kind:'question',path:'库/甲.md',markdown:'第一题 ?{甲}'},
+    {kind:'question',path:'库/乙.md',markdown:[part('stem','共用题干'),part('part a','第二题选中部分'),part('part b','第二题排除部分')].join('\n\n')},
+    {kind:'knowledge',path:'库/知识.md',markdown:[part('section a','知识选中部分'),part('section b','知识排除部分')].join('\n\n')},
+    {kind:'question',path:'库/丙.md',markdown:'第三题 !{B}'}
+  ];
+  const index=core.buildIndex(sources),byPath=new Map(sources.map(s=>[s.path,{...s,extension:'md'}]));
+  let plan=core.createPlan();
+  for(const source of sources)plan=core.addItem(plan,index.items.find(i=>i.path===source.path));
+  plan=core.updateEntry(plan,plan.entries[1].entryId,{title:'小测',fragmentRef:{kind:'question-part',ids:['a']}});
+  plan=core.updateEntry(plan,plan.entries[2].entryId,{fragmentRef:{kind:'knowledge-section',ids:['a']}});
+  const rows=core.resolvePlan(plan,index).entries,resolveLink=async path=>byPath.get(path);
+  const fixed=await compileMarkdown(plan,rows);
+  const linked=await compileMarkdown(plan,rows,{questionFormat:'reference',resolveLink});
+  assert.deepEqual(linked.split('\n').filter(l=>l.startsWith('![[')),['![[库/甲.md]]','![[库/丙.md]]']);
+  const reopened=(await expandHandoutEmbeds(linked,'成品/本节.md',{
+    resolveLink,readFile:async note=>note.markdown,isQuestionNote:()=>true
+  })).markdown;
+  for (const output of [fixed,reopened]) {
+    const labels=output.split('\n').filter(l=>l.startsWith('##### '));
+    assert.deepEqual(labels,[numberedQuestionHeading(1),'##### 小测',numberedQuestionHeading(3)]);
+    for (const expected of ['第一题 ?{甲}','共用题干','第二题选中部分','知识选中部分','第三题 !{B}']) assert(output.includes(expected));
+    assert(!output.includes('排除部分'));
+  }
 });
 
 test('source mapping covers final mixed-entry blocks without changing Markdown or exposing provenance',async()=>{
