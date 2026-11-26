@@ -1,7 +1,7 @@
 {
   "name": "mathsemble",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Obsidian desktop mathematics handouts and student/teacher PDF exports",
   "license": "MIT",
   "engines": {

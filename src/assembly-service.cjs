@@ -2,7 +2,7 @@
 
 // Host adapter: source notes are read-only. Only explicit plans and generated
 // handouts are written, under dedicated output folders.
-module.exports = function createAssemblyService(plugin, {core, compileMarkdown, collectMediaDependencies, blueprintEngine, familyEngine, similarityEngine, parseYaml, previewFile}) {
+module.exports = function createAssemblyService(plugin, {core, compileMarkdown, collectMediaDependencies, blueprintEngine, familyEngine, similarityEngine, parseYaml, previewFile, browseStore}) {
   const app = plugin.app, vault = app.vault;
   const planFolder = 'Mathsemble/组题方案', outputFolder = 'Mathsemble/讲义';
   const blueprintFolder = 'Mathsemble/组卷蓝图', runFolder = 'Mathsemble/组卷记录';
@@ -58,7 +58,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     let closed = false;
     const check = () => {
       if (closed || signal?.aborted) throw abortError();
-      if (Date.now() >= deadline) throw Object.assign(new Error('来源核对超时，请重试'),{code:'MWB_ASSEMBLY_TIMEOUT'});
+      if (Date.now() >= deadline) throw Object.assign(new Error('来源核对超时，请重试'),{code:'MWB_ASSEMBLY_TIMEOUT',timeoutScope:'scan'});
     };
     const run = (operation,label) => {
       check();
@@ -70,8 +70,9 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
           if (error) reject(error); else resolve(value);
         };
         const onAbort = () => finish(abortError()), cancel = () => finish(abortError());
-        const timer = setTimeout(() => finish(Object.assign(new Error(label+'超时，请重试'),{code:'MWB_ASSEMBLY_TIMEOUT'})),
-          Math.max(1,Math.min(resourceTimeoutMs,deadline-Date.now())));
+        const remaining = deadline-Date.now(), delay = Math.max(1,Math.min(resourceTimeoutMs,remaining));
+        const timer = setTimeout(() => finish(Object.assign(new Error(label+'超时，请重试'),
+          {code:'MWB_ASSEMBLY_TIMEOUT',timeoutScope:remaining<=resourceTimeoutMs || Date.now()>=deadline ? 'scan' : 'resource'})),delay);
         pending.add(cancel); signal?.addEventListener('abort',onAbort,{once:true});
         Promise.resolve().then(() => {check();return operation();}).then(value => {
           try {check();finish(null,value);} catch(error) {finish(error);}
@@ -173,21 +174,89 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
   // calls scan() and reads the sources again, independent of vault events/stats.
   let browseSnapshot = null, browseQueue = Promise.resolve(), browseGeneration = 0, activeBrowseIO;
   function watchBrowse(config) {
-    const dirty = new Set();
-    const watch = {dirty,revision:0,allDirty:false};
+    const dirty = new Set(), folders = new Set();
+    const watch = {revision:0,
+      clear() {dirty.clear(); folders.clear();},
+      has(path) {
+        if (dirty.has(path)) return true;
+        if (!folders.size) return false;
+        for (let end=path.lastIndexOf('/'); end>0; end=path.lastIndexOf('/',end-1)) {
+          if (folders.has(path.slice(0,end))) return true;
+        }
+        return false;
+      }};
     const guard = beginSourceCheck(config,(_event,file,oldPath) => {
       watch.revision++;
-      if (Array.isArray(file?.children)) watch.allDirty = true;
-      else {
-        if (file?.path) dirty.add(file.path);
-        if (oldPath) dirty.add(oldPath);
-      }
+      const affected = Array.isArray(file?.children) ? folders : dirty;
+      if (file?.path) affected.add(file.path);
+      if (oldPath) affected.add(oldPath);
     });
     watch.dispose = guard.dispose;
     return watch;
   }
+  function browseFileStamp(file) {
+    const stat = file.stat || {};
+    return {mtime:stat.mtime,size:stat.size,ctime:stat.ctime};
+  }
+  function stampsMatch(entry,file) {
+    return entry.mtime === file.stat?.mtime && entry.size === file.stat?.size && entry.ctime === file.stat?.ctime;
+  }
+  function validStoredStamp(entry) {
+    return Number.isFinite(entry.mtime) && Number.isSafeInteger(entry.size) && entry.size >= 0 &&
+      (entry.ctime === undefined || Number.isFinite(entry.ctime));
+  }
   function sameBrowseFile(entry,file) {
-    return entry && entry.file === file && entry.mtime === file.stat?.mtime && entry.size === file.stat?.size;
+    return entry && entry.file === file && stampsMatch(entry,file);
+  }
+
+  // Only plain source records go to the per-vault store. TFiles, derived IDs
+  // and links belong to the current session; rebuild them from the live scope.
+  const browseStoreVersion = 1;
+  let storeQueue = Promise.resolve(), writeFailed = false;
+  async function restoreBrowse(key,io) {
+    if (!browseStore?.load) return null;
+    try {
+      const snapshot = await io.run(()=>browseStore.load(),'读取本机选材索引');
+      if (snapshot?.version !== browseStoreVersion || JSON.stringify(snapshot.config) !== key ||
+          !Array.isArray(snapshot.entries)) return null;
+      const rows = new Map();
+      for (const row of snapshot.entries) {
+        if (!row || typeof row.path !== 'string' || !validStoredStamp(row)) continue;
+        rows.set(row.path,rows.has(row.path) ? null : row);
+      }
+      return rows;
+    } catch (error) {
+      io.check();
+      if (error?.name === 'AbortError' || error?.timeoutScope === 'scan') throw error;
+      return null;
+    }
+  }
+  function restoreEntry(row,file,scope) {
+    if (!row || !stampsMatch(row,file)) return null;
+    const record = row.record;
+    if (record !== null && (!record || record.path !== file.path || typeof record.markdown !== 'string' ||
+        !record.metadata || typeof record.metadata !== 'object' || Array.isArray(record.metadata) ||
+        !['question','knowledge'].includes(record.kind) || scope.kind(file.path,file.name,record.metadata) !== record.kind)) return null;
+    return {file,...browseFileStamp(file),record};
+  }
+  function saveBrowse(config,entries) {
+    if (!browseStore?.save) return;
+    const rows = [];
+    for (const [path,entry] of entries) {
+      if (entry.issue || !validStoredStamp(entry)) continue;
+      const {mtime,size,ctime,record} = entry;
+      rows.push({path,mtime,size,ctime,record:record || null});
+    }
+    const snapshot = {version:browseStoreVersion,config,entries:rows};
+    // Install saves in publication order. Storage failures never make a
+    // completed browse fail, and a later write may recover.
+    storeQueue = storeQueue.then(async () => {
+      try {await browseStore.save(snapshot); writeFailed=false;}
+      catch (error) {
+        if (!writeFailed) console.warn('Mathsemble：本机选材索引未能保存，下次启动将重新核对题库。',error?.name);
+        writeFailed=true;
+      }
+    });
   }
   async function refreshBrowse(raw,options,generation) {
     if (generation !== browseGeneration || options.signal?.aborted) throw abortError();
@@ -199,36 +268,76 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       io.check();
       const key = JSON.stringify(config), previous = browseSnapshot?.key === key ? browseSnapshot : null;
       const watch = previous?.watch || (temporaryWatch = watchBrowse(config)), revision = watch.revision;
+      const restored = previous ? null : await restoreBrowse(key,io);
+      io.check();
       const scope = scanScope(config), files = scope.files(), entries = new Map(), pending = [];
       for (const file of files) {
         const path = file.path, old = previous?.entries.get(path);
-        if (!watch.allDirty && !watch.dirty.has(path) && sameBrowseFile(old,file)) entries.set(path,old);
+        let reusable;
+        if (!watch.has(path)) {
+          if (sameBrowseFile(old,file) && !old.issue?.retryable) reusable = old;
+          else if (restored) reusable = restoreEntry(restored.get(path),file,scope);
+        }
+        if (reusable) entries.set(path,reusable);
         else {
-          const entry = {file,mtime:file.stat?.mtime,size:file.stat?.size};
+          const entry = {file,...browseFileStamp(file)};
           entries.set(path,entry); pending.push({path,entry});
         }
       }
+      const assertRevision = () => {
+        io.check();
+        if (watch.revision !== revision) throw scanChanged('浏览期间素材已变化，请刷新索引');
+      };
+      let processed = files.length - pending.length, failed = 0, lastProgress = 0;
+      const report = force => {
+        if (options.onProgress && (force || Date.now() - lastProgress >= 100)) {
+          lastProgress = Date.now();
+          options.onProgress({processed,total:files.length,failed});
+        }
+      };
+      assertRevision();
+      report(true);
       if (previous && !pending.length && entries.size === previous.entries.size) {
-        watch.dirty.clear(); watch.allDirty = false;
-        io.check(); return previous.index;
+        assertRevision();
+        watch.clear();
+        return previous.index;
+      }
+      // An open view already has results. One incremental batch can go directly
+      // to the committed index without computing and painting it twice.
+      if (processed && pending.length && options.onCachedIndex && (!previous || pending.length>20)) {
+        // Only current, matching rows enter the provisional list. A changed or
+        // missing question must never masquerade as its previous version.
+        const cached = indexEntries(entries.values(),config);
+        assertRevision();
+        options.onCachedIndex(cached);
       }
       for (let offset = 0; offset < pending.length; offset += 20) {
-        if (watch.revision !== revision) throw scanChanged('浏览期间素材已变化，请刷新索引');
+        assertRevision();
         await Promise.all(pending.slice(offset,offset + 20).map(async ({path,entry}) => {
-          Object.assign(entry,await readScanEntry(entry.file,path,scope,io));
+          try {Object.assign(entry,await readScanEntry(entry.file,path,scope,io));}
+          catch (error) {
+            io.check();
+            if (error?.name === 'AbortError' || error?.code === 'MWB_ASSEMBLY_SCAN_CHANGED' ||
+                error?.timeoutScope === 'scan') throw error;
+            entry.issue = {code:'read-error',path,message:String(error?.message || error)};
+          }
+          if (entry.issue) {entry.issue.retryable = true; failed++;}
         }));
+        processed += Math.min(20,pending.length - offset);
+        report(processed === files.length);
       }
-      // Some providers update stats or replace files before notifying Obsidian.
-      // Validate the complete manifest after the last await, before publication.
       const current = scope.files();
-      if (watch.revision !== revision || current.length !== entries.size ||
-          !current.every(file => sameBrowseFile(entries.get(file.path),file))) throw scanChanged('浏览期间素材已变化，请刷新索引');
+      assertRevision();
+      if (current.length !== entries.size || !current.every(file => sameBrowseFile(entries.get(file.path),file))) {
+        throw scanChanged('浏览期间素材已变化，请刷新索引');
+      }
       const index = indexEntries(entries.values(),config);
-      io.check();
+      assertRevision();
       if (!previous) browseSnapshot?.watch.dispose();
-      watch.dirty.clear(); watch.allDirty = false;
+      watch.clear();
       browseSnapshot = {key,entries,index,watch};
       temporaryWatch = null;
+      if (!restored || pending.length || restored.size !== entries.size) saveBrowse(config,entries);
       return index;
     } finally {
       temporaryWatch?.dispose();
@@ -923,7 +1032,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       return {plan:next,index,...(run?{run}:{})};
     } finally {guard?.dispose();io.close();}
   }
-  return {loadSettings,saveSettings,beginSourceCheck,scan,browseIndex,disposeBrowseIndex,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
+  return {loadSettings,saveSettings,beginSourceCheck,scan,browseIndex,disposeBrowseIndex,flushBrowseStore:()=>storeQueue,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
     listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
     replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
     listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,findSimilarQuestions,

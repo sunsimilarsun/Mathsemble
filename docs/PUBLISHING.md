@@ -2,7 +2,7 @@
 
 版本号以仓库根目录的 `manifest.json` 为准，公开安装包见 [GitHub 最新正式版](https://github.com/sunsimilarsun/Mathsemble/releases/latest)。
 
-安装与发布均使用同一版本的 `main.js`、`manifest.json`、`styles.css`。升级前备份被替换的插件目录、启用清单及方案。0.5.0 可读取 v1 至 v4 方案，使用分值或片段后须保留旧版可读的副本。[0.5.0 升级说明](RELEASE_NOTES_0.5.0.md)
+安装与发布均使用同一版本的 `main.js`、`manifest.json`、`styles.css`。升级前备份被替换的插件目录、启用清单及方案。0.6.0 可读取 v1 至 v4 方案，使用分值或片段后须保留旧版可读的副本。[0.6.0 升级说明](RELEASE_NOTES_0.6.0.md)
 
 ## 本地与 CI 门槛
 

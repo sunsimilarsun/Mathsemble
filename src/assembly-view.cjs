@@ -381,6 +381,11 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         this.sourceStateEl.classList.toggle('is-dirty',attention);
       }
       for(const button of this.primaryButtons||[])button.disabled=this.actionBusy||this.scanBusy;
+      for(const add of this.results?.querySelectorAll('.mwb-assembly-add')||[])
+        add.disabled=this.actionBusy||this.scanBusy||add.closest('.mwb-assembly-result').classList.contains('is-added');
+      const previewAdd=this.preview?.querySelector('.mwb-assembly-preview-add');
+      if(previewAdd)previewAdd.disabled=this.actionBusy||this.scanBusy||this.previewAlreadyAdded();
+      if(this.retryFilesButton)this.retryFilesButton.disabled=this.actionBusy||this.scanBusy;
       for(const control of this.arrangementPane?.querySelectorAll('[data-arrangement-mutate]')||[])
         control.disabled=this.actionBusy||this.scanBusy||control.dataset.boundary==='true';
       this.refreshPlanSettings();
@@ -417,6 +422,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     async onOpen() {
       this.closed = false;
       this.render();
+      const workspace=this.app?.workspace;
+      if(workspace?.layoutReady===false && workspace.onLayoutReady){
+        // A restored tab must let layout initialization finish before inventorying the vault.
+        this.setStatus('正在等待 Obsidian 载入库文件…');
+        workspace.onLayoutReady(()=>{if(!this.closed)void this.loadInitialIndex();});
+        return;
+      }
+      await this.loadInitialIndex();
+    }
+    async loadInitialIndex() {
       try {
         const settings = await service.loadSettings();
         if (this.closed) return;
@@ -437,7 +452,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.clearArrangementDrag();
       this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
-      this.scanController?.abort();
+      this.scanController?.abort();this.scanBaseline=null;this.scanProgress=null;
       this.scanGeneration++; this.previewGeneration++;
       this.releasePreview();
       this.releaseInlinePreviews();
@@ -633,6 +648,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.renderArrangementShell();this.updateWorkspaceMode();
       this.switchPane(this.activePane);
       this.renderLeft(); this.renderCenter(); this.renderOutline();
+      if(this.scanBusy)this.renderScanStatus();
     }
     renderLeft() {
       this.left.replaceChildren();
@@ -658,6 +674,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       });
       const rescan=this.button(this.left,'刷新素材',()=>this.scan(),'mwb-assembly-rescan');
       rescan.title='重新读取题库与知识笔记；不会自动接受编排中的来源变化。';
+      this.scanFailures=this.el('div',this.left,'mwb-assembly-index-issues');
       const filters = this.el('div', this.left, 'mwb-assembly-filters');
       const filterHeader=this.el('div',filters,'mwb-assembly-section-heading');
       this.el('h4', filterHeader, '', '筛选条件');
@@ -816,7 +833,31 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       if(openUsage)this.button(body,'登记或查看使用',()=>openUsage(this));
       this.el('p',body,'mwb-assembly-muted','班级和课程共同确定记录范围；含小问的部分使用也计为该题已用。筛选应用于选材和条件抽题，配额蓝图使用自己的条件。');
     }
+    renderFailedFiles() {
+      if (!this.scanFailures) return;
+      const paths=[...new Set((this.index.issues||[]).filter(issue=>issue?.code==='read-error' && issue.retryable && issue.path).map(issue=>issue.path))];
+      this.scanFailures.replaceChildren();this.retryFilesButton=null;
+      this.scanFailures.hidden=!paths.length || this.indexState==='cached';
+      if (this.scanFailures.hidden) return;
+      const details=this.el('details',this.scanFailures);
+      this.el('summary',details,'',`${paths.length} 个文件读取失败，${this.index.items.length} 份素材可用`);
+      details.addEventListener('toggle',()=>{
+        if (!details.open || details.querySelector('ul')) return;
+        const list=this.el('ul',details);
+        let displayed=0,more;
+        const append=()=>{
+          const end=Math.min(displayed+50,paths.length);
+          for (;displayed<end;displayed++) this.el('li',list,'',paths[displayed]);
+          if (displayed===paths.length) more?.remove();
+        };
+        append();
+        if (displayed<paths.length) more=this.button(details,'显示更多失败路径',append);
+      });
+      this.retryFilesButton=this.button(this.scanFailures,'只重试失败文件',()=>this.scan());
+      this.retryFilesButton.disabled=this.actionBusy||this.scanBusy;
+    }
     renderTree() {
+      this.renderFailedFiles();
       if (!this.tree) return;
       this.tree.replaceChildren();this.el('h3',this.tree,'','知识目录');
       const groups=new Map();
@@ -846,7 +887,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           });related.title='按此知识点筛选题目';
         }
       }
-      const issues=this.index.issues||[];
+      const issues=(this.index.issues||[]).filter(issue=>!(issue?.code==='read-error' && issue.retryable && issue.path));
       if(issues.length){
         const details=this.el('details',this.tree,'mwb-assembly-index-issues');this.el('summary',details,'',`查看 ${issues.length} 项提示`);
         for(const issue of issues.slice(0,100)){
@@ -1038,7 +1079,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         if(item.kind==='question'&&openSimilarity)this.button(footer,'找相似题',()=>openSimilarity(this,{sourceKey:item.key}),'mwb-assembly-card-similarity').title='按题族、考点或方法查找候选题';
         const added=this.plan.entries.some(entry=>entry.kind!== 'section' && ((item.id && entry.sourceId===item.id)||entry.sourcePath===item.path));
         row.classList.toggle('is-added',added);
-        const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
+        const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added||this.scanBusy||this.actionBusy;add.classList.add('mwb-assembly-add');
       }
       if(end<items.length){
         const more=this.button(this.results,'再显示 100 条',()=>{
@@ -1059,10 +1100,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       }
       const add=this.preview?.querySelector('.mwb-assembly-preview-add');
       if(add&&this.selectedItem){
-        const item=this.selectedItem,added=this.plan.entries.some(entry=>entry.kind!=='section'&&((item.id&&entry.sourceId===item.id)||entry.sourcePath===item.path));
-        add.disabled=added||this.actionBusy;
+        const item=this.selectedItem,added=this.previewAlreadyAdded();
+        add.disabled=added||this.actionBusy||this.scanBusy;
         add.textContent=added?'已加入':item.kind==='knowledge'?'整篇加入':'加入编排';
       }
+    }
+    previewAlreadyAdded() {
+      const item=this.selectedItem;
+      return !!item && this.plan.entries.some(entry=>entry.kind!=='section'&&((item.id&&entry.sourceId===item.id)||entry.sourcePath===item.path));
     }
     selectionContext() {
       return JSON.stringify({filters:this.filters,usage:this.usageFilter,usageGeneration:this.usageGeneration,plan:this.plan,count:this.selectionCount,scan:this.scanGeneration,settings:this.settings});
@@ -1210,7 +1255,12 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       return [...keys].filter(key=>nodes.has(key)).sort((a,b)=>nodeOrder.get(a)-nodeOrder.get(b)).map(key=>nodes.get(key));
     }
     add(item) {
-      if(this.actionBusy) return;
+      if(this.closed||this.actionBusy||this.scanBusy) return;
+      if (!this.index.items.includes(item)) {
+        const current=this.index.items.find(candidate=>candidate.path===item.path && candidate.key===item.key && candidate.fingerprint===item.fingerprint);
+        if (!current) {this.notice('素材已变化，请重新选择');return;}
+        item=current;
+      }
       try {this.setPlan(core.addItem(this.plan,item));this.setStatus(`已加入${item.kind==='knowledge'?'整篇知识':'题目'}：${item.title}`);}
       catch(error){this.setStatus(errorText(error),true);this.notice(errorText(error));}
     }
@@ -1851,31 +1901,75 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.updateSummary();
       this.renderArrangement();
     }
+    renderScanStatus() {
+      const prefix=this.indexState==='cached' ? `已显示上次缓存的 ${this.index.items.length} 份素材，正在核对来源` : '正在刷新素材';
+      const p=this.scanProgress;
+      this.setStatus(p ? `${prefix} · 已处理 ${p.processed} / ${p.total} 个文件，失败 ${p.failed} 个` : prefix+'…');
+    }
+    refreshIndexDisplay() {
+      this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
+    }
     async scan({verify=false} = {}) {
       if(this.actionBusy){this.notice('请等待当前操作完成');return;}
       this.scanController?.abort();
       const controller=this.scanController=new AbortController();
-      const generation=++this.scanGeneration;this.scanBusy=true;
+      const generation=++this.scanGeneration;
+      // Keep the last checked index for this exact directory selection. A second
+      // refresh can begin while the first is displaying an unverified snapshot.
+      const scope=JSON.stringify(this.settings);
+      const baseline=this.scanScope!==undefined && this.scanScope!==scope ? {items:[],issues:[]} : this.scanBaseline||this.index;
+      this.scanScope=scope;this.scanBaseline=baseline;
+      this.scanBusy=true;this.scanProgress=null;
+      if (this.index!==baseline || this.indexState==='cached') {
+        this.index=baseline;this.indexState='unread';this.refreshIndexDisplay();
+      }
       this.updateSummary();
       this.clearSelection('正在刷新素材，请完成后重新生成候选。');this.renderSelection();
-      this.setStatus('正在刷新题库与知识笔记…');
+      this.renderScanStatus();
+      const current=()=>!this.closed && generation===this.scanGeneration && this.scanController===controller;
+      let checking=true,lastProgress=-Infinity;
       try {
-        const options={signal:controller.signal};
-        const index=!verify && service.browseIndex
-          ? await service.browseIndex(this.settings,options)
-          : await service.scan(this.settings,options);
-        if(this.closed||generation!==this.scanGeneration)return;
+        const signal=controller.signal;
+        const index=!verify && service.browseIndex ? await service.browseIndex(this.settings,{
+          signal,
+          onProgress:p=>{
+            if (!checking || !current()) return;
+            this.scanProgress=p;
+            const now=Date.now();
+            if (now-lastProgress>=200 || p.processed===p.total) {lastProgress=now;this.renderScanStatus();}
+          },
+          onCachedIndex:snapshot=>{
+            if (!checking || !current() || this.indexState==='cached') return;
+            const changed=this.index!==snapshot;
+            this.index=snapshot;this.indexState='cached';
+            if (changed) this.refreshIndexDisplay();
+            this.renderScanStatus();
+          }
+        }) : await service.scan(this.settings,{signal});
+        checking=false;
+        if(!current())return;
         this.index=index;this.indexState='ready';this.limit=100;
         if(usageService)await this.refreshUsage({render:false});
-        if(this.closed||generation!==this.scanGeneration)return;
-        this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
-        const issues=index.issues?.length||0;
-        this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);
+        if(!current())return;
+        this.refreshIndexDisplay();
+        const issues=index.issues||[];
+        const failed=new Set(issues.filter(issue=>issue?.code==='read-error' && issue.retryable && issue.path).map(issue=>issue.path)).size;
+        this.setStatus(failed ? `${index.items.length} 份素材可用，${failed} 个文件读取失败。可在内容筛选中查看路径并重试。` :
+          `已刷新 ${index.items.length} 份素材${issues.length?`；${issues.length} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues.length);
         return true;
-      } catch(error){if(!this.closed&&generation===this.scanGeneration){this.indexState='error';this.setStatus(errorText(error),true);}}
-      finally{
-        if(this.scanController===controller)this.scanController=null;
-        if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}
+      } catch(error){
+        if(current()){
+          const shownCache=this.indexState==='cached';
+          this.indexState='error';
+          if(shownCache){this.index=baseline;this.refreshIndexDisplay();}
+          this.setStatus('素材核对未完成：'+errorText(error),true);
+        }
+      } finally{
+        checking=false;
+        if(current()){
+          this.scanController=null;this.scanBaseline=null;this.scanProgress=null;
+          this.scanBusy=false;this.renderSelection();this.updateSummary();
+        }
       }
     }
     async updateReferences() {

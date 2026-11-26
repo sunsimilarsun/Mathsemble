@@ -1,8 +1,9 @@
 # Mathsemble privacy and security notes
 
-The released baseline is 0.3.0. The P2 additions described below exist on the current development branch and are not part of the 0.3.0 download. Implementation and verification status are tracked in [P2 implementation](P2_IMPLEMENTATION.md); these notes do not assert a completed P2 security or native-host audit.
+These notes cover data handled by Mathsemble 0.6.0. Earlier verification of the P2 features is recorded in [P2 implementation](P2_IMPLEMENTATION.md).
 
 - The application is local-first and does not implement analytics, telemetry, accounts, or application-managed cloud sync.
+- The selection index keeps a rebuildable copy of indexed Markdown and metadata, including teacher answers, in the local Obsidian profile's IndexedDB. Each vault path has its own index. To remove the copy for the current vault, run the command “清除本机选材索引”. The next browse refresh can rebuild it from the source files.
 - The plugin reads Markdown from the current note, folder-based exam collection, or configured question/knowledge directories. Assembly schemes store references, ordering and course/output settings; explicitly saved handout copies contain compiled Markdown. Temporary A4 previews use in-memory snapshots without creating a handout file. It updates frontmatter after a direct user action to set a teaching role, or changes the current question heading after the user explicitly invokes the H5 conversion command. Preview, export and the Reading View answer toggle do not rewrite source notes.
 - The plugin may request external HTTP(S) resources when a rendered document references remote images/fonts. Remote hosts then see the ordinary request. The feature should not be described as fully offline when printing content that references external resources.
 - The plugin can read explicitly referenced `file://` images/font resources located outside an Obsidian vault. The print routine writes temporary HTML to the operating-system temporary directory, then deletes that directory in its `finally` cleanup. Electron handles PDF generation locally.

@@ -50,6 +50,73 @@ function fixture(initial={},saved={}) {
   };
 }
 const roots={questionRoots:['题库'],knowledgeRoots:['知识'],recursive:true};
+test('restored browsing reconciles edits, moves and deletions, while compiling still verifies original text',async t=>{
+  const a='题库/A.md',b='题库/B.md',c='题库/C.md',d='题库/D.md';
+  const f=fixture({[a]:q('A','甲题'),[b]:q('B','乙题'),[c]:q('C'),[d]:q('D')},{assemblySettings:roots});
+  let saved;
+  const store={load:async()=>structuredClone(saved),save:async value=>{saved=structuredClone(value);}};
+  const start=()=>{const service=createService(f.plugin,{...f.deps,browseStore:store});t.after(()=>service.disposeBrowseIndex());return service;};
+  const first=start(),initial=await first.browseIndex(roots);
+  await first.flushBrowseStore();first.disposeBrowseIndex();
+  const next=start();f.reads.length=0;
+  const restored=await next.browseIndex(roots);
+  assert.deepEqual(restored.items.map(i=>i.key),initial.items.map(i=>i.key));
+  assert.deepEqual(f.reads,[]);
+  next.disposeBrowseIndex();
+
+  await f.vault.modify(f.nodes.get(b),q('B','修改后'));
+  f.rename(c,'题库/迁移/C.md');f.remove(d);await f.vault.create('题库/E.md',q('E'));
+  const changed=start();f.reads.length=0;let provisional;
+  const updated=await changed.browseIndex(roots,{onCachedIndex:index=>{provisional=index;}});
+  assert.deepEqual(provisional.items.map(i=>i.path),[a]);
+  assert.deepEqual(f.reads.sort(),[b,'题库/E.md','题库/迁移/C.md'].sort());
+  assert.deepEqual(updated.items.map(i=>i.id).sort(),['A','B','C','E']);
+  const plan=core.addItem(core.createPlan('原文核对'),updated.items.find(i=>i.id==='A'));
+  assert.match((await changed.compile(plan,updated)).markdown,/甲题/);
+  // Editing tools can preserve timestamps and length. The source text must win at export.
+  f.nodes.get(a).content=q('A','新题');
+  await assert.rejects(changed.compile(plan,updated),/来源已变化/);
+});
+
+test('damaged cached rows are reread and a directory change only invalidates that subtree',async t=>{
+  const a='题库/甲/A.md',b='题库/乙/B.md',f=fixture({[a]:q('A'),[b]:q('B')});
+  const first=await f.service.browseIndex(roots);
+  let stored={version:1,config:roots,entries:first.items.map(item=>({path:item.path,...f.nodes.get(item.path).stat,
+    record:{path:item.path,kind:item.kind,markdown:item.markdown,metadata:item.metadata}}))};
+  stored.entries.find(row=>row.path===a).record.markdown=null;
+  const service=createService(f.plugin,{...f.deps,browseStore:{load:async()=>stored,save:async s=>{stored=s;}}});
+  t.after(()=>{f.service.disposeBrowseIndex();service.disposeBrowseIndex();});
+  f.reads.length=0;
+  const repaired=await service.browseIndex(roots);
+  assert.deepEqual(f.reads,[a]);assert.equal(repaired.items.length,2);
+  f.reads.length=0;f.trigger('modify',f.nodes.get('题库/乙'));
+  await service.browseIndex(roots);assert.deepEqual(f.reads,[b]);
+});
+
+test('a total browse deadline is a scan failure, independent of individual file timeouts',async t=>{
+  const f=fixture({'题库/A.md':q('A')});
+  t.after(()=>f.service.disposeBrowseIndex());
+  f.vault.read=()=>new Promise(()=>{});
+  await assert.rejects(f.service.browseIndex(roots,{timeoutMs:20,resourceTimeoutMs:1000}),
+    {code:'MWB_ASSEMBLY_TIMEOUT',timeoutScope:'scan'});
+});
+
+test('a local storage failure still allows browsing, and a later save can recover',async t=>{
+  const f=fixture({'题库/A.md':q('A')});
+  let writes=0,last;
+  const browseStore={load:async()=>{throw Error('索引不可读');},save:async snapshot=>{
+    if(++writes===1) throw Error('磁盘不可用');
+    last=snapshot;
+  }};
+  const service=createService(f.plugin,{...f.deps,browseStore});
+  t.after(()=>service.disposeBrowseIndex());
+  assert.equal((await service.browseIndex(roots)).items.length,1);
+  await service.flushBrowseStore();
+  await f.vault.create('题库/B.md',q('B'));
+  assert.equal((await service.browseIndex(roots)).items.length,2);
+  await service.flushBrowseStore();assert.equal(last.entries.length,2);
+});
+
 async function prepared(extra={}) {
   const f=fixture({'题库/题.md':q(),'知识/集合.md':k(),...extra});
   await f.service.saveSettings(roots); const index=await f.service.scan();
@@ -128,18 +195,20 @@ test('browse recomputes duplicate identities when notes are created, renamed in 
   assert.deepEqual(remaining.items.map(item=>[item.path,item.key]),[['题库/C.md','id:A']]);
 });
 
-test('a failed incremental browse preserves the last good content and retries the failed read',async t=>{
-  const path='题库/A.md',f=fixture({[path]:q('A','上次正文')});
+test('an unreadable changed card is omitted, healthy cards stay available, and only the failed read is retried',async t=>{
+  const path='题库/A.md',f=fixture({[path]:q('A','上次正文'),'题库/B.md':q('B','健康题卡')});
   t.after(()=>f.service.disposeBrowseIndex());
   const first=await f.service.browseIndex(roots);
   await f.vault.modify(f.nodes.get(path),q('A','修订正文'));
   const read=f.vault.read;
   let attempts=0;
   f.vault.read=async()=>{attempts++;throw Error('临时读取中断');};
-  const attempt=await f.service.browseIndex(roots).then(index=>({index}),error=>({error}));
+  const progress=[];
+  const attempt=await f.service.browseIndex(roots,{onProgress:p=>progress.push(p)});
   assert.equal(attempts,1);
-  assert(attempt.error || attempt.index.issues.some(issue=>issue.path===path),'a failed read must remain visible');
-  if(attempt.index)assert.match(attempt.index.items.find(item=>item.path===path)?.markdown||'',/上次正文/);
+  assert.deepEqual(attempt.items.map(item=>item.id),['B']);
+  assert(attempt.issues.some(issue=>issue.path===path && issue.code==='read-error' && issue.retryable));
+  assert.deepEqual(progress.at(-1),{processed:2,total:2,failed:1});
   assert.match(first.items[0].markdown,/上次正文/);
   f.vault.read=read;f.reads.length=0;
   const retried=await f.service.browseIndex(roots);
@@ -177,14 +246,16 @@ test('a browse retries one concurrent source change, then rejects a second chang
   });
 });
 
-test('a browse read timeout stops without automatically retrying',async t=>{
+test('a single file timeout leaves a retryable issue without immediately rereading the file',async t=>{
   const path='题库/A.md',f=fixture({[path]:q('A','已发布正文')});
   t.after(()=>f.service.disposeBrowseIndex());
   const first=await f.service.browseIndex(roots),read=f.vault.read;
   await f.vault.modify(f.nodes.get(path),q('A','超时后恢复'));
   let attempts=0;
   f.vault.read=()=>{attempts++;return new Promise(()=>{});};
-  await assert.rejects(f.service.browseIndex(roots,{resourceTimeoutMs:25}),{code:'MWB_ASSEMBLY_TIMEOUT'});
+  const index=await f.service.browseIndex(roots,{resourceTimeoutMs:25});
+  assert.equal(index.items.length,0);
+  assert(index.issues.some(issue=>issue.path===path && issue.retryable && issue.message.includes('超时')));
   assert.equal(attempts,1);
   assert.match(first.items[0].markdown,/已发布正文/);
   f.vault.read=read;

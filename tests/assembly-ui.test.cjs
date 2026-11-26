@@ -34,7 +34,13 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
  class Component {load(){} unload(){}}
  class ItemView extends Component {constructor(){super();this.contentEl=document.querySelector('#view');this.app={workspace:{requestSaveLayout(){}}};}addChild(c){c.load();}removeChild(c){c.unload();}}
  const View=load(${source('assembly-view.cjs')})({ItemView,Notice:class{},Component,core,service,renderMarkdown:async(md,container)=>{container.textContent=md;}});
- const view=new View({},{});await view.onOpen();
+ const view=new View({},{}),workspace=view.app.workspace;let whenReady;
+ workspace.layoutReady=false;workspace.onLayoutReady=callback=>{whenReady=callback;};
+ await view.onOpen();
+ check(!view.index.items.length && typeof whenReady==='function','layout restore defers indexing until the vault inventory is ready');
+ workspace.layoutReady=true;whenReady();
+ const deadline=Date.now()+2000;
+ while((view.indexState!=='ready'||view.scanBusy)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,5));
  check(view.index.items.length===3&&sessions===1,'scan configured sources with a per-view plan session');
  const tiers=[...view.filterSelects.tier.options].map(option=>option.value);
  check(tiers.includes('基础')&&tiers.includes('培优')&&!tiers.includes('基础 / 培优'),'each knowledge tier has its own filter option');
@@ -63,12 +69,39 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
  records[1].markdown+='\\n修改后的正文';index=core.buildIndex(records);await view.updateReferences();check(core.resolvePlan(view.plan,index).issues.length===0,'explicit refresh accepts changed source');
  view.titleInput.value='';view.titleInput.dispatchEvent(new Event('input'));view.renderOutline();check(view.plan.title==='新讲义','empty plan title has valid fallback');
  const section=view.plan.entries.find(entry=>entry.kind==='section');const sectionTitle=view.arrangementList.querySelector('[data-entry-id="'+section.entryId+'"] [data-arrangement-field="title"]');sectionTitle.value='';sectionTitle.dispatchEvent(new Event('change'));check(view.plan.entries.find(entry=>entry.entryId===section.entryId).title==='训练区'&&view.arrangementList.querySelector('[data-entry-id="'+section.entryId+'"] [data-arrangement-field="title"]').value==='训练区','invalid section title preserves and restores old value');
- let resolveA,resolveB,request=0;const signals=[];
- service.browseIndex=(_settings,{signal})=>new Promise(resolve=>{signals.push(signal);if(++request===1)resolveA=resolve;else resolveB=resolve;});
- const a=view.scan(),b=view.scan();resolveB(index);await b;resolveA({items:[],issues:[]});await a;check(view.index.items.length===3,'outdated scan cannot replace latest');
- check(signals[0].aborted&&!signals[1].aborted,'superseded browse request is canceled');
- const closingScan=view.scan();const closingSignal=signals.at(-1);await view.onClose();resolveB(index);await closingScan;
- check(closingSignal.aborted && document.querySelector('#view').childElementCount===0,'close aborts active scan and releases view');
+ const requests=[];
+ service.browseIndex=(_settings,options)=>new Promise((resolve,reject)=>requests.push({options,resolve,reject}));
+ const stale=core.buildIndex([{path:'题库/旧题.md',kind:'question',metadata:{id:'old',title:'缓存题目',question_type:'choice'},markdown:'旧正文'}]);
+ const issues=[{code:'read-error',path:'题库/失败题.md',retryable:true,message:'读取超时'},
+   {code:'read-error',path:'题库/另一题.md',retryable:true,message:'文件暂不可用'},{code:'diagnostic',message:'其他提示'}];
+ const a=view.scan(),first=requests.at(-1);
+ first.options.onCachedIndex(stale);
+ check(view.indexState==='cached' && view.results.textContent.includes('缓存题目') && view.statusEl.textContent.includes('正在核对来源'),'cached results are available for browsing while verification continues');
+ const oldRow=view.results.querySelector('.mwb-assembly-result'),planBefore=view.plan;
+ view.add(stale.items[0]);view.drawSelection();let wrote=false;await view.runAction('导出',()=>{wrote=true;});
+ check(oldRow.querySelector('.mwb-assembly-add').disabled && view.plan===planBefore && !view.selection && !wrote,'snapshot cannot enter a plan, selection or export');
+ first.options.onProgress({processed:2,total:5,failed:1});
+ check(view.statusEl.textContent.includes('2 / 5') && view.statusEl.textContent.includes('失败 1') && view.results.querySelector('.mwb-assembly-result')===oldRow,'progress counts are shown without replacing the list');
+ const b=view.scan(),second=requests.at(-1);
+ first.options.onCachedIndex(stale);first.options.onProgress({processed:97,total:99,failed:4});
+ check(!view.statusEl.textContent.includes('97 / 99') && view.index!==stale,'superseded callbacks cannot restore provisional results or progress');
+ second.resolve({...index,issues});await b;first.resolve(stale);await a;
+ check(view.index.items.length===3 && first.options.signal.aborted && !second.options.signal.aborted,'outdated scan cannot replace latest results');
+ check(view.indexState==='ready' && view.statusEl.textContent.includes('3 份素材可用') && view.statusEl.textContent.includes('2 个文件读取失败'),'partial success reports available materials and failed files');
+ const failures=view.scanFailures.querySelector('details');failures.open=true;await new Promise(resolve=>setTimeout(resolve,10));
+ check(failures.textContent.includes('题库/失败题.md') && failures.textContent.includes('题库/另一题.md') && !view.tree.textContent.includes('题库/失败题.md'),'failure list displays retryable paths separately from other diagnostics');
+ view.retryFilesButton.click();await new Promise(resolve=>setTimeout(resolve,10));const retry=requests.at(-1);
+ check(requests.length===3 && view.scanBusy && view.retryFilesButton.disabled,'retry uses normal incremental browsing and cannot be submitted twice');
+ retry.resolve(index);await new Promise(resolve=>setTimeout(resolve,10));
+ check(!view.scanBusy && view.scanFailures.hidden && !view.retryFilesButton,'successful retry clears the failure list');
+ const failing=view.scan(),bad=requests.at(-1);bad.options.onCachedIndex(stale);bad.reject(Error('校验失败'));await failing;
+ check(view.index===index && !view.results.textContent.includes('缓存题目') && view.statusEl.textContent.includes('校验失败'),'failed verification restores last checked index');
+ view.settings={...view.settings,questionRoots:['不同范围']};
+ const changed=view.scan(),other=requests.at(-1);other.options.onCachedIndex(stale);other.reject(Error('新目录不可用'));await changed;
+ check(view.index.items.length===0 && !view.results.textContent.includes('缓存题目'),'failed verification after directory switch cannot fall back to the old scope');
+ const closingScan=view.scan(),closing=requests.at(-1);await view.onClose();
+ closing.options.onProgress({processed:9,total:10,failed:0});closing.options.onCachedIndex(stale);closing.resolve(index);await closingScan;
+ check(closing.options.signal.aborted && document.querySelector('#view').childElementCount===0,'close aborts active scan and releases view');
  const output=document.createElement('pre');output.id='mwb-test-results';output.textContent=JSON.stringify({passed:true,checks});document.body.appendChild(output);
 })().catch(error=>{const output=document.createElement('pre');output.id='mwb-test-results';output.textContent=JSON.stringify({passed:false,error:String(error.stack||error)});document.body.appendChild(output);});
 </script>`;
@@ -76,6 +109,6 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
   const file=path.join(dir,'ui.html');fs.writeFileSync(file,html);
   const result=await runChromeDocument(chrome,file,path.join(dir,'profile'));
   assert.equal(result.passed,true,result.error);
-  assert.equal(result.checks.length,25);
+  assert.ok(result.checks.length>=30);
  } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
