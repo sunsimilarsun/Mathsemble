@@ -153,9 +153,34 @@ function knowledgeCandidates(reference, sourcePath, nodes, subject) {
     [basename(node.path), node.title, ...node.aliases].some(name => fold(name) === fold(target)));
 }
 
-function buildIndex(records) {
+// Recognize numbered chapters even when the scan starts inside one. For a
+// custom, unnumbered bank, the two folders below its root are chapter/section.
+function questionScope(path, metadata, questionRoots) {
+  const folders = path.split('/').slice(0, -1);
+  const explicitChapter = folders.findLastIndex(name =>
+    /^(?:第[零〇一二三四五六七八九十百两\d]+章|C\d+(?=$|[^\dA-Za-z-]))/i.test(name));
+  const chapterIndex = explicitChapter >= 0 ? explicitChapter : folders.findIndex(name => /^\d{1,3}\s+\S/.test(name));
+  let chapterFolder, sectionFolder;
+  if (chapterIndex >= 0) {
+    [chapterFolder, sectionFolder] = folders.slice(chapterIndex);
+  } else {
+    const root = questionRoots.find(root => path.startsWith(root + '/'));
+    const relative = root ? folders.slice(root.split('/').length) : [];
+    if (['初中例题','初中变式'].includes(relative[0])) relative.shift();
+    [chapterFolder, sectionFolder] = relative;
+  }
+  const folderLabel = value => value && value !== '题卡' ? value : '';
+  const chapter = text(metadata.chapter) || text(metadata.chapter_name) || text(metadata.章节) ||
+    text(metadata.chapter_id) || folderLabel(chapterFolder);
+  const section = text(metadata.section) || text(metadata.section_name) || text(metadata.小节) ||
+    text(metadata.section_id) || (folderLabel(chapterFolder) && folderLabel(sectionFolder));
+  return {chapter, section};
+}
+
+function buildIndex(records, {questionRoots = []} = {}) {
   if (!Array.isArray(records)) throw new TypeError('索引输入必须为列表');
   const items = [], issues = [], paths = new Set(), ids = new Map();
+  const roots = questionRoots.map(normalizePath).sort((a,b) => a.length - b.length);
   for (const record of records) {
     if (!record || !['question','knowledge'].includes(record.kind) || typeof record.markdown !== 'string' ||
       !text(record.path) || !/\.md$/i.test(record.path)) {
@@ -171,6 +196,7 @@ function buildIndex(records) {
       ? {...record.metadata} : {};
     const id = text(metadata.id), tiers = normalizeTiers(metadata,record.kind);
     const item = {key:'path:' + path, id, path, kind:record.kind,...normalizeFamilyMetadata(metadata),
+      ...(record.kind === 'question' ? questionScope(path, metadata, roots) : {}),
       title:text(metadata.title) || basename(path), markdown:record.markdown, metadata,
       aliases:labels(metadata.aliases), knowledgeNodes:labels(metadata.knowledge_nodes),
       subject:text(metadata.subject), questionType:text(metadata.question_type || metadata.type),
@@ -215,7 +241,10 @@ function filterItems(index, filters = {}) {
   const familyIds=(Array.isArray(filters.familyId)?filters.familyId:[filters.familyId]).filter(value=>value!=null&&!(typeof value==='string'&&!value.trim()));
   const familyStates=options(filters.familyState);
   const methodTargets=new Set(options(filters.method).map(value=>fold(parseKnowledgeRef(value).target)));
+  const chapters = list(filters.chapter), sections = list(filters.section);
   return items.filter(item => {
+    if (filters.kind !== 'knowledge' &&
+      ((chapters.length && !chapters.includes(item.chapter)) || (sections.length && !sections.includes(item.section)))) return false;
     if (familyIds.length && (item.kind!=='question' || item.familyState!=='classified' ||
       !familyIds.some(value=>typeof value==='string'&&value.trim()===item.familyId))) return false;
     if (familyStates.length && (item.kind!=='question' || !familyStates.includes(item.familyState))) return false;

@@ -86,6 +86,34 @@ test('an explicitly selected knowledge directory includes whole notes without YA
   assert.equal(f.writes.length,0);
 });
 
+test('chapter and section filters use the scanned question folders and optional card fields',async()=>{
+  const f=fixture({
+    '题库/第一章函数/题卡/A.md':q('A'),
+    '题库/同步题库/C03函数/C03-S07奇偶性/题卡/B.md':q('B'),
+    '题库/复习题库/题卡/C03/S07/C.md':q('C'),
+    '题库/专题几何/基本性质/D.md':q('D'),
+    '题库/专题代数/基本性质/E.md':q('E'),
+    '题库/旧目录/F.md':source({id:'F',question_type:'choice',chapter_id:'旧章',section_id:'旧节'},'题干'),
+    '题库/平铺.md':q('G'),
+  });
+  const index=await f.service.scan({...roots,questionRoots:['题库/专题几何','题库']});
+  const byId=new Map(index.items.map(item=>[item.id,[item.chapter,item.section]]));
+  assert.deepEqual(byId.get('A'),['第一章函数','']);
+  assert.deepEqual(byId.get('B'),['C03函数','C03-S07奇偶性']);
+  assert.deepEqual(byId.get('C'),['C03','S07']);
+  assert.deepEqual(byId.get('D'),['专题几何','基本性质']);
+  assert.deepEqual(byId.get('F'),['旧章','旧节']);
+  assert.deepEqual(byId.get('G'),['','']);
+  const filters={kind:'question',chapter:'专题几何',section:'基本性质',knowledge:'集合'};
+  assert.deepEqual(core.filterItems(index,filters).map(item=>item.id),['D']);
+  assert.deepEqual(core.selectQuestions(index,filters,core.createPlan(),1).items.map(item=>item.id),['D']);
+  assert.equal(core.filterItems(index,{...filters,chapter:'第一章函数'}).length,0);
+  assert.equal(core.filterItems(index,{kind:'question'}).length,7);
+  const nested=await f.service.scan({...roots,questionRoots:['题库/同步题库/C03函数/C03-S07奇偶性/题卡']});
+  assert.deepEqual(nested.items.map(item=>[item.chapter,item.section]),[byId.get('B')]);
+  assert.equal(f.writes.length,0);
+});
+
 test('empty Obsidian properties preserve the whole knowledge note through scan and compilation',async()=>{
   const body='第一段正文\n\n---\n\n第二段正文';
   const files={'知识/直接闭合.md':'---\n---\n完整正文',

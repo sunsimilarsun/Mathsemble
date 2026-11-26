@@ -4,7 +4,7 @@
 // blueprint records and persistence belong to the service, never this module.
 const ALGORITHM='family-replacement-v1';
 const CONSTRAINED_ALGORITHM='constrained-replacement-v1';
-const FILTERS=new Set(['kind','query','subject','questionType','difficulty','tier','role','method','source','knowledge','familyId','familyState']);
+const FILTERS=new Set(['kind','query','subject','chapter','section','questionType','difficulty','tier','role','method','source','knowledge','familyId','familyState']);
 const forbidden=new Set(['__proto__','prototype','constructor']);
 const compare=(a,b)=>a<b?-1:a>b?1:0;
 const error=(code,message,issues)=>Object.assign(new Error(message),{code,...(issues?{issues}:{})});

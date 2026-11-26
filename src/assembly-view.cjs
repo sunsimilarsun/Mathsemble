@@ -68,7 +68,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           this.planPath = typeof state.planPath === 'string' ? state.planPath : null;
           this.dirty = !!state.dirty;
           if (state.filters && typeof state.filters === 'object') {
-            for (const key of ['kind','query','knowledge','subject','questionType','difficulty','tier','role','method','source','familyId','familyState']) {
+            delete this.filters.chapter; delete this.filters.section;
+            for (const key of ['kind','query','knowledge','subject','chapter','section','questionType','difficulty','tier','role','method','source','familyId','familyState']) {
               if (typeof state.filters[key] === 'string') this.filters[key] = state.filters[key];
             }
           }
@@ -668,10 +669,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.advancedFilters=this.el('details',filters,'mwb-assembly-advanced-filters');
       this.el('summary',this.advancedFilters,'','更多筛选');
       const advanced=this.el('div',this.advancedFilters,'mwb-assembly-filter-grid');
-      const specs = [['subject','学段学科'],['questionType','题型'],['tier','教学分层'],['knowledge','知识标签'],['familyId','题族'],['familyState','题族状态'],['difficulty','难度'],['role','题目角色'],['method','方法'],['source','来源']];
+      const specs = [['subject','学段学科'],['chapter','章节'],['section','小节'],['knowledge','知识点'],['questionType','题型'],['tier','教学分层'],['familyId','题族'],['familyState','题族状态'],['difficulty','难度'],['role','题目角色'],['method','方法'],['source','来源']];
       for (const [key,label] of specs) {
         const select = this.field(['difficulty','role','method','source'].includes(key)?advanced:basics,label,'select');
-        select.addEventListener('change',()=>{this.filters[key]=select.value;this.limit=100;this.renderResults();});
+        select.addEventListener('change',()=>{
+          if (key==='chapter' && select.value!==this.filters.chapter) delete this.filters.section;
+          this.filters[key]=select.value;this.limit=100;
+          if (['subject','chapter','section'].includes(key)) this.populateFilters(true);
+          this.renderResults();
+          this.app.workspace.requestSaveLayout?.();
+        });
         this.filterSelects[key] = select;
       }
       this.advancedFilters.open=['difficulty','role','method','source'].some(key=>this.filters[key]);
@@ -680,24 +687,50 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.tree = this.el('div',this.left,'mwb-assembly-tree');
       this.renderTree();
     }
-    populateFilters() {
+    populateFilters(scopeOnly=false) {
       if (!this.filterSelects) return;
-      const familyCounts=new Map();for(const item of this.index.items)if(item.kind==='question'&&item.familyState==='classified')familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
+      const {items}=this.index;
+      const filters=this.filters, questionTab=filters.kind==='question', ready=this.indexState==='ready';
+      const questions=items.filter(item=>item.kind==='question' && (!filters.subject || item.subject===filters.subject));
+      const chapters=new Set(questions.map(item=>item.chapter).filter(Boolean));
+      if (ready && filters.chapter && !chapters.has(filters.chapter)) {
+        delete filters.chapter; delete filters.section;
+      }
+      const chapterQuestions=filters.chapter ? questions.filter(item=>item.chapter===filters.chapter) : [];
+      const sections=new Set(chapterQuestions.map(item=>item.section).filter(Boolean));
+      if (ready && filters.section && !sections.has(filters.section)) delete filters.section;
+      const scoped=questionTab && !!filters.chapter;
+      const knowledgeItems=scoped ? chapterQuestions.filter(item=>!filters.section || item.section===filters.section) : items;
+      const knowledge=new Set(knowledgeItems.flatMap(item=>item.knowledgeNodes));
+      // A tree shortcut uses the note key. Its questions may declare aliases,
+      // wiki links or shared labels, so compare with the same rules as the results.
+      if (ready && scoped && filters.knowledge && !knowledge.has(filters.knowledge) &&
+          !core.filterItems(this.index,{kind:'question',subject:filters.subject,chapter:filters.chapter,section:filters.section,knowledge:filters.knowledge}).length)
+        delete filters.knowledge;
+      const scopeValues={chapter:chapters,section:sections,knowledge};
+      this.filterSelects.chapter.parentElement.hidden=!questionTab;
+      this.filterSelects.section.parentElement.hidden=!questionTab;
+      this.filterSelects.section.disabled=!filters.chapter || !sections.size;
+      const nodes=new Map(items.filter(item=>item.kind==='knowledge').map(item=>[item.key,item]));
+      const familyCounts=new Map();
+      if (!scopeOnly) for(const item of items) if(item.kind==='question'&&item.familyState==='classified')
+        familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
       for (const [key,select] of Object.entries(this.filterSelects)) {
-        const values = new Set();
-        for (const item of this.index.items) {
+        if (scopeOnly && !Object.hasOwn(scopeValues,key)) continue;
+        const values = scopeValues[key] || new Set();
+        if (!Object.hasOwn(scopeValues,key)) for (const item of items) {
           if(['familyId','familyState'].includes(key)&&item.kind!=='question')continue;
-          const raw = key==='knowledge' ? item.knowledgeNodes : key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
+          const raw = key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
           for (const value of Array.isArray(raw)?raw:[raw]) if (value !== null && value !== undefined && value !== '') values.add(String(value));
         }
-        let current=String(this.filters[key]||'');
+        let current=String(filters[key]||'');
         if(['knowledge','method'].includes(key)&&['','~','[]'].includes(core.parseKnowledgeRef(current).target)){
-          current='';this.filters[key]='';
+          current='';filters[key]='';
         }
         if(current) values.add(current);
-        select.replaceChildren();this.el('option',select,'','不限').value='';
+        select.replaceChildren();this.el('option',select,'',key==='section'&&!filters.chapter?'先选章节':'不限').value='';
         for (const value of [...values].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}))) {
-          const node = key==='knowledge' ? this.index.items.find(item=>item.kind==='knowledge'&&item.key===value) : null;
+          const node = key==='knowledge' ? nodes.get(value) : null;
           const familyCount=key==='familyId'?familyCounts.get(value)||0:null;
           this.el('option',select,'',node ? node.title : key==='familyId'?`${value}（${familyCount} 题）`:key==='familyState'?({classified:'已归族',unclassified:'未归族',invalid:'字段异常'}[value]||value):key==='questionType' ? typeNames[value]||value : labelOf(value)).value=value;
         }
@@ -765,6 +798,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           this.button(row,item.title,()=>this.showItem(item),'mwb-assembly-tree-item');
           const related=this.button(row,'关联题',()=>{
             this.filters.kind='question';this.filters.knowledge=item.key;this.limit=100;
+            if (this.filters.chapter) {
+              const scope={kind:'question',subject:this.filters.subject,chapter:this.filters.chapter,section:this.filters.section,knowledge:item.key};
+              if (!core.filterItems(this.index,scope).length) {
+                delete this.filters.section;
+                if (!core.filterItems(this.index,{...scope,section:''}).length) delete this.filters.chapter;
+                if (item.subject && this.filters.subject!==item.subject) delete this.filters.subject;
+              }
+            }
             this.clearItemPreview();this.populateFilters();this.updateTabs();this.renderResults();
             this.switchPane('library');this.resultsDisclosure.open=true;this.resultsSummary.focus();
           });related.title='按此知识点筛选题目';
@@ -787,7 +828,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       const tools=this.el('div',this.center,'mwb-assembly-search');
       this.tabs=this.el('div',tools,'mwb-assembly-tabs');
       for(const [kind,label] of [['question','题目'],['knowledge','知识']]) {
-        const tab=this.button(this.tabs,label,()=>{this.filters.kind=kind;this.limit=100;this.updateTabs();this.renderResults();});
+        const tab=this.button(this.tabs,label,()=>{this.filters.kind=kind;this.limit=100;this.populateFilters(true);this.updateTabs();this.renderResults();});
         tab.dataset.kind=kind;
       }
       this.searchInput=this.field(tools,'搜索名称、正文与标签');this.searchInput.type='search';this.searchInput.value=this.filters.query||'';
@@ -806,13 +847,14 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     renderActiveFilters() {
       if(!this.activeFilters)return;this.activeFilters.replaceChildren();
-      const labels={query:'搜索',subject:'学段学科',questionType:'题型',difficulty:'难度',tier:'教学分层',role:'题目角色',knowledge:'知识标签',method:'方法',source:'来源',familyId:'题族',familyState:'题族状态'};
+      const labels={query:'搜索',subject:'学段学科',chapter:'章节',section:'小节',questionType:'题型',difficulty:'难度',tier:'教学分层',role:'题目角色',knowledge:'知识点',method:'方法',source:'来源',familyId:'题族',familyState:'题族状态'};
       for(const [key,label] of Object.entries(labels)){
+        if (this.filters.kind==='knowledge' && (key==='chapter'||key==='section')) continue;
         const value=String(this.filters[key]||'');if(!value)continue;
         const select=this.filterSelects?.[key];
         const display=select?.selectedOptions?.[0]?.textContent||labelOf(value);
         const chip=this.button(this.activeFilters,`${label}：${display} ×`,()=>{
-          delete this.filters[key];this.limit=100;
+          delete this.filters[key];if (key==='chapter') delete this.filters.section;this.limit=100;
           if(key==='query'&&this.searchInput)this.searchInput.value='';
           this.populateFilters();this.renderResults();
         },'mwb-assembly-filter-chip');

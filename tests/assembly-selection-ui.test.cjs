@@ -19,7 +19,16 @@ test('conditional selection UI keeps review separate from atomic insertion and r
  const load=source=>{const module={exports:{}};new Function('module','MWB_ASSEMBLY_FRAGMENTS',source)(module,fragmentApi);return module.exports;};
  fragmentApi=load(${source('assembly-fragments.cjs')});
  const core=load(${source('assembly-core.cjs')});
- const records=Array.from({length:5},(_,i)=>({path:'题库/Q'+i+'.md',kind:'question',metadata:{id:'Q'+i,subject:'高中数学',question_type:i===4?'proof':'choice',teaching_tier:'基础',knowledge_nodes:['集合']},markdown:'题干 '+i}));
+ const topics=[
+   {chapter:'集合',section:'表示',knowledge_nodes:['集合','列举法']},
+   {chapter:'集合',section:'运算',knowledge_nodes:['集合','并集']},
+   {chapter:'函数',section:'表示',knowledge_nodes:['集合','图象']},
+   {chapter:'函数',section:'性质',knowledge_nodes:['集合','单调性']},
+   {knowledge_nodes:['集合','综合证明']}
+ ];
+ const records=topics.map((topic,i)=>({path:'题库/Q'+i+'.md',kind:'question',metadata:{
+   id:'Q'+i,subject:'高中数学',question_type:i===4?'proof':'choice',teaching_tier:'基础',...topic
+ },markdown:'题干 '+i}));
  records.push({path:'知识/集合.md',kind:'knowledge',metadata:{id:'K1',subject:'高中数学',knowledge_nodes:['集合']},markdown:'知识正文'});
  let scans=0;
  const read=async()=>{scans++;return core.buildIndex(records);};
@@ -29,12 +38,43 @@ test('conditional selection UI keeps review separate from atomic insertion and r
  class Component {load(){}unload(){}}
  class ItemView extends Component {constructor(){super();this.contentEl=document.querySelector('#view');this.app={workspace:{requestSaveLayout(){}}};}addChild(c){c.load();}removeChild(c){c.unload();}}
  const View=load(${source('assembly-view.cjs')})({ItemView,Notice:class{},Component,core,service,renderMarkdown:async(md,node)=>{node.textContent=md;}});
- const view=new View({},{});await view.onOpen();
+ const view=new View({},{});
+ await view.setState({plan:view.plan,filters:{kind:'question',chapter:'集合',section:'表示',knowledge:'列举法'}});
+ await view.onOpen();
  const pause=()=>new Promise(resolve=>setTimeout(resolve,0));
  const button=(root,label)=>[...root.querySelectorAll('button')].find(node=>node.textContent===label);
  const click=async(root,label)=>{const node=button(root,label);check(!!node,'button exists: '+label);node.click();await pause();};
  const count=value=>{view.selectionCountInput.focus();view.selectionCountInput.value=value;view.selectionCountInput.dispatchEvent(new Event('input'));};
  const filter=(key,value)=>{view.filterSelects[key].value=value;view.filterSelects[key].dispatchEvent(new Event('change'));};
+ const options=key=>[...view.filterSelects[key].options].map(option=>option.value);
+ const results=()=>[...view.results.querySelectorAll('[data-source-path]')].map(row=>row.dataset.sourcePath).sort().join();
+ check(view.filterSelects.chapter.value==='集合'&&view.filterSelects.section.value==='表示'&&
+   view.filterSelects.knowledge.value==='列举法'&&results()==='题库/Q0.md','restored scope survives rendering before the initial scan');
+ await click(view.left,'清除筛选');
+ filter('knowledge','综合证明');
+ check(results()==='题库/Q4.md','global knowledge filtering includes questions without a chapter');
+ filter('chapter','集合');
+ check(!view.filters.knowledge&&results()==='题库/Q0.md,题库/Q1.md','chapter change drops an unavailable knowledge point and limits results');
+ check(options('section').includes('表示')&&options('section').includes('运算')&&!options('section').includes('性质'),
+   'available sections belong to the selected chapter');
+ check(options('knowledge').includes('列举法')&&options('knowledge').includes('并集')&&!options('knowledge').includes('图象'),
+   'chapter-level knowledge options cover both sections and exclude the other chapter');
+ filter('knowledge','集合');filter('section','运算');
+ check(view.filterSelects.knowledge.value==='集合'&&results()==='题库/Q1.md'&&
+   options('knowledge').includes('并集')&&!options('knowledge').includes('列举法'),'section change keeps a matching knowledge point and restricts its alternatives');
+ filter('knowledge','并集');view.drawSelection();
+ check(view.selection.items.map(item=>item.id).join()==='Q1','conditional draw uses the selected chapter and section');
+ filter('chapter','函数');
+ check(!view.selection&&!view.filters.section&&!view.filters.knowledge&&results()==='题库/Q2.md,题库/Q3.md',
+   'switching chapters clears stale section, knowledge and draw candidates');
+ filter('section','表示');
+ check(results()==='题库/Q2.md'&&options('knowledge').includes('图象')&&!options('knowledge').includes('列举法'),
+   'same-named sections stay within the selected chapter');
+ const sectionChip=view.activeFilters.querySelector('[data-filter-key="section"]');
+ check(!!sectionChip,'the selected section has a removable filter chip');sectionChip.click();await pause();
+ check(view.filters.chapter==='函数'&&!view.filters.section&&options('knowledge').includes('单调性')&&results()==='题库/Q2.md,题库/Q3.md',
+   'clearing the section chip restores the chapter scope');
+ await click(view.left,'清除筛选');
  filter('questionType','choice');count('3');
  await click(view.selectionPanel,'生成候选');
  check(view.selection.items.length===3&&view.plan.entries.length===0,'drawing candidates does not change current plan');

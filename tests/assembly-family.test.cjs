@@ -68,6 +68,14 @@ test('family groups report question members and dimensions without combining unk
   assert.equal(summary.unclassifiedCount,2);assert.equal(summary.invalidCount,1);assert.equal(JSON.stringify(index),before);
 });
 
+test('same-family replacement can reuse chapter and section filters from the question list',()=>{
+  const filters={chapter:'函数',section:'性质'};
+  const state=setup([q('old'),q('inScope',filters),q('otherChapter',{chapter:'数列',section:'性质'}),
+    q('otherSection',{chapter:'函数',section:'定义'})],{filters});
+  assert.deepEqual(state.candidates.map(item=>item.id),['inScope']);
+  assert.equal(apply(state).plan.entries[0].sourceId,'inScope');
+});
+
 test('same family and a variant role never invent or require a parent relationship',()=>{
   const index=core.buildIndex([q('a',{role:'变式'}),q('b',{role:'variant'}),q('c')]);
   assert(index.items.every(item=>item.parentRef.status==='none'));assert.deepEqual(index.issues,[]);

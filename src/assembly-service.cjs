@@ -142,7 +142,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       }));
     }
     records.sort((a,b) => a.path.localeCompare(b.path,'zh-CN'));
-    const index = core.buildIndex(records);
+    const index = core.buildIndex(records, config);
     index.issues.push(...issues);
     io.check(); return index;
     } finally {if (!options.io) io.close();}
