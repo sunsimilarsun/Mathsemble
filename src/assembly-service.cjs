@@ -113,39 +113,148 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     return {isCurrent:() => !changed && !disposed,
       assertCurrent:() => {if (changed || disposed) throw new Error('来源在核对期间发生变化，请刷新素材后重新生成候选');},dispose};
   }
+  function scanScope(config) {
+    const inside = (path, roots) => roots.some(root => path.startsWith(root + '/') &&
+      (config.recursive || !path.slice(root.length + 1).includes('/')));
+    return {
+      files:() => vault.getMarkdownFiles().filter(file => !excluded(file.path) &&
+        (inside(file.path,config.questionRoots) || inside(file.path,config.knowledgeRoots))),
+      kind(path,name,metadata) {
+        const type = String(metadata.question_type || metadata.type || '').toLowerCase();
+        const question = /^(choice|single_choice|multiple_choice|fill_blank|true_false|short_answer|calculation|proof|comprehensive|单选题?|多选题?|填空题?|判断题?|解答题?)$/.test(type);
+        if (question && inside(path,config.questionRoots)) return 'question';
+        if (inside(path,config.knowledgeRoots) && !/^(README|章节导航|待补清单)\.md$/i.test(name)) return 'knowledge';
+        return null;
+      }
+    };
+  }
+  const scanChanged = message => Object.assign(new Error(message),{code:'MWB_ASSEMBLY_SCAN_CHANGED'});
+  async function readScanEntry(file,path,scope,io) {
+    const markdown = await io.run(()=>vault.read(file),'读取素材 '+path);
+    if (file.path !== path || vault.getAbstractFileByPath(path) !== file) throw scanChanged('扫描时文件已改名或替换，请重新扫描');
+    let metadata;
+    try {metadata = frontmatter(markdown);}
+    catch (error) {return {issue:{code:'read-error',path,message:error.message}};}
+    const kind = scope.kind(path,file.name,metadata);
+    return kind ? {record:{path,markdown,metadata,kind}} : {};
+  }
+  function indexEntries(entries,config) {
+    const records = [], issues = [];
+    for (const entry of entries) {
+      if (entry.record) records.push(entry.record);
+      if (entry.issue) issues.push(entry.issue);
+    }
+    records.sort((a,b) => a.path.localeCompare(b.path,'zh-CN'));
+    const index = core.buildIndex(records,config);
+    for (const issue of issues) index.issues.push(issue);
+    return index;
+  }
   async function scan(raw,options = {}) {
     const io = options.io || readContext(options);
     try {
-    const config = normalizeSettings(raw || await io.run(loadSettings,'读取素材目录'));
-    const inside = (path, roots) => roots.some(root => path.startsWith(root + '/') &&
-      (config.recursive || !path.slice(root.length + 1).includes('/')));
-    const files = vault.getMarkdownFiles().filter(file => !excluded(file.path) &&
-      (inside(file.path,config.questionRoots) || inside(file.path,config.knowledgeRoots)));
-    const records = [], issues = [];
-    // Metadata and contents come from the same read, never from a stale cache.
-    for (let offset = 0; offset < files.length; offset += 20) {
-      await Promise.all(files.slice(offset,offset + 20).map(async file => {
-        const path = file.path;
-        try {
-          const markdown = await io.run(()=>vault.read(file),'读取素材 '+path), metadata = frontmatter(markdown);
-          if (file.path !== path || vault.getAbstractFileByPath(path) !== file) throw new Error('扫描时文件已改名或替换，请重新扫描');
-          const type = String(metadata.question_type || metadata.type || '').toLowerCase();
-          const question = /^(choice|single_choice|multiple_choice|fill_blank|true_false|short_answer|calculation|proof|comprehensive|单选题?|多选题?|填空题?|判断题?|解答题?)$/.test(type);
-          const knowledge = inside(path,config.knowledgeRoots) &&
-            !/^(README|章节导航|待补清单)\.md$/i.test(file.name);
-          if (question && inside(path,config.questionRoots)) records.push({path,markdown,metadata,kind:'question'});
-          else if (knowledge) records.push({path,markdown,metadata,kind:'knowledge'});
-        } catch (error) {
-          if (error?.name === 'AbortError' || error?.code === 'MWB_ASSEMBLY_TIMEOUT') throw error;
-          issues.push({code:'read-error',path,message:error.message});
-        }
-      }));
-    }
-    records.sort((a,b) => a.path.localeCompare(b.path,'zh-CN'));
-    const index = core.buildIndex(records, config);
-    index.issues.push(...issues);
-    io.check(); return index;
+      const config = normalizeSettings(raw || await io.run(loadSettings,'读取素材目录'));
+      const scope = scanScope(config), files = scope.files(), entries = [];
+      for (let offset = 0; offset < files.length; offset += 20) {
+        await Promise.all(files.slice(offset,offset + 20).map(async file => {
+          const path = file.path;
+          try {entries.push(await readScanEntry(file,path,scope,io));}
+          catch (error) {
+            if (error?.name === 'AbortError' || error?.code === 'MWB_ASSEMBLY_TIMEOUT') throw error;
+            entries.push({issue:{code:'read-error',path,message:error.message}});
+          }
+        }));
+      }
+      const index = indexEntries(entries,config);
+      io.check(); return index;
     } finally {if (!options.io) io.close();}
+  }
+
+  // The browsing snapshot is private to this service. Formal verification always
+  // calls scan() and reads the sources again, independent of vault events/stats.
+  let browseSnapshot = null, browseQueue = Promise.resolve(), browseGeneration = 0, activeBrowseIO;
+  function watchBrowse(config) {
+    const dirty = new Set();
+    const watch = {dirty,revision:0,allDirty:false};
+    const guard = beginSourceCheck(config,(_event,file,oldPath) => {
+      watch.revision++;
+      if (Array.isArray(file?.children)) watch.allDirty = true;
+      else {
+        if (file?.path) dirty.add(file.path);
+        if (oldPath) dirty.add(oldPath);
+      }
+    });
+    watch.dispose = guard.dispose;
+    return watch;
+  }
+  function sameBrowseFile(entry,file) {
+    return entry && entry.file === file && entry.mtime === file.stat?.mtime && entry.size === file.stat?.size;
+  }
+  async function refreshBrowse(raw,options,generation) {
+    if (generation !== browseGeneration || options.signal?.aborted) throw abortError();
+    const io = readContext({timeoutMs:300000,...options});
+    activeBrowseIO = io;
+    let temporaryWatch;
+    try {
+      const config = normalizeSettings(raw || await io.run(loadSettings,'读取素材目录'));
+      io.check();
+      const key = JSON.stringify(config), previous = browseSnapshot?.key === key ? browseSnapshot : null;
+      const watch = previous?.watch || (temporaryWatch = watchBrowse(config)), revision = watch.revision;
+      const scope = scanScope(config), files = scope.files(), entries = new Map(), pending = [];
+      for (const file of files) {
+        const path = file.path, old = previous?.entries.get(path);
+        if (!watch.allDirty && !watch.dirty.has(path) && sameBrowseFile(old,file)) entries.set(path,old);
+        else {
+          const entry = {file,mtime:file.stat?.mtime,size:file.stat?.size};
+          entries.set(path,entry); pending.push({path,entry});
+        }
+      }
+      if (previous && !pending.length && entries.size === previous.entries.size) {
+        watch.dirty.clear(); watch.allDirty = false;
+        io.check(); return previous.index;
+      }
+      for (let offset = 0; offset < pending.length; offset += 20) {
+        if (watch.revision !== revision) throw scanChanged('浏览期间素材已变化，请刷新索引');
+        await Promise.all(pending.slice(offset,offset + 20).map(async ({path,entry}) => {
+          Object.assign(entry,await readScanEntry(entry.file,path,scope,io));
+        }));
+      }
+      // Some providers update stats or replace files before notifying Obsidian.
+      // Validate the complete manifest after the last await, before publication.
+      const current = scope.files();
+      if (watch.revision !== revision || current.length !== entries.size ||
+          !current.every(file => sameBrowseFile(entries.get(file.path),file))) throw scanChanged('浏览期间素材已变化，请刷新索引');
+      const index = indexEntries(entries.values(),config);
+      io.check();
+      if (!previous) browseSnapshot?.watch.dispose();
+      watch.dirty.clear(); watch.allDirty = false;
+      browseSnapshot = {key,entries,index,watch};
+      temporaryWatch = null;
+      return index;
+    } finally {
+      temporaryWatch?.dispose();
+      io.close();
+      if (activeBrowseIO === io) activeBrowseIO = null;
+    }
+  }
+  function browseIndex(raw,options = {}) {
+    const generation = browseGeneration;
+    const task = browseQueue.then(async () => {
+      try {return await refreshBrowse(raw,options,generation);}
+      catch (error) {
+        if (error?.code !== 'MWB_ASSEMBLY_SCAN_CHANGED') throw error;
+        // A single retry absorbs an edit during the read. Continuing edits
+        // surface the conflict and preserve the last completed snapshot.
+        return refreshBrowse(raw,options,generation);
+      }
+    });
+    browseQueue = task.then(() => {},() => {});
+    return task;
+  }
+  function disposeBrowseIndex() {
+    browseGeneration++;
+    activeBrowseIO?.close();
+    browseSnapshot?.watch.dispose();
+    browseSnapshot = null;
   }
   async function ensureFolder(path) {
     let current = '';
@@ -814,7 +923,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       return {plan:next,index,...(run?{run}:{})};
     } finally {guard?.dispose();io.close();}
   }
-  return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
+  return {loadSettings,saveSettings,beginSourceCheck,scan,browseIndex,disposeBrowseIndex,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
     listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
     replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
     listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,findSimilarQuestions,

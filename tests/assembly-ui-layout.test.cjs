@@ -66,7 +66,7 @@ async function browserCases(sources,css) {
   const button=(node,label)=>[...node.querySelectorAll('button')].find(value=>value.textContent.trim()===label);
   const click=async(node,label)=>{const target=button(node,label);ok(target,'Missing button '+label);target.click();await pause();return target;};
   const filter=(key,value)=>{view.filterSelects[key].value=value;view.filterSelects[key].dispatchEvent(new Event('change'));};
-  const search=value=>{view.searchInput.value=value;view.searchInput.dispatchEvent(new Event('input'));};
+  const search=value=>{view.searchInput.value=value;view.searchInput.dispatchEvent(new Event('input'));view.searchInput.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));};
   const isVisible=node=>!!node?.getClientRects().length&&doc.defaultView.getComputedStyle(node).visibility!=='hidden';
   const visiblePane=key=>view.root.querySelector('.mwb-assembly-pane-nav [data-pane="'+key+'"]');
   const fit=label=>{

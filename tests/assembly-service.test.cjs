@@ -75,6 +75,152 @@ test('scan respects source roots, recursion and exclusions without writing notes
   assert.deepEqual(shallow.items.map(i=>i.id).sort(),['K1','Q1']);
 });
 
+test('browse reuses a warm snapshot, rereads only an edited file and leaves verification scans fresh',async t=>{
+  const firstPath='题库/甲.md',otherPath='题库/乙.md',notePath='知识/集合.md';
+  const f=fixture({[firstPath]:q('Q1','旧正文'),[otherPath]:q('Q2'),[notePath]:k()});
+  t.after(()=>f.service.disposeBrowseIndex());
+  const first=await f.service.browseIndex(roots);
+  assert.deepEqual(f.reads.slice().sort(),[firstPath,otherPath,notePath].sort());
+  f.reads.length=0;
+  assert.equal(await f.service.browseIndex({...roots}),first);
+  assert.deepEqual(f.reads,[]);
+  const file=f.nodes.get(firstPath),originalStat={...file.stat};
+  file.content=q('Q1','新正文');
+  assert.equal(file.content.length,originalStat.size);
+  f.trigger('modify',file); // Obsidian can report an edit within one filesystem timestamp tick.
+  const changed=await f.service.browseIndex(roots);
+  assert.deepEqual(file.stat,originalStat);
+  assert.deepEqual(f.reads,[firstPath]);
+  assert.match(first.items.find(item=>item.id==='Q1').markdown,/旧正文/);
+  assert.match(changed.items.find(item=>item.id==='Q1').markdown,/新正文/);
+  assert.equal(await f.service.browseIndex(roots),changed);
+  assert.deepEqual(f.reads,[firstPath]);
+  f.reads.length=0;
+  file.content=q('Q1','外部编辑未发事件');
+  const verified=await f.service.scan(roots);
+  assert.deepEqual(f.reads.slice().sort(),[firstPath,otherPath,notePath].sort());
+  assert.match(verified.items.find(item=>item.id==='Q1').markdown,/外部编辑未发事件/);
+  f.service.disposeBrowseIndex();
+  assert.equal(f.listenerCount(),0);
+});
+
+test('browse recomputes duplicate identities when notes are created, renamed in or out of scope, or deleted',async t=>{
+  const f=fixture({'题库/A.md':q('A')});
+  t.after(()=>f.service.disposeBrowseIndex());
+  const duplicates=index=>index.issues.filter(issue=>issue.code==='duplicate-id').length;
+  const first=await f.service.browseIndex(roots);
+  assert.equal(first.items[0].key,'id:A');
+  await f.vault.create('题库/B.md',q('A'));
+  const created=await f.service.browseIndex(roots);
+  assert.equal(duplicates(created),1);
+  assert.deepEqual(created.items.map(item=>item.identityConflict),[true,true]);
+  f.rename('题库/B.md','其他/B.md');
+  const outside=await f.service.browseIndex(roots);
+  assert.equal(duplicates(outside),0);
+  assert.deepEqual(outside.items.map(item=>[item.path,item.key]),[['题库/A.md','id:A']]);
+  f.rename('其他/B.md','题库/C.md');
+  const returned=await f.service.browseIndex(roots);
+  assert.equal(duplicates(returned),1);
+  assert.deepEqual(returned.items.map(item=>item.path).sort(),['题库/A.md','题库/C.md']);
+  f.remove('题库/A.md');
+  const remaining=await f.service.browseIndex(roots);
+  assert.equal(duplicates(remaining),0);
+  assert.deepEqual(remaining.items.map(item=>[item.path,item.key]),[['题库/C.md','id:A']]);
+});
+
+test('a failed incremental browse preserves the last good content and retries the failed read',async t=>{
+  const path='题库/A.md',f=fixture({[path]:q('A','上次正文')});
+  t.after(()=>f.service.disposeBrowseIndex());
+  const first=await f.service.browseIndex(roots);
+  await f.vault.modify(f.nodes.get(path),q('A','修订正文'));
+  const read=f.vault.read;
+  let attempts=0;
+  f.vault.read=async()=>{attempts++;throw Error('临时读取中断');};
+  const attempt=await f.service.browseIndex(roots).then(index=>({index}),error=>({error}));
+  assert.equal(attempts,1);
+  assert(attempt.error || attempt.index.issues.some(issue=>issue.path===path),'a failed read must remain visible');
+  if(attempt.index)assert.match(attempt.index.items.find(item=>item.path===path)?.markdown||'',/上次正文/);
+  assert.match(first.items[0].markdown,/上次正文/);
+  f.vault.read=read;f.reads.length=0;
+  const retried=await f.service.browseIndex(roots);
+  assert.deepEqual(f.reads,[path]);
+  assert.match(retried.items[0].markdown,/修订正文/);
+  assert.deepEqual(retried.issues,[]);
+  assert.equal(await f.service.browseIndex(roots),retried);
+  assert.deepEqual(f.reads,[path]);
+});
+
+test('a browse retries one concurrent source change, then rejects a second change without publishing',async t=>{
+  for(const changes of [1,2])await t.test(changes+' changes while reading',async t=>{
+    const path='题库/A.md',f=fixture({[path]:q('A','已发布正文')});
+    t.after(()=>f.service.disposeBrowseIndex());
+    const first=await f.service.browseIndex(roots),file=f.nodes.get(path),read=f.vault.read;
+    await f.vault.modify(file,q('A','开始刷新'));
+    let attempts=0;
+    f.vault.read=async node=>{
+      const captured=await read(node);
+      if(++attempts<=changes)await f.vault.modify(node,q('A','并发修订'+attempts));
+      return captured;
+    };
+    if(changes===1) {
+      const refreshed=await f.service.browseIndex(roots);
+      assert.match(refreshed.items[0].markdown,/并发修订1/);
+      assert.equal(await f.service.browseIndex(roots),refreshed);
+    } else {
+      await assert.rejects(f.service.browseIndex(roots));
+      f.vault.read=read;
+      const later=await f.service.browseIndex(roots);
+      assert.match(later.items[0].markdown,/并发修订2/);
+    }
+    assert.equal(attempts,2);
+    assert.match(first.items[0].markdown,/已发布正文/);
+  });
+});
+
+test('a browse read timeout stops without automatically retrying',async t=>{
+  const path='题库/A.md',f=fixture({[path]:q('A','已发布正文')});
+  t.after(()=>f.service.disposeBrowseIndex());
+  const first=await f.service.browseIndex(roots),read=f.vault.read;
+  await f.vault.modify(f.nodes.get(path),q('A','超时后恢复'));
+  let attempts=0;
+  f.vault.read=()=>{attempts++;return new Promise(()=>{});};
+  await assert.rejects(f.service.browseIndex(roots,{resourceTimeoutMs:25}),{code:'MWB_ASSEMBLY_TIMEOUT'});
+  assert.equal(attempts,1);
+  assert.match(first.items[0].markdown,/已发布正文/);
+  f.vault.read=read;
+  assert.match((await f.service.browseIndex(roots)).items[0].markdown,/超时后恢复/);
+});
+
+test('a cancelled browse cannot publish bytes returned by an in-flight read', {timeout:5000},async t=>{
+  const path='题库/A.md',f=fixture({[path]:q('A','上次正文')});
+  t.after(()=>f.service.disposeBrowseIndex());
+  const first=await f.service.browseIndex(roots),file=f.nodes.get(path);
+  await f.vault.modify(file,q('A','取消版本'));
+  const read=f.vault.read,controller=new AbortController();
+  let started,release;
+  const entered=new Promise(resolve=>{started=resolve;});
+  f.vault.read=async node=>{
+    const stale=await read(node);
+    started();
+    await new Promise(resolve=>{release=resolve;});
+    return stale;
+  };
+  f.reads.length=0;
+  const pending=f.service.browseIndex(roots,{signal:controller.signal});
+  await entered;
+  const rejected=assert.rejects(pending,{name:'AbortError'});
+  controller.abort();release();await rejected;
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(f.reads,[path]);
+  assert.match(first.items[0].markdown,/上次正文/);
+  f.vault.read=read;f.reads.length=0;
+  file.content=q('A','当前版本');
+  const next=await f.service.browseIndex(roots);
+  assert.deepEqual(f.reads,[path]);
+  assert.match(next.items[0].markdown,/当前版本/);
+  assert.equal(await f.service.browseIndex(roots),next);
+});
+
 test('an explicitly selected knowledge directory includes whole notes without YAML or invented IDs',async()=>{
   const f=fixture({'题库/题.md':q(),'知识/纯正文.md':'# 集合表示\n\n无元信息的完整知识正文。','知识/README.md':'目录导航'});
   await f.service.saveSettings(roots);

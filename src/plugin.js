@@ -5710,28 +5710,52 @@ function normalizeTiers(metadata, kind) {
   return TIERS.filter(tier => values.includes(tier));
 }
 
-function coveredKnowledge(reference, source, nodes) {
-  // A missing Wiki link remains a missing link. Coverage is declared by plain
-  // labels only, within an explicitly known, equal subject on both sides.
-  if (reference.wiki || !source.subject) return [];
-  return nodes.filter(node => !node.identityConflict && node.subject && fold(node.subject) === fold(source.subject) &&
-    node.knowledgeNodes.some(raw => {
+function knowledgeLookup(items) {
+  const byId = new Map(), byIdentity = new Map(), byPath = new Map(), byName = new Map();
+  const coverage = new Map(), order = new Map();
+  function add(map, key, node) {
+    const matches = map.get(key);
+    if (!matches) map.set(key, [node]);
+    else if (matches.at(-1) !== node) matches.push(node);
+  }
+  for (const node of items) {
+    if (node.kind !== 'knowledge') continue;
+    order.set(node, order.size);
+    if (node.id) {
+      add(byId, node.id, node);
+      add(byIdentity, node.id, node);
+    }
+    add(byIdentity, node.key, node);
+    add(byPath, node.path.replace(/\.md$/i, ''), node);
+    for (const name of [basename(node.path), node.title, ...node.aliases]) add(byName, fold(name), node);
+    // Only a non-conflicted note can declare coverage, within its own subject.
+    if (!node.subject || node.identityConflict) continue;
+    const subject = fold(node.subject);
+    if (!coverage.has(subject)) coverage.set(subject, new Map());
+    for (const raw of node.knowledgeNodes) {
       const tag = parseKnowledgeRef(raw);
-      return !tag.wiki && fold(tag.target) === fold(reference.target);
-    }));
+      if (!tag.wiki) add(coverage.get(subject), fold(tag.target), node);
+    }
+  }
+  return {byId, byIdentity, byPath, byName, coverage, order};
 }
 
-function knowledgeCandidates(reference, sourcePath, nodes, subject) {
+function knowledgeCandidates(reference, sourcePath, lookup, subject) {
   const target = reference.target.replace(/\.md$/i, '');
-  const exactId = nodes.filter(node => node.id && node.id === target);
-  if (exactId.length) return exactId;
+  const exactId = lookup.byId.get(target);
+  if (exactId) return exactId;
   if (target.includes('/')) {
     const dirname = sourcePath.split('/').slice(0, -1).join('/');
-    const paths = [normalizePath(target), normalizePath(dirname + '/' + target)].filter(Boolean);
-    return nodes.filter(node => paths.includes(node.path.replace(/\.md$/i, '')));
+    const absolutePath = normalizePath(target), relativePath = normalizePath(dirname + '/' + target);
+    const absolute = absolutePath && lookup.byPath.get(absolutePath) || [];
+    const relative = relativePath && lookup.byPath.get(relativePath) || [];
+    if (absolutePath === relativePath || !relative.length) return absolute;
+    if (!absolute.length) return relative;
+    return [...absolute, ...relative].sort((a,b) => lookup.order.get(a) - lookup.order.get(b));
   }
-  return nodes.filter(node => (reference.wiki || subject === undefined || subject && node.subject && fold(node.subject) === fold(subject)) &&
-    [basename(node.path), node.title, ...node.aliases].some(name => fold(name) === fold(target)));
+  const matches = lookup.byName.get(fold(target)) || [];
+  if (reference.wiki || subject === undefined) return matches;
+  return subject ? matches.filter(node => node.subject && fold(node.subject) === subject) : [];
 }
 
 // Recognize numbered chapters even when the scan starts inside one. For a
@@ -5797,13 +5821,14 @@ function buildIndex(records, {questionRoots = []} = {}) {
     }
   }
   diagnoseParents(items,ids,issues);
-  const nodes = items.filter(item => item.kind === 'knowledge');
+  const lookup = knowledgeLookup(items);
   for (const item of items) {
+    const subject = fold(item.subject);
     item.knowledgeRefs = item.knowledgeNodes.map(raw => {
-      const ref = parseKnowledgeRef(raw), candidates = knowledgeCandidates(ref, item.path, nodes,item.subject);
-      if (!candidates.length) {
-        const covered = coveredKnowledge(ref,item,nodes);
-        if (covered.length) return {...ref,status:'covered',relation:'shared-tag',nodeKeys:covered.map(node => node.key)};
+      const ref = parseKnowledgeRef(raw), candidates = knowledgeCandidates(ref, item.path, lookup, subject);
+      if (!candidates.length && !ref.wiki && subject) {
+        const covered = lookup.coverage.get(subject)?.get(fold(ref.target));
+        if (covered) return {...ref,status:'covered',relation:'shared-tag',nodeKeys:covered.map(node => node.key)};
       }
       const status = candidates.length > 1 || candidates[0]?.identityConflict ? 'ambiguous' :
         candidates.length === 1 ? 'resolved' : ref.wiki ? 'missing' : 'tag';
@@ -5814,11 +5839,34 @@ function buildIndex(records, {questionRoots = []} = {}) {
   return {items, issues};
 }
 
+function knowledgeFilter(items, values) {
+  if (!values.length) return null;
+  const lookup = knowledgeLookup(items), nodeKeys = new Set(), literalTargets = new Set();
+  for (const value of values) {
+    const ref = parseKnowledgeRef(String(value));
+    const selected = lookup.byIdentity.get(value);
+    const matches = selected || knowledgeCandidates(ref, '', lookup);
+    const unique = matches.length === 1 && !matches[0].identityConflict;
+    if (unique) nodeKeys.add(matches[0].key);
+    // A literal label can match across subjects. Selecting a concrete note
+    // follows only resolved links and its same-subject coverage.
+    if (!selected || !unique) literalTargets.add(fold(ref.target));
+  }
+  return item => nodeKeys.has(item.key) || item.knowledgeRefs.some(ref =>
+    nodeKeys.has(ref.nodeKey) || ref.nodeKeys?.some(key => nodeKeys.has(key)) ||
+    (literalTargets.size && literalTargets.has(fold(ref.target))));
+}
+
 function filterItems(index, filters = {}) {
   const items = Array.isArray(index?.items) ? index.items : [];
-  const nodes = items.filter(item => item.kind === 'knowledge');
   const options = value => (Array.isArray(value) ? value : [value]).filter(value => value !== null && value !== undefined && String(value).trim() !== '' && value !== 'all');
-  const match = (filter, values) => !options(filter).length || options(filter).some(want => values.some(value => fold(value) === fold(want)));
+  const foldedOptions = value => new Set(options(value).map(fold));
+  const kinds = foldedOptions(filters.kind), subjects = foldedOptions(filters.subject);
+  const types = foldedOptions(filters.questionType), difficulty = foldedOptions(filters.difficulty);
+  const tiers = foldedOptions(filters.tier), roles = foldedOptions(filters.role);
+  const sources = options(filters.source).map(fold);
+  const keywords = fold(filters.query).split(/\s+/).filter(Boolean);
+  const matchesKnowledge = knowledgeFilter(items, options(filters.knowledge));
   const familyIds=(Array.isArray(filters.familyId)?filters.familyId:[filters.familyId]).filter(value=>value!=null&&!(typeof value==='string'&&!value.trim()));
   const familyStates=options(filters.familyState);
   const methodTargets=new Set(options(filters.method).map(value=>fold(parseKnowledgeRef(value).target)));
@@ -5829,26 +5877,16 @@ function filterItems(index, filters = {}) {
     if (familyIds.length && (item.kind!=='question' || item.familyState!=='classified' ||
       !familyIds.some(value=>typeof value==='string'&&value.trim()===item.familyId))) return false;
     if (familyStates.length && (item.kind!=='question' || !familyStates.includes(item.familyState))) return false;
-    if (!match(filters.kind,[item.kind]) || !match(filters.subject,[item.subject]) ||
-      !match(filters.questionType,[item.questionType]) || !match(filters.difficulty,[item.difficulty]) ||
-      !match(filters.tier,item.tiers) || !match(filters.role,[item.role]) ||
+    if ((kinds.size && !kinds.has(fold(item.kind))) || (subjects.size && !subjects.has(fold(item.subject))) ||
+      (types.size && !types.has(fold(item.questionType))) || (difficulty.size && !difficulty.has(fold(item.difficulty))) ||
+      (tiers.size && !item.tiers.some(tier => tiers.has(fold(tier)))) || (roles.size && !roles.has(fold(item.role))) ||
       (methodTargets.size && !item.methods.some(value => methodTargets.has(fold(parseKnowledgeRef(value).target))))) return false;
-    if (options(filters.source).length && !options(filters.source).some(value => fold(item.source).includes(fold(value)))) return false;
-    const keywords = fold(filters.query).split(/\s+/).filter(Boolean);
-    const haystack = fold([item.title,item.id,item.path,item.markdown,...item.aliases,...item.knowledgeNodes,...item.methods,item.source].join('\n'));
-    if (!keywords.every(word => haystack.includes(word))) return false;
-    if (options(filters.knowledge).length && !options(filters.knowledge).some(value => {
-      const ref = parseKnowledgeRef(String(value));
-      const selected = nodes.filter(node => node.key === value || (node.id && node.id === value));
-      // A label filter searches the declared labels; selecting a concrete note
-      // by its key/ID instead follows only resolved or same-subject coverage.
-      if (!selected.length && item.knowledgeRefs.some(known => fold(known.target) === fold(ref.target))) return true;
-      const matches = selected.length ? selected : knowledgeCandidates(ref,'',nodes);
-      if (matches.length === 1 && !matches[0].identityConflict) {
-        return item.key === matches[0].key || item.knowledgeRefs.some(known => known.nodeKey === matches[0].key || known.nodeKeys?.includes(matches[0].key));
-      }
-      return item.knowledgeRefs.some(known => fold(known.target) === fold(ref.target));
-    })) return false;
+    if (sources.length && !sources.some(value => fold(item.source).includes(value))) return false;
+    if (matchesKnowledge && !matchesKnowledge(item)) return false;
+    if (keywords.length) {
+      const haystack = fold([item.title,item.id,item.path,item.markdown,...item.aliases,...item.knowledgeNodes,...item.methods,item.source].join('\n'));
+      if (!keywords.every(word => haystack.includes(word))) return false;
+    }
     return true;
   });
 }
@@ -7588,39 +7626,148 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
     return {isCurrent:() => !changed && !disposed,
       assertCurrent:() => {if (changed || disposed) throw new Error('来源在核对期间发生变化，请刷新素材后重新生成候选');},dispose};
   }
+  function scanScope(config) {
+    const inside = (path, roots) => roots.some(root => path.startsWith(root + '/') &&
+      (config.recursive || !path.slice(root.length + 1).includes('/')));
+    return {
+      files:() => vault.getMarkdownFiles().filter(file => !excluded(file.path) &&
+        (inside(file.path,config.questionRoots) || inside(file.path,config.knowledgeRoots))),
+      kind(path,name,metadata) {
+        const type = String(metadata.question_type || metadata.type || '').toLowerCase();
+        const question = /^(choice|single_choice|multiple_choice|fill_blank|true_false|short_answer|calculation|proof|comprehensive|单选题?|多选题?|填空题?|判断题?|解答题?)$/.test(type);
+        if (question && inside(path,config.questionRoots)) return 'question';
+        if (inside(path,config.knowledgeRoots) && !/^(README|章节导航|待补清单)\.md$/i.test(name)) return 'knowledge';
+        return null;
+      }
+    };
+  }
+  const scanChanged = message => Object.assign(new Error(message),{code:'MWB_ASSEMBLY_SCAN_CHANGED'});
+  async function readScanEntry(file,path,scope,io) {
+    const markdown = await io.run(()=>vault.read(file),'读取素材 '+path);
+    if (file.path !== path || vault.getAbstractFileByPath(path) !== file) throw scanChanged('扫描时文件已改名或替换，请重新扫描');
+    let metadata;
+    try {metadata = frontmatter(markdown);}
+    catch (error) {return {issue:{code:'read-error',path,message:error.message}};}
+    const kind = scope.kind(path,file.name,metadata);
+    return kind ? {record:{path,markdown,metadata,kind}} : {};
+  }
+  function indexEntries(entries,config) {
+    const records = [], issues = [];
+    for (const entry of entries) {
+      if (entry.record) records.push(entry.record);
+      if (entry.issue) issues.push(entry.issue);
+    }
+    records.sort((a,b) => a.path.localeCompare(b.path,'zh-CN'));
+    const index = core.buildIndex(records,config);
+    for (const issue of issues) index.issues.push(issue);
+    return index;
+  }
   async function scan(raw,options = {}) {
     const io = options.io || readContext(options);
     try {
-    const config = normalizeSettings(raw || await io.run(loadSettings,'读取素材目录'));
-    const inside = (path, roots) => roots.some(root => path.startsWith(root + '/') &&
-      (config.recursive || !path.slice(root.length + 1).includes('/')));
-    const files = vault.getMarkdownFiles().filter(file => !excluded(file.path) &&
-      (inside(file.path,config.questionRoots) || inside(file.path,config.knowledgeRoots)));
-    const records = [], issues = [];
-    // Metadata and contents come from the same read, never from a stale cache.
-    for (let offset = 0; offset < files.length; offset += 20) {
-      await Promise.all(files.slice(offset,offset + 20).map(async file => {
-        const path = file.path;
-        try {
-          const markdown = await io.run(()=>vault.read(file),'读取素材 '+path), metadata = frontmatter(markdown);
-          if (file.path !== path || vault.getAbstractFileByPath(path) !== file) throw new Error('扫描时文件已改名或替换，请重新扫描');
-          const type = String(metadata.question_type || metadata.type || '').toLowerCase();
-          const question = /^(choice|single_choice|multiple_choice|fill_blank|true_false|short_answer|calculation|proof|comprehensive|单选题?|多选题?|填空题?|判断题?|解答题?)$/.test(type);
-          const knowledge = inside(path,config.knowledgeRoots) &&
-            !/^(README|章节导航|待补清单)\.md$/i.test(file.name);
-          if (question && inside(path,config.questionRoots)) records.push({path,markdown,metadata,kind:'question'});
-          else if (knowledge) records.push({path,markdown,metadata,kind:'knowledge'});
-        } catch (error) {
-          if (error?.name === 'AbortError' || error?.code === 'MWB_ASSEMBLY_TIMEOUT') throw error;
-          issues.push({code:'read-error',path,message:error.message});
-        }
-      }));
-    }
-    records.sort((a,b) => a.path.localeCompare(b.path,'zh-CN'));
-    const index = core.buildIndex(records, config);
-    index.issues.push(...issues);
-    io.check(); return index;
+      const config = normalizeSettings(raw || await io.run(loadSettings,'读取素材目录'));
+      const scope = scanScope(config), files = scope.files(), entries = [];
+      for (let offset = 0; offset < files.length; offset += 20) {
+        await Promise.all(files.slice(offset,offset + 20).map(async file => {
+          const path = file.path;
+          try {entries.push(await readScanEntry(file,path,scope,io));}
+          catch (error) {
+            if (error?.name === 'AbortError' || error?.code === 'MWB_ASSEMBLY_TIMEOUT') throw error;
+            entries.push({issue:{code:'read-error',path,message:error.message}});
+          }
+        }));
+      }
+      const index = indexEntries(entries,config);
+      io.check(); return index;
     } finally {if (!options.io) io.close();}
+  }
+
+  // The browsing snapshot is private to this service. Formal verification always
+  // calls scan() and reads the sources again, independent of vault events/stats.
+  let browseSnapshot = null, browseQueue = Promise.resolve(), browseGeneration = 0, activeBrowseIO;
+  function watchBrowse(config) {
+    const dirty = new Set();
+    const watch = {dirty,revision:0,allDirty:false};
+    const guard = beginSourceCheck(config,(_event,file,oldPath) => {
+      watch.revision++;
+      if (Array.isArray(file?.children)) watch.allDirty = true;
+      else {
+        if (file?.path) dirty.add(file.path);
+        if (oldPath) dirty.add(oldPath);
+      }
+    });
+    watch.dispose = guard.dispose;
+    return watch;
+  }
+  function sameBrowseFile(entry,file) {
+    return entry && entry.file === file && entry.mtime === file.stat?.mtime && entry.size === file.stat?.size;
+  }
+  async function refreshBrowse(raw,options,generation) {
+    if (generation !== browseGeneration || options.signal?.aborted) throw abortError();
+    const io = readContext({timeoutMs:300000,...options});
+    activeBrowseIO = io;
+    let temporaryWatch;
+    try {
+      const config = normalizeSettings(raw || await io.run(loadSettings,'读取素材目录'));
+      io.check();
+      const key = JSON.stringify(config), previous = browseSnapshot?.key === key ? browseSnapshot : null;
+      const watch = previous?.watch || (temporaryWatch = watchBrowse(config)), revision = watch.revision;
+      const scope = scanScope(config), files = scope.files(), entries = new Map(), pending = [];
+      for (const file of files) {
+        const path = file.path, old = previous?.entries.get(path);
+        if (!watch.allDirty && !watch.dirty.has(path) && sameBrowseFile(old,file)) entries.set(path,old);
+        else {
+          const entry = {file,mtime:file.stat?.mtime,size:file.stat?.size};
+          entries.set(path,entry); pending.push({path,entry});
+        }
+      }
+      if (previous && !pending.length && entries.size === previous.entries.size) {
+        watch.dirty.clear(); watch.allDirty = false;
+        io.check(); return previous.index;
+      }
+      for (let offset = 0; offset < pending.length; offset += 20) {
+        if (watch.revision !== revision) throw scanChanged('浏览期间素材已变化，请刷新索引');
+        await Promise.all(pending.slice(offset,offset + 20).map(async ({path,entry}) => {
+          Object.assign(entry,await readScanEntry(entry.file,path,scope,io));
+        }));
+      }
+      // Some providers update stats or replace files before notifying Obsidian.
+      // Validate the complete manifest after the last await, before publication.
+      const current = scope.files();
+      if (watch.revision !== revision || current.length !== entries.size ||
+          !current.every(file => sameBrowseFile(entries.get(file.path),file))) throw scanChanged('浏览期间素材已变化，请刷新索引');
+      const index = indexEntries(entries.values(),config);
+      io.check();
+      if (!previous) browseSnapshot?.watch.dispose();
+      watch.dirty.clear(); watch.allDirty = false;
+      browseSnapshot = {key,entries,index,watch};
+      temporaryWatch = null;
+      return index;
+    } finally {
+      temporaryWatch?.dispose();
+      io.close();
+      if (activeBrowseIO === io) activeBrowseIO = null;
+    }
+  }
+  function browseIndex(raw,options = {}) {
+    const generation = browseGeneration;
+    const task = browseQueue.then(async () => {
+      try {return await refreshBrowse(raw,options,generation);}
+      catch (error) {
+        if (error?.code !== 'MWB_ASSEMBLY_SCAN_CHANGED') throw error;
+        // A single retry absorbs an edit during the read. Continuing edits
+        // surface the conflict and preserve the last completed snapshot.
+        return refreshBrowse(raw,options,generation);
+      }
+    });
+    browseQueue = task.then(() => {},() => {});
+    return task;
+  }
+  function disposeBrowseIndex() {
+    browseGeneration++;
+    activeBrowseIO?.close();
+    browseSnapshot?.watch.dispose();
+    browseSnapshot = null;
   }
   async function ensureFolder(path) {
     let current = '';
@@ -8289,7 +8436,7 @@ module.exports = function createAssemblyService(plugin, {core, compileMarkdown, 
       return {plan:next,index,...(run?{run}:{})};
     } finally {guard?.dispose();io.close();}
   }
-  return {loadSettings,saveSettings,beginSourceCheck,scan,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
+  return {loadSettings,saveSettings,beginSourceCheck,scan,browseIndex,disposeBrowseIndex,listPlans,createPlanSession,savePlan,loadPlan,compile,exportMarkdown,preview,openSource,
     listBlueprints,listBlueprintRuns,createBlueprintSession,saveBlueprint,loadBlueprint,generateBlueprintCandidate,applyBlueprintCandidate,
     replaceBlueprintCandidate,updateBlueprintLocks,validateBlueprintRun,saveBlueprintRun,loadBlueprintRun,verifyBlueprintRun,
     listMatchingBlueprintRuns,prepareFamilyReplacement,applyFamilyReplacement,findSimilarQuestions,
@@ -9562,6 +9709,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
   const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
   const typeNames = {choice:'单选',multiple_choice:'多选',fill_blank:'填空',true_false:'判断',short_answer:'解答',calculation:'计算',proof:'证明',comprehensive:'综合'};
   const labelOf = value => String(value ?? '').replace(/^\[\[|\]\]$/g, '').split('|').at(-1);
+  const sortLabels = new Intl.Collator('zh-CN',{numeric:true}).compare;
   const errorText = error => String(error?.message || error);
   const plainBody = markdown => String(markdown || '').replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/, '');
   const planSaveHint = '保存讲义标题、内容顺序、来源引用、本次标题／角色，以及课程信息和默认排版；正文仍来自原笔记。';
@@ -9980,6 +10128,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async onClose() {
       this.closed = true;
+      this.resetSearchInput();
       this.blueprintModal?.close();
       this.familyModal?.close();
       this.similarityModal?.close();
@@ -9988,6 +10137,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.clearArrangementDrag();
       this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
+      this.scanController?.abort();
       this.scanGeneration++; this.previewGeneration++;
       this.releasePreview();
       this.releaseInlinePreviews();
@@ -10214,7 +10364,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.button(filterHeader,'清除筛选',()=>{
         this.filters={kind:this.filters.kind,query:''};this.limit=100;
         this.resetUsageFilter();
-        if (this.searchInput) this.searchInput.value='';
+        this.resetSearchInput();
         this.populateFilters();this.renderResults();
       },'mwb-assembly-text-button');
       this.filterSelects = {};
@@ -10240,52 +10390,83 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.tree = this.el('div',this.left,'mwb-assembly-tree');
       this.renderTree();
     }
+    filterCatalog() {
+      if (this.catalog?.index===this.index) return this.catalog;
+      const scopes=new Map(),nodes=new Map(),nodeOrder=new Map(),familyCounts=new Map();
+      const options=Object.fromEntries(['subject','knowledge','method','tier','familyId','familyState',
+        'questionType','source','difficulty','role'].map(key=>[key,new Set()]));
+      const scope=(map,key)=>{
+        if (!map.has(key)) map.set(key,{children:new Map(),knowledge:new Set(),nodeKeys:new Set()});
+        return map.get(key);
+      };
+      for (const item of this.index.items) {
+        if (item.kind==='knowledge') { nodeOrder.set(item.key,nodes.size);nodes.set(item.key,item); }
+        for (const [key,values] of Object.entries(options)) {
+          if ((key==='familyId'||key==='familyState') && item.kind!=='question') continue;
+          const raw=key==='knowledge'?item.knowledgeNodes:key==='tier'?item.tiers:
+            key==='method'?item.methods.map(value=>core.parseKnowledgeRef(value).target):item[key];
+          for (const value of Array.isArray(raw)?raw:[raw])
+            if (value!==null && value!==undefined && value!=='') values.add(String(value));
+        }
+        if (item.kind!=='question') continue;
+        if (item.familyState==='classified') familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
+        if (!item.chapter) continue;
+        const nodeKeys=(item.knowledgeRefs||[]).flatMap(ref=>ref.nodeKeys || (ref.nodeKey?[ref.nodeKey]:[]));
+        for (const subject of item.subject?['',item.subject]:['']) {
+          const chapter=scope(scope(scopes,subject).children,item.chapter);
+          const destinations=item.section?[chapter,scope(chapter.children,item.section)]:[chapter];
+          for (const destination of destinations) {
+            for (const value of item.knowledgeNodes) destination.knowledge.add(value);
+            for (const key of nodeKeys) destination.nodeKeys.add(key);
+          }
+        }
+      }
+      this.catalog={index:this.index,scopes,nodes,nodeOrder,familyCounts,options,empty:new Map(),selectOptions:new WeakMap()};
+      return this.catalog;
+    }
     populateFilters(scopeOnly=false) {
       if (!this.filterSelects) return;
-      const {items}=this.index;
-      const filters=this.filters, questionTab=filters.kind==='question', ready=this.indexState==='ready';
-      const questions=items.filter(item=>item.kind==='question' && (!filters.subject || item.subject===filters.subject));
-      const chapters=new Set(questions.map(item=>item.chapter).filter(Boolean));
+      const catalog=this.filterCatalog(), {nodes,familyCounts,empty}=catalog;
+      const filters=this.filters,questionTab=filters.kind==='question',ready=this.indexState==='ready';
+      const chapters=catalog.scopes.get(filters.subject||'')?.children || empty;
       if (ready && filters.chapter && !chapters.has(filters.chapter)) {
         delete filters.chapter; delete filters.section;
       }
-      const chapterQuestions=filters.chapter ? questions.filter(item=>item.chapter===filters.chapter) : [];
-      const sections=new Set(chapterQuestions.map(item=>item.section).filter(Boolean));
+      const chapter=chapters.get(filters.chapter),sections=chapter?.children || empty;
       if (ready && filters.section && !sections.has(filters.section)) delete filters.section;
-      const scoped=questionTab && !!filters.chapter;
-      const knowledgeItems=scoped ? chapterQuestions.filter(item=>!filters.section || item.section===filters.section) : items;
-      const knowledge=new Set(knowledgeItems.flatMap(item=>item.knowledgeNodes));
-      // A tree shortcut uses the note key. Its questions may declare aliases,
-      // wiki links or shared labels, so compare with the same rules as the results.
-      if (ready && scoped && filters.knowledge && !knowledge.has(filters.knowledge) &&
-          !core.filterItems(this.index,{kind:'question',subject:filters.subject,chapter:filters.chapter,section:filters.section,knowledge:filters.knowledge}).length)
-        delete filters.knowledge;
-      const scopeValues={chapter:chapters,section:sections,knowledge};
+      const scope=questionTab && chapter && (chapter.children.get(filters.section)||chapter);
+      const knowledge=scope?scope.knowledge:catalog.options.knowledge;
+      if (ready && scope && filters.knowledge && !knowledge.has(filters.knowledge) && !scope.nodeKeys.has(filters.knowledge)) {
+        // Older saved layouts can identify a note by its alias or bare ID.
+        if (nodes.has(filters.knowledge) || !core.filterItems(this.index,{kind:'question',subject:filters.subject,
+          chapter:filters.chapter,section:filters.section,knowledge:filters.knowledge}).length) delete filters.knowledge;
+      }
       this.filterSelects.chapter.parentElement.hidden=!questionTab;
       this.filterSelects.section.parentElement.hidden=!questionTab;
       this.filterSelects.section.disabled=!filters.chapter || !sections.size;
-      const nodes=new Map(items.filter(item=>item.kind==='knowledge').map(item=>[item.key,item]));
-      const familyCounts=new Map();
-      if (!scopeOnly) for(const item of items) if(item.kind==='question'&&item.familyState==='classified')
-        familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
+      const scopeValues={chapter:chapters,section:sections,knowledge};
       for (const [key,select] of Object.entries(this.filterSelects)) {
         if (scopeOnly && !Object.hasOwn(scopeValues,key)) continue;
-        const values = scopeValues[key] || new Set();
-        if (!Object.hasOwn(scopeValues,key)) for (const item of items) {
-          if(['familyId','familyState'].includes(key)&&item.kind!=='question')continue;
-          const raw = key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
-          for (const value of Array.isArray(raw)?raw:[raw]) if (value !== null && value !== undefined && value !== '') values.add(String(value));
-        }
+        const values=scopeValues[key] || catalog.options[key];
         let current=String(filters[key]||'');
         if(['knowledge','method'].includes(key)&&['','~','[]'].includes(core.parseKnowledgeRef(current).target)){
           current='';filters[key]='';
         }
-        if(current) values.add(current);
-        select.replaceChildren();this.el('option',select,'',key==='section'&&!filters.chapter?'先选章节':'不限').value='';
-        for (const value of [...values].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}))) {
-          const node = key==='knowledge' ? nodes.get(value) : null;
-          const familyCount=key==='familyId'?familyCounts.get(value)||0:null;
-          this.el('option',select,'',node ? node.title : key==='familyId'?`${value}（${familyCount} 题）`:key==='familyState'?({classified:'已归族',unclassified:'未归族',invalid:'字段异常'}[value]||value):key==='questionType' ? typeNames[value]||value : labelOf(value)).value=value;
+        const extra=current && !values.has(current)?current:'';
+        const prompt=key==='section'&&!filters.chapter?'先选章节':'不限';
+        const previous=catalog.selectOptions.get(select);
+        if (!previous || previous.values!==values || previous.extra!==extra || previous.prompt!==prompt) {
+          const sorted=[...values.keys()];
+          if (extra) sorted.push(extra);
+          select.replaceChildren();this.el('option',select,'',prompt).value='';
+          for (const value of sorted.sort(sortLabels)) {
+            const node=key==='knowledge'?nodes.get(value):null;
+            const label=node?node.title:key==='familyId'?value+'（'+(familyCounts.get(value)||0)+' 题）':
+              key==='familyState'?({classified:'已归族',unclassified:'未归族',invalid:'字段异常'}[value]||value):
+              key==='questionType'?typeNames[value]||value:labelOf(value);
+            this.el('option',select,'',label).value=value;
+          }
+          catalog.selectOptions.set(select,{values,extra,prompt});
         }
         select.value=current;
       }
@@ -10295,20 +10476,20 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.usageFilter.mode='all';const select=this.root?.querySelector('[data-usage-field="mode"]');if(select)select.value='all';
       this.usageGeneration++;this.app.workspace.requestSaveLayout?.();
     }
-    async refreshUsage() {
+    async refreshUsage({render=true}={}) {
       if(!usageService)return;
       const generation=++this.usageGeneration,context=this.usageContext();
       this.usageLedger=null;this.usageStats=new Map();
       this.clearSelection('使用记录已变化，请重新生成候选。');
-      if(!context.classId&&!context.courseId){this.usageState='idle';this.usageError='请填写班级或课程代号';if(!this.closed)this.renderResults();return;}
-      this.usageState='loading';if(!this.closed)this.renderResults();
+      if(!context.classId&&!context.courseId){this.usageState='idle';this.usageError='请填写班级或课程代号';if(render&&!this.closed)this.renderResults();return;}
+      this.usageState='loading';if(render&&!this.closed)this.renderResults();
       try {
         const ledger=await usageService.loadUsage({context});
         if(this.closed||generation!==this.usageGeneration)return;
         this.usageLedger=ledger;this.usageState='ready';this.usageNow=new Date().toISOString();
         this.usageStats=new Map(usageService.summarizeUsage(this.index.items,ledger,{context,now:this.usageNow}).map(row=>[row.item.key,row]));
       }catch(error){if(!this.closed&&generation===this.usageGeneration){this.usageState='error';this.usageError=errorText(error);}}
-      if(!this.closed&&generation===this.usageGeneration)this.renderResults();
+      if(render&&!this.closed&&generation===this.usageGeneration)this.renderResults();
     }
     usageIndex(index=this.index,ledger=this.usageLedger,now=this.usageNow) {
       if(!usageService||this.usageFilter.mode==='all')return index;
@@ -10350,6 +10531,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           const row=this.el('div',details,'mwb-assembly-tree-row');
           this.button(row,item.title,()=>this.showItem(item),'mwb-assembly-tree-item');
           const related=this.button(row,'关联题',()=>{
+            this.resetSearchInput();
             this.filters.kind='question';this.filters.knowledge=item.key;this.limit=100;
             if (this.filters.chapter) {
               const scope={kind:'question',subject:this.filters.subject,chapter:this.filters.chapter,section:this.filters.section,knowledge:item.key};
@@ -10375,18 +10557,66 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         }
       }
     }
+    cancelSearchTimer() {
+      clearTimeout(this.pendingSearch?.timer);
+      this.pendingSearch=null;
+    }
+    resetSearchInput() {
+      this.cancelSearchTimer();
+      this.searchComposing=false;
+      if(this.searchInput)this.searchInput.value=this.filters.query||'';
+    }
+    commitSearch() {
+      const pending=this.pendingSearch,input=this.searchInput;
+      this.cancelSearchTimer();
+      if(this.closed||this.searchComposing||!input)return;
+      if(pending && pending.filters!==this.filters){input.value=this.filters.query||'';return;}
+      if(input.value===(this.filters.query||''))return;
+      this.filters.query=input.value;
+      this.limit=100;
+      this.renderResults();
+    }
+    bindSearchInput(input) {
+      const active=()=>!this.closed && input===this.searchInput;
+      input.addEventListener('compositionstart',()=>{
+        if(!active())return;
+        this.cancelSearchTimer();
+        this.searchComposing=true;
+      });
+      input.addEventListener('compositionend',()=>{
+        if(!active()||!this.searchComposing)return;
+        this.searchComposing=false;
+        this.commitSearch();
+      });
+      input.addEventListener('input',event=>{
+        if(!active())return;
+        this.cancelSearchTimer();
+        if(input.value===(this.filters.query||''))return;
+        this.clearSelection('搜索条件已变化，请重新生成候选。');
+        if(this.searchComposing||event.isComposing)return;
+        if(!input.value){this.commitSearch();return;}
+        this.pendingSearch={filters:this.filters,timer:setTimeout(()=>this.commitSearch(),120)};
+      });
+      input.addEventListener('keydown',event=>{
+        if(active()&&event.key==='Enter'&&!event.isComposing&&!this.searchComposing){
+          event.preventDefault();
+          this.commitSearch();
+        }
+      });
+    }
     renderCenter() {
+      this.resetSearchInput();
       this.center.replaceChildren();
       this.panelHeader(this.center,'02','选材与预览','列表直接预览，点击标题查看全文');
       const tools=this.el('div',this.center,'mwb-assembly-search');
       this.tabs=this.el('div',tools,'mwb-assembly-tabs');
       for(const [kind,label] of [['question','题目'],['knowledge','知识']]) {
-        const tab=this.button(this.tabs,label,()=>{this.filters.kind=kind;this.limit=100;this.populateFilters(true);this.updateTabs();this.renderResults();});
+        const tab=this.button(this.tabs,label,()=>{this.resetSearchInput();this.filters.kind=kind;this.limit=100;this.populateFilters(true);this.updateTabs();this.renderResults();});
         tab.dataset.kind=kind;
       }
       this.searchInput=this.field(tools,'搜索名称、正文与标签');this.searchInput.type='search';this.searchInput.value=this.filters.query||'';
       this.searchInput.placeholder='输入关键词查找内容';
-      this.searchInput.addEventListener('input',()=>{this.filters.query=this.searchInput.value;this.limit=100;this.renderResults();});
+      this.bindSearchInput(this.searchInput);
       this.activeFilters=this.el('div',tools,'mwb-assembly-active-filters');this.activeFilters.setAttribute('aria-label','已选筛选条件');
       this.selectionPanel=this.el('section',this.center,'mwb-assembly-selection');
       this.selectionPanel.setAttribute('aria-label','条件抽题');
@@ -10408,7 +10638,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const display=select?.selectedOptions?.[0]?.textContent||labelOf(value);
         const chip=this.button(this.activeFilters,`${label}：${display} ×`,()=>{
           delete this.filters[key];if (key==='chapter') delete this.filters.section;this.limit=100;
-          if(key==='query'&&this.searchInput)this.searchInput.value='';
+          if(key==='query')this.resetSearchInput();
           this.populateFilters();this.renderResults();
         },'mwb-assembly-filter-chip');
         chip.dataset.filterKey=key;chip.setAttribute('aria-label',`清除${label}筛选`);
@@ -10420,7 +10650,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.filters={...filters};this.limit=100;
       this.resetUsageFilter?.();this.clearItemPreview();
       this.workspaceAnchors.library=null;this.workspaceScroll.library=0;
-      if(this.searchInput)this.searchInput.value=this.filters.query||'';
+      this.resetSearchInput();
       this.populateFilters();this.updateTabs();this.switchPane('library');
       if(this.workspaceMode!=='library')this.switchWorkspaceMode('library');else this.renderResults();
       this.resultsDisclosure.open=true;
@@ -10465,23 +10695,34 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           {context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now:this.usageNow});
       }
       catch(error){this.resultsSummary.textContent='使用筛选未就绪';this.emptyState(this.results,'使用记录待核对',errorText(error));return;}
-      this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
+      let familySummary='';
       if(this.filters.familyId&&core.familyGroups){
         const family=core.familyGroups(this.index).groups.find(value=>value.familyId===this.filters.familyId);
-        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);this.resultsSummary.textContent+=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');this.renderFamilyOverview(family,items.length);}
+        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);familySummary=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');this.renderFamilyOverview(family,items.length);}
       }
       if(!items.length){
         const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再刷新素材。');
         if(Object.entries(this.filters).some(([key,value])=>key!=='kind'&&value))this.button(empty,'清除筛选',()=>{
-          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.resetUsageFilter();this.searchInput.value='';this.populateFilters();this.renderResults();
+          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.resetUsageFilter();this.resetSearchInput();this.populateFilters();this.renderResults();
         });
         else if(!this.index.items.length)this.button(empty,'配置内容目录',()=>{this.configDetails.open=true;this.switchPane('filters');this.questionRootsInput.focus();});
       }
-      for(const item of items.slice(0,this.limit)) {
+      this.appendResultPage(items,previews,0,familySummary);
+      this.updateSelectedRows();
+      this.restoreWorkspaceAnchor('library');
+    }
+    appendResultPage(items,previews,start,familySummary) {
+      const end=Math.min(items.length,this.limit);
+      this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${end} 条`+familySummary;
+      let firstTitle;
+      for(const item of items.slice(start,end)) {
         const row=this.el('article',this.results,'mwb-assembly-result');
         row.dataset.sourcePath=item.path;row.dataset.sourceKind=item.kind;
         const open=()=>this.showItem(item,'results');
         const detail=this.button(row,item.title,open,'mwb-assembly-result-title');detail.title=item.title+'\n'+item.path+'\n点击查看完整内容';
+        firstTitle??=detail;
+        const selected=this.selectedItem?.key===item.key;
+        row.classList.toggle('is-selected',selected);detail.setAttribute('aria-pressed',String(selected));
         const info=[item.subject,item.kind==='question'?(typeNames[item.questionType]||item.questionType):'整篇知识',item.difficulty?`难度 ${item.difficulty}`:'',item.tier,item.role].filter(Boolean);
         const badges=this.el('div',row,'mwb-assembly-badges');
         for(const text of info)this.el('span',badges,'mwb-assembly-badge',text);
@@ -10499,9 +10740,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
       }
-      if(items.length>this.limit) this.button(this.results,'再显示 100 条',()=>{this.limit+=100;this.renderResults();});
-      this.updateSelectedRows();
-      this.restoreWorkspaceAnchor('library');
+      if(end<items.length){
+        const more=this.button(this.results,'再显示 100 条',()=>{
+          if(!more.isConnected||!previews.active)return;
+          const focused=more.ownerDocument.activeElement===more;
+          more.remove();this.limit=end+100;
+          const next=this.appendResultPage(items,previews,end,familySummary);
+          if(focused)next?.focus({preventScroll:true});
+        });
+      }
+      return firstTitle;
     }
     updateSelectedRows() {
       for(const row of this.center?.querySelectorAll('[data-source-path]')||[]){
@@ -10606,6 +10854,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     drawSelection() {
       if(this.closed||this.actionBusy||this.scanBusy) return;
       if(this.filters.kind!=='question') return;
+      if(this.searchComposing)return;
+      if(this.pendingSearch)this.commitSearch();
       try {
         const result=core.selectQuestions(this.usageIndex(),this.filters,this.plan,Number(this.selectionCount));
         this.selection={...result,index:this.index,context:this.selectionContext()};
@@ -10656,7 +10906,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     relatedKnowledge(item) {
       if(item.kind!=='question')return [];
       const keys=new Set((item.knowledgeRefs||[]).flatMap(ref=>ref.nodeKeys||[ref.nodeKey]).filter(Boolean));
-      return this.index.items.filter(node=>node.kind==='knowledge'&&keys.has(node.key));
+      const {nodes,nodeOrder}=this.filterCatalog();
+      return [...keys].filter(key=>nodes.has(key)).sort((a,b)=>nodeOrder.get(a)-nodeOrder.get(b)).map(key=>nodes.get(key));
     }
     add(item) {
       if(this.actionBusy) return;
@@ -11300,28 +11551,36 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.updateSummary();
       this.renderArrangement();
     }
-    async scan() {
+    async scan({verify=false} = {}) {
       if(this.actionBusy){this.notice('请等待当前操作完成');return;}
+      this.scanController?.abort();
+      const controller=this.scanController=new AbortController();
       const generation=++this.scanGeneration;this.scanBusy=true;
       this.updateSummary();
       this.clearSelection('正在刷新素材，请完成后重新生成候选。');this.renderSelection();
       this.setStatus('正在刷新题库与知识笔记…');
       try {
-        const index=await service.scan(this.settings);
+        const options={signal:controller.signal};
+        const index=!verify && service.browseIndex
+          ? await service.browseIndex(this.settings,options)
+          : await service.scan(this.settings,options);
         if(this.closed||generation!==this.scanGeneration)return;
         this.index=index;this.indexState='ready';this.limit=100;
-        if(usageService)await this.refreshUsage();
+        if(usageService)await this.refreshUsage({render:false});
         if(this.closed||generation!==this.scanGeneration)return;
         this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
         const issues=index.issues?.length||0;
         this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);
         return true;
       } catch(error){if(!this.closed&&generation===this.scanGeneration){this.indexState='error';this.setStatus(errorText(error),true);}}
-      finally{if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}}
+      finally{
+        if(this.scanController===controller)this.scanController=null;
+        if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}
+      }
     }
     async updateReferences() {
       if(this.actionBusy)return;
-      const scanned=await this.scan();if(!scanned||this.closed||this.scanBusy)return;
+      const scanned=await this.scan({verify:true});if(!scanned||this.closed||this.scanBusy)return;
       const resolved=core.resolvePlan(this.plan,this.index);
       let count=0;
       const entries=resolved.entries.map(({entry,item,status})=>{
@@ -14646,6 +14905,7 @@ module.exports = class MathsemblePlugin extends Plugin {
             assemblyPreview:options.assemblyPreview,onReturnToAssembly:options.onReturnToAssembly,
             planSettings:options.planSettings,onApplyPlanSettings:options.onApplyPlanSettings}).open();
       }});
+    this.register?.(() => assemblyService.disposeBrowseIndex());
     const usageService=mwbAssemblyUsage.createUsageService({vault:this.app.vault,core:mwbAssemblyCore,
       scanIndex:options=>assemblyService.scan(options.config,options)});
     const libraryService=mwbAssemblyLibrary.createLibraryService({vault:this.app.vault,core:mwbAssemblyCore,assemblyService,parseYaml,

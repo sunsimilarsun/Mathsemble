@@ -63,9 +63,12 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
  records[1].markdown+='\\n修改后的正文';index=core.buildIndex(records);await view.updateReferences();check(core.resolvePlan(view.plan,index).issues.length===0,'explicit refresh accepts changed source');
  view.titleInput.value='';view.titleInput.dispatchEvent(new Event('input'));view.renderOutline();check(view.plan.title==='新讲义','empty plan title has valid fallback');
  const section=view.plan.entries.find(entry=>entry.kind==='section');const sectionTitle=view.arrangementList.querySelector('[data-entry-id="'+section.entryId+'"] [data-arrangement-field="title"]');sectionTitle.value='';sectionTitle.dispatchEvent(new Event('change'));check(view.plan.entries.find(entry=>entry.entryId===section.entryId).title==='训练区'&&view.arrangementList.querySelector('[data-entry-id="'+section.entryId+'"] [data-arrangement-field="title"]').value==='训练区','invalid section title preserves and restores old value');
- let resolveA,resolveB,request=0;service.scan=()=>new Promise(resolve=>{if(++request===1)resolveA=resolve;else resolveB=resolve;});
+ let resolveA,resolveB,request=0;const signals=[];
+ service.browseIndex=(_settings,{signal})=>new Promise(resolve=>{signals.push(signal);if(++request===1)resolveA=resolve;else resolveB=resolve;});
  const a=view.scan(),b=view.scan();resolveB(index);await b;resolveA({items:[],issues:[]});await a;check(view.index.items.length===3,'outdated scan cannot replace latest');
- await view.onClose();check(document.querySelector('#view').childElementCount===0,'close releases view');
+ check(signals[0].aborted&&!signals[1].aborted,'superseded browse request is canceled');
+ const closingScan=view.scan();const closingSignal=signals.at(-1);await view.onClose();resolveB(index);await closingScan;
+ check(closingSignal.aborted && document.querySelector('#view').childElementCount===0,'close aborts active scan and releases view');
  const output=document.createElement('pre');output.id='mwb-test-results';output.textContent=JSON.stringify({passed:true,checks});document.body.appendChild(output);
 })().catch(error=>{const output=document.createElement('pre');output.id='mwb-test-results';output.textContent=JSON.stringify({passed:false,error:String(error.stack||error)});document.body.appendChild(output);});
 </script>`;
@@ -73,6 +76,6 @@ test('assembly native view preserves drafts, handles async scans, and recovers i
   const file=path.join(dir,'ui.html');fs.writeFileSync(file,html);
   const result=await runChromeDocument(chrome,file,path.join(dir,'profile'));
   assert.equal(result.passed,true,result.error);
-  assert.equal(result.checks.length,24);
+  assert.equal(result.checks.length,25);
  } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });

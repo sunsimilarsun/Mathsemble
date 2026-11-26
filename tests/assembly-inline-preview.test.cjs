@@ -165,7 +165,12 @@ async function browserCases(sources,css) {
     await settleAtBottom(f);
     const rect=more.getBoundingClientRect(),pane=f.view.center.getBoundingClientRect();
     ok(rect.top>=pane.top&&rect.bottom<=pane.bottom,'paging action cannot be reached in the short pane');
-    more.click();await pause();ok(cards().length===records.length,'reachable paging action did not add results');fit(f);
+    const firstPage=cards(),firstPreview=snippets(firstPage[0])[0];
+    const initialCalls=f.inlineCalls().filter(call=>call.sourcePath===firstPage[0].dataset.sourcePath).length;
+    more.focus();more.click();await pause();ok(cards().length===records.length,'reachable paging action did not add results');fit(f);
+    ok(firstPage.every((row,i)=>cards()[i]===row)&&firstPreview.isConnected,'pagination replaced first-page cards or their preview');
+    ok(f.inlineCalls().filter(call=>call.sourcePath===firstPage[0].dataset.sourcePath).length===initialCalls,'first-page preview was rendered again');
+    ok(f.doc.activeElement===cards()[firstPage.length].querySelector('.mwb-assembly-result-title'),'keyboard focus did not reach newly appended results');
     const short=await fixture({sourceRecords:[{...records[0],markdown:'短题：求 $1+1$。'}],extraParagraphs:0});
     await until(()=>snippets(short.view.results).some(node=>node.dataset.previewState==='ready'),'short question preview absent');
     const shortShell=snippets(short.view.results)[0],shortHeight=shortShell.getBoundingClientRect().height;
@@ -192,7 +197,7 @@ async function browserCases(sources,css) {
     emit(f,f.view.results);await pause();
     ok(f.inlineCalls().length===2&&f.active()===2,'visible renders were not limited to two');
     const old=f.inlineCalls().slice(),oldObservers=f.observers.slice();
-    search(f,'末尾条件 23');await pause();
+    search(f,'末尾条件 23');await until(()=>old.every(call=>call.signal.aborted),'committed search did not cancel obsolete previews');
     ok(old.every(call=>call.signal.aborted&&!call.owner.loaded),'filtering failed to abort and release old card owners');
     ok(oldObservers.every(observer=>observer.disconnected),'filtering left old observers attached');
     for(const observer of oldObservers)observer.emit(observer.observed);
@@ -203,6 +208,42 @@ async function browserCases(sources,css) {
     ok(!f.view.results.textContent.includes('第 0 道完整题干。'),'late old render polluted the replacement list');
     f.finishAll();await pause();
     ok(f.maxActive()===2&&old.every(call=>!call.node.isConnected&&!call.owner.loaded),'old card resources survived their late completion');
+  });
+
+  await check('rapid input and Chinese composition apply only the committed search',async()=>{
+    const f=await fixture({manual:true}),input=f.view.searchInput,render=f.view.renderResults.bind(f.view);
+    let renders=0;f.view.renderResults=()=>{renders++;return render();};
+    search(f,'p');search(f,'pi');ok(renders===0,'each keystroke rendered immediately');
+    input.dispatchEvent(new f.win.CompositionEvent('compositionstart'));
+    search(f,'pin');input.dispatchEvent(new f.win.KeyboardEvent('keydown',{key:'Enter',isComposing:true}));
+    await pause(160);ok(renders===0,'intermediate composition rendered');
+    input.value='末尾条件 23';input.dispatchEvent(new f.win.CompositionEvent('compositionend'));
+    search(f,'末尾条件 23');ok(renders===1 && f.view.resultsSummary.textContent.includes('找到 1 道题'),'composition commit did not render once');
+    search(f,'末尾条件');input.dispatchEvent(new f.win.KeyboardEvent('keydown',{key:'Enter'}));
+    await pause(160);ok(renders===2 && f.view.resultsSummary.textContent.includes('找到 24 道题'),'Enter did not flush the queued search exactly once');
+  });
+
+  await check('a search draft invalidates candidates immediately and drawing uses the latest input',async()=>{
+    const f=await fixture({manual:true}),view=f.view;
+    view.drawSelection();ok(view.selection?.items.length,'fixture lacks candidates');
+    search(f,'末尾条件 23');
+    ok(!view.selection&&view.applySelectionButton.disabled,'typing left the old candidate batch available');
+    await view.applySelection();ok(!view.plan.entries.length,'old candidates were added during debounce');
+    view.drawSelection();
+    ok(view.selection.items.map(item=>item.id).join()==='Q23','drawing during debounce used the previous query');
+  });
+
+  await check('clearing, switching tabs, rebuilding and closing discard stale search timers',async()=>{
+    const f=await fixture({manual:true}),view=f.view;
+    search(f,'待清除');button(view.left,'清除筛选').click();await pause(160);
+    ok(!view.filters.query&&!view.searchInput.value,'clearing filters revived the pending query');
+    search(f,'未提交');button(view.tabs,'知识').click();await pause(160);
+    ok(view.filters.kind==='knowledge'&&!view.filters.query&&!view.searchInput.value,'tab change applied an obsolete query');
+    search(f,'旧搜索框');const old=view.searchInput;view.render();
+    old.dispatchEvent(new f.win.Event('input'));await pause(160);
+    ok(view.searchInput!==old&&!view.filters.query,'a replaced search input updated the current view');
+    search(f,'关闭后');await view.onClose();await pause(160);
+    ok(!view.filters.query&&!f.host.childElementCount,'the search timer survived closing the view');
   });
 
   await check('candidate previews render without clicking and their invalidation leaves results owned independently',async()=>{

@@ -47,6 +47,47 @@ test('relative knowledge links resolve in their source file context',()=>{
   assert.equal(index.items[1].knowledgeRefs[0].nodeKey,'id:K1');
 });
 
+test('absolute and relative path matches preserve ambiguity and original node order',()=>{
+  const index=core.buildIndex([
+    knowledge('题库/知识/集合.md','K1',{title:'集合',aliases:['集合','集合']}),
+    knowledge('知识/集合.md','K2'),
+    question('题库/题.md','Q1',{knowledge_nodes:['[[知识/集合.md]]','[[./知识/集合]]','[[K1]]']})
+  ]);
+  const [absolute,relative,id]=index.items[2].knowledgeRefs;
+  for(const ref of [absolute,relative]) {
+    assert.equal(ref.status,'ambiguous');
+    assert.deepEqual(ref.candidates,['id:K1','id:K2']);
+  }
+  assert.equal(id.nodeKey,'id:K1');
+});
+
+test('knowledge filters resolve against the supplied index subset and combine multiple choices',()=>{
+  const index=core.buildIndex([
+    knowledge('甲/集合.md','K1'),knowledge('乙/集合.md','K2'),
+    question('题库/甲.md','Q1',{knowledge_nodes:['[[甲/集合]]']}),
+    question('题库/乙.md','Q2',{knowledge_nodes:['[[乙/集合]]']})
+  ]);
+  const filtered=(scope,knowledge)=>core.filterItems(scope,{kind:'question',knowledge}).map(item=>item.id);
+  assert.deepEqual(filtered(index,'集合'),[]);
+  assert.deepEqual(filtered(index,['id:K1','[[乙/集合]]']),['Q1','Q2']);
+  const subset={...index,items:index.items.filter(item=>item.id!=='K2')};
+  assert.deepEqual(filtered(subset,'集合'),['Q1']);
+  assert.deepEqual(filtered(subset,'id:K2'),[]);
+  const usedOnly={...index,items:index.items.filter(item=>item.id!=='Q1')};
+  assert.deepEqual(filtered(usedOnly,['id:K1','id:K2']),['Q2']);
+});
+
+test('metadata filters skip question bodies until the user supplies search terms',()=>{
+  const index=core.buildIndex([knowledge(),question()]);
+  let reads=0;
+  Object.defineProperty(index.items[1],'markdown',{get(){reads++;return '完整 ＡＢＣ 正文';}});
+  const filters={kind:'question',knowledge:'id:K1',query:'  '};
+  assert.deepEqual(core.filterItems(index,filters).map(item=>item.id),['Q1']);
+  assert.equal(reads,0);
+  assert.deepEqual(core.filterItems(index,{...filters,query:'abc 正文'}).map(item=>item.id),['Q1']);
+  assert.equal(reads,1);
+});
+
 test('search combines dimensions with AND and multi-selection within a dimension with OR',()=>{
   const index=core.buildIndex([knowledge(),question(),question('题库/二.md','Q2',{difficulty:4,role:'variant',source:'考试'},'空间直线'),question('题库/三.md','Q3',{subject:'初中数学'})]);
   assert.deepEqual(core.filterItems(index,{kind:'question',subject:'高中数学',difficulty:[2,4],query:'题目 x=2',method:'数形结合'}).map(i=>i.id),['Q1']);

@@ -2,7 +2,7 @@
 
 Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作讲义、题卡和试卷，预览并导出 A4 学生版／教师版 PDF、打印稿及 HTML。
 
-**当前版本为 0.4.0。** 从选材生成讲义时，整题默认引用原题卡。调整顺序后，学生版和教师版均按新顺序排出题号，紧接题干。备课时可以查找相似题、在右侧目录排序、选取小问和知识小节。上课时可逐题投影，课后按班级登记已讲或已布置的内容。此版本还提供题库诊断、确认入库和材料包交换。[下载 0.4.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.4.0) · [发布与升级说明](docs/RELEASE_NOTES_0.4.0.md)
+**当前版本为 0.5.0。** 选题时可以先定章节和小节，再从该范围内的知识点中选题。同次会话再次打开选材页会复用题库索引，加载下一批题目时保留已显示的公式预览。[下载 0.5.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.5.0) · [发布与升级说明](docs/RELEASE_NOTES_0.5.0.md)
 
 ## 选材与编排
 
@@ -49,7 +49,7 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 在 A4 界面调整后，点击“设置 → 应用到编排方案”，再返回工作区保存方案。本次调整不会自动回写；若编排已更换或修改，旧 A4 窗口会拒绝应用，需从当前方案重新打开。源题卡与已生成的讲义副本均不改写。
 
-0.4.0 可打开 v1 至 v4 方案。只使用整篇材料且未设分值时，保存格式仍为 v3。从旧方案启用分值或片段后，使用“另存方案”生成 v4，原文件保留。要交给 0.3.1 使用，清除分值、恢复整篇材料，再另存为 v3。[方案兼容](docs/ASSEMBLY_FRAGMENTS.md)
+0.5.0 可打开 v1 至 v4 方案。只使用整篇材料且未设分值时，保存格式仍为 v3。从旧方案启用分值或片段后，使用“另存方案”生成 v4，原文件保留。要交给 0.3.1 使用，清除分值、恢复整篇材料，再另存为 v3。[方案兼容](docs/ASSEMBLY_FRAGMENTS.md)
 
 ### 条件抽题
 
@@ -141,11 +141,11 @@ Mathsemble 是 Obsidian 桌面端数学教学插件，用一份 Markdown 制作�
 
 ## 安装
 
-从发布页下载同一版本的 `main.js`、`manifest.json` 和 `styles.css`。升级前备份原插件文件、组题方案、使用账本、入库批次与导出归档。[下载 0.4.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.4.0)
+从发布页下载同一版本的 `main.js`、`manifest.json` 和 `styles.css`。升级前备份原插件文件、组题方案、使用账本、入库批次与导出归档。[下载 0.5.0](https://github.com/sunsimilarsun/Mathsemble/releases/tag/0.5.0)
 
 1. 将三个同版本文件放入 `<vault>/.obsidian/plugins/mathsemble/`。
 2. 重启 Obsidian，在社区插件设置中启用 Mathsemble。
-3. 打开常用讲义，分别预览学生版和教师版，核对题号、插图和答案留白。[升级与回退说明](docs/RELEASE_NOTES_0.4.0.md)
+3. 打开“选材与编排”，选一个熟悉的小节，核对可选知识点和题目。[升级与回退说明](docs/RELEASE_NOTES_0.5.0.md)
 
 插件 ID 为 `mathsemble`，要求桌面版 Obsidian 1.5.0 及以上。社区目录审核／上架状态以实际审核结果为准。
 

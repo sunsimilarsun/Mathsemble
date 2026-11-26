@@ -9,6 +9,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
   const calloutTypes = ['solution','scaffold','thinking','method','conclusion','attention','definition','theorem','success'];
   const typeNames = {choice:'单选',multiple_choice:'多选',fill_blank:'填空',true_false:'判断',short_answer:'解答',calculation:'计算',proof:'证明',comprehensive:'综合'};
   const labelOf = value => String(value ?? '').replace(/^\[\[|\]\]$/g, '').split('|').at(-1);
+  const sortLabels = new Intl.Collator('zh-CN',{numeric:true}).compare;
   const errorText = error => String(error?.message || error);
   const plainBody = markdown => String(markdown || '').replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/, '');
   const planSaveHint = '保存讲义标题、内容顺序、来源引用、本次标题／角色，以及课程信息和默认排版；正文仍来自原笔记。';
@@ -427,6 +428,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     }
     async onClose() {
       this.closed = true;
+      this.resetSearchInput();
       this.blueprintModal?.close();
       this.familyModal?.close();
       this.similarityModal?.close();
@@ -435,6 +437,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.clearArrangementDrag();
       this.planMenuObserver?.disconnect();this.planMenuObserver=null;
       this.selectionSourceCheck?.dispose();this.selectionSourceCheck=null;
+      this.scanController?.abort();
       this.scanGeneration++; this.previewGeneration++;
       this.releasePreview();
       this.releaseInlinePreviews();
@@ -661,7 +664,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.button(filterHeader,'清除筛选',()=>{
         this.filters={kind:this.filters.kind,query:''};this.limit=100;
         this.resetUsageFilter();
-        if (this.searchInput) this.searchInput.value='';
+        this.resetSearchInput();
         this.populateFilters();this.renderResults();
       },'mwb-assembly-text-button');
       this.filterSelects = {};
@@ -687,52 +690,83 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.tree = this.el('div',this.left,'mwb-assembly-tree');
       this.renderTree();
     }
+    filterCatalog() {
+      if (this.catalog?.index===this.index) return this.catalog;
+      const scopes=new Map(),nodes=new Map(),nodeOrder=new Map(),familyCounts=new Map();
+      const options=Object.fromEntries(['subject','knowledge','method','tier','familyId','familyState',
+        'questionType','source','difficulty','role'].map(key=>[key,new Set()]));
+      const scope=(map,key)=>{
+        if (!map.has(key)) map.set(key,{children:new Map(),knowledge:new Set(),nodeKeys:new Set()});
+        return map.get(key);
+      };
+      for (const item of this.index.items) {
+        if (item.kind==='knowledge') { nodeOrder.set(item.key,nodes.size);nodes.set(item.key,item); }
+        for (const [key,values] of Object.entries(options)) {
+          if ((key==='familyId'||key==='familyState') && item.kind!=='question') continue;
+          const raw=key==='knowledge'?item.knowledgeNodes:key==='tier'?item.tiers:
+            key==='method'?item.methods.map(value=>core.parseKnowledgeRef(value).target):item[key];
+          for (const value of Array.isArray(raw)?raw:[raw])
+            if (value!==null && value!==undefined && value!=='') values.add(String(value));
+        }
+        if (item.kind!=='question') continue;
+        if (item.familyState==='classified') familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
+        if (!item.chapter) continue;
+        const nodeKeys=(item.knowledgeRefs||[]).flatMap(ref=>ref.nodeKeys || (ref.nodeKey?[ref.nodeKey]:[]));
+        for (const subject of item.subject?['',item.subject]:['']) {
+          const chapter=scope(scope(scopes,subject).children,item.chapter);
+          const destinations=item.section?[chapter,scope(chapter.children,item.section)]:[chapter];
+          for (const destination of destinations) {
+            for (const value of item.knowledgeNodes) destination.knowledge.add(value);
+            for (const key of nodeKeys) destination.nodeKeys.add(key);
+          }
+        }
+      }
+      this.catalog={index:this.index,scopes,nodes,nodeOrder,familyCounts,options,empty:new Map(),selectOptions:new WeakMap()};
+      return this.catalog;
+    }
     populateFilters(scopeOnly=false) {
       if (!this.filterSelects) return;
-      const {items}=this.index;
-      const filters=this.filters, questionTab=filters.kind==='question', ready=this.indexState==='ready';
-      const questions=items.filter(item=>item.kind==='question' && (!filters.subject || item.subject===filters.subject));
-      const chapters=new Set(questions.map(item=>item.chapter).filter(Boolean));
+      const catalog=this.filterCatalog(), {nodes,familyCounts,empty}=catalog;
+      const filters=this.filters,questionTab=filters.kind==='question',ready=this.indexState==='ready';
+      const chapters=catalog.scopes.get(filters.subject||'')?.children || empty;
       if (ready && filters.chapter && !chapters.has(filters.chapter)) {
         delete filters.chapter; delete filters.section;
       }
-      const chapterQuestions=filters.chapter ? questions.filter(item=>item.chapter===filters.chapter) : [];
-      const sections=new Set(chapterQuestions.map(item=>item.section).filter(Boolean));
+      const chapter=chapters.get(filters.chapter),sections=chapter?.children || empty;
       if (ready && filters.section && !sections.has(filters.section)) delete filters.section;
-      const scoped=questionTab && !!filters.chapter;
-      const knowledgeItems=scoped ? chapterQuestions.filter(item=>!filters.section || item.section===filters.section) : items;
-      const knowledge=new Set(knowledgeItems.flatMap(item=>item.knowledgeNodes));
-      // A tree shortcut uses the note key. Its questions may declare aliases,
-      // wiki links or shared labels, so compare with the same rules as the results.
-      if (ready && scoped && filters.knowledge && !knowledge.has(filters.knowledge) &&
-          !core.filterItems(this.index,{kind:'question',subject:filters.subject,chapter:filters.chapter,section:filters.section,knowledge:filters.knowledge}).length)
-        delete filters.knowledge;
-      const scopeValues={chapter:chapters,section:sections,knowledge};
+      const scope=questionTab && chapter && (chapter.children.get(filters.section)||chapter);
+      const knowledge=scope?scope.knowledge:catalog.options.knowledge;
+      if (ready && scope && filters.knowledge && !knowledge.has(filters.knowledge) && !scope.nodeKeys.has(filters.knowledge)) {
+        // Older saved layouts can identify a note by its alias or bare ID.
+        if (nodes.has(filters.knowledge) || !core.filterItems(this.index,{kind:'question',subject:filters.subject,
+          chapter:filters.chapter,section:filters.section,knowledge:filters.knowledge}).length) delete filters.knowledge;
+      }
       this.filterSelects.chapter.parentElement.hidden=!questionTab;
       this.filterSelects.section.parentElement.hidden=!questionTab;
       this.filterSelects.section.disabled=!filters.chapter || !sections.size;
-      const nodes=new Map(items.filter(item=>item.kind==='knowledge').map(item=>[item.key,item]));
-      const familyCounts=new Map();
-      if (!scopeOnly) for(const item of items) if(item.kind==='question'&&item.familyState==='classified')
-        familyCounts.set(item.familyId,(familyCounts.get(item.familyId)||0)+1);
+      const scopeValues={chapter:chapters,section:sections,knowledge};
       for (const [key,select] of Object.entries(this.filterSelects)) {
         if (scopeOnly && !Object.hasOwn(scopeValues,key)) continue;
-        const values = scopeValues[key] || new Set();
-        if (!Object.hasOwn(scopeValues,key)) for (const item of items) {
-          if(['familyId','familyState'].includes(key)&&item.kind!=='question')continue;
-          const raw = key==='method' ? item.methods.map(value=>core.parseKnowledgeRef(value).target) : key==='tier' ? item.tiers : item[key];
-          for (const value of Array.isArray(raw)?raw:[raw]) if (value !== null && value !== undefined && value !== '') values.add(String(value));
-        }
+        const values=scopeValues[key] || catalog.options[key];
         let current=String(filters[key]||'');
         if(['knowledge','method'].includes(key)&&['','~','[]'].includes(core.parseKnowledgeRef(current).target)){
           current='';filters[key]='';
         }
-        if(current) values.add(current);
-        select.replaceChildren();this.el('option',select,'',key==='section'&&!filters.chapter?'先选章节':'不限').value='';
-        for (const value of [...values].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}))) {
-          const node = key==='knowledge' ? nodes.get(value) : null;
-          const familyCount=key==='familyId'?familyCounts.get(value)||0:null;
-          this.el('option',select,'',node ? node.title : key==='familyId'?`${value}（${familyCount} 题）`:key==='familyState'?({classified:'已归族',unclassified:'未归族',invalid:'字段异常'}[value]||value):key==='questionType' ? typeNames[value]||value : labelOf(value)).value=value;
+        const extra=current && !values.has(current)?current:'';
+        const prompt=key==='section'&&!filters.chapter?'先选章节':'不限';
+        const previous=catalog.selectOptions.get(select);
+        if (!previous || previous.values!==values || previous.extra!==extra || previous.prompt!==prompt) {
+          const sorted=[...values.keys()];
+          if (extra) sorted.push(extra);
+          select.replaceChildren();this.el('option',select,'',prompt).value='';
+          for (const value of sorted.sort(sortLabels)) {
+            const node=key==='knowledge'?nodes.get(value):null;
+            const label=node?node.title:key==='familyId'?value+'（'+(familyCounts.get(value)||0)+' 题）':
+              key==='familyState'?({classified:'已归族',unclassified:'未归族',invalid:'字段异常'}[value]||value):
+              key==='questionType'?typeNames[value]||value:labelOf(value);
+            this.el('option',select,'',label).value=value;
+          }
+          catalog.selectOptions.set(select,{values,extra,prompt});
         }
         select.value=current;
       }
@@ -742,20 +776,20 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.usageFilter.mode='all';const select=this.root?.querySelector('[data-usage-field="mode"]');if(select)select.value='all';
       this.usageGeneration++;this.app.workspace.requestSaveLayout?.();
     }
-    async refreshUsage() {
+    async refreshUsage({render=true}={}) {
       if(!usageService)return;
       const generation=++this.usageGeneration,context=this.usageContext();
       this.usageLedger=null;this.usageStats=new Map();
       this.clearSelection('使用记录已变化，请重新生成候选。');
-      if(!context.classId&&!context.courseId){this.usageState='idle';this.usageError='请填写班级或课程代号';if(!this.closed)this.renderResults();return;}
-      this.usageState='loading';if(!this.closed)this.renderResults();
+      if(!context.classId&&!context.courseId){this.usageState='idle';this.usageError='请填写班级或课程代号';if(render&&!this.closed)this.renderResults();return;}
+      this.usageState='loading';if(render&&!this.closed)this.renderResults();
       try {
         const ledger=await usageService.loadUsage({context});
         if(this.closed||generation!==this.usageGeneration)return;
         this.usageLedger=ledger;this.usageState='ready';this.usageNow=new Date().toISOString();
         this.usageStats=new Map(usageService.summarizeUsage(this.index.items,ledger,{context,now:this.usageNow}).map(row=>[row.item.key,row]));
       }catch(error){if(!this.closed&&generation===this.usageGeneration){this.usageState='error';this.usageError=errorText(error);}}
-      if(!this.closed&&generation===this.usageGeneration)this.renderResults();
+      if(render&&!this.closed&&generation===this.usageGeneration)this.renderResults();
     }
     usageIndex(index=this.index,ledger=this.usageLedger,now=this.usageNow) {
       if(!usageService||this.usageFilter.mode==='all')return index;
@@ -797,6 +831,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           const row=this.el('div',details,'mwb-assembly-tree-row');
           this.button(row,item.title,()=>this.showItem(item),'mwb-assembly-tree-item');
           const related=this.button(row,'关联题',()=>{
+            this.resetSearchInput();
             this.filters.kind='question';this.filters.knowledge=item.key;this.limit=100;
             if (this.filters.chapter) {
               const scope={kind:'question',subject:this.filters.subject,chapter:this.filters.chapter,section:this.filters.section,knowledge:item.key};
@@ -822,18 +857,66 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         }
       }
     }
+    cancelSearchTimer() {
+      clearTimeout(this.pendingSearch?.timer);
+      this.pendingSearch=null;
+    }
+    resetSearchInput() {
+      this.cancelSearchTimer();
+      this.searchComposing=false;
+      if(this.searchInput)this.searchInput.value=this.filters.query||'';
+    }
+    commitSearch() {
+      const pending=this.pendingSearch,input=this.searchInput;
+      this.cancelSearchTimer();
+      if(this.closed||this.searchComposing||!input)return;
+      if(pending && pending.filters!==this.filters){input.value=this.filters.query||'';return;}
+      if(input.value===(this.filters.query||''))return;
+      this.filters.query=input.value;
+      this.limit=100;
+      this.renderResults();
+    }
+    bindSearchInput(input) {
+      const active=()=>!this.closed && input===this.searchInput;
+      input.addEventListener('compositionstart',()=>{
+        if(!active())return;
+        this.cancelSearchTimer();
+        this.searchComposing=true;
+      });
+      input.addEventListener('compositionend',()=>{
+        if(!active()||!this.searchComposing)return;
+        this.searchComposing=false;
+        this.commitSearch();
+      });
+      input.addEventListener('input',event=>{
+        if(!active())return;
+        this.cancelSearchTimer();
+        if(input.value===(this.filters.query||''))return;
+        this.clearSelection('搜索条件已变化，请重新生成候选。');
+        if(this.searchComposing||event.isComposing)return;
+        if(!input.value){this.commitSearch();return;}
+        this.pendingSearch={filters:this.filters,timer:setTimeout(()=>this.commitSearch(),120)};
+      });
+      input.addEventListener('keydown',event=>{
+        if(active()&&event.key==='Enter'&&!event.isComposing&&!this.searchComposing){
+          event.preventDefault();
+          this.commitSearch();
+        }
+      });
+    }
     renderCenter() {
+      this.resetSearchInput();
       this.center.replaceChildren();
       this.panelHeader(this.center,'02','选材与预览','列表直接预览，点击标题查看全文');
       const tools=this.el('div',this.center,'mwb-assembly-search');
       this.tabs=this.el('div',tools,'mwb-assembly-tabs');
       for(const [kind,label] of [['question','题目'],['knowledge','知识']]) {
-        const tab=this.button(this.tabs,label,()=>{this.filters.kind=kind;this.limit=100;this.populateFilters(true);this.updateTabs();this.renderResults();});
+        const tab=this.button(this.tabs,label,()=>{this.resetSearchInput();this.filters.kind=kind;this.limit=100;this.populateFilters(true);this.updateTabs();this.renderResults();});
         tab.dataset.kind=kind;
       }
       this.searchInput=this.field(tools,'搜索名称、正文与标签');this.searchInput.type='search';this.searchInput.value=this.filters.query||'';
       this.searchInput.placeholder='输入关键词查找内容';
-      this.searchInput.addEventListener('input',()=>{this.filters.query=this.searchInput.value;this.limit=100;this.renderResults();});
+      this.bindSearchInput(this.searchInput);
       this.activeFilters=this.el('div',tools,'mwb-assembly-active-filters');this.activeFilters.setAttribute('aria-label','已选筛选条件');
       this.selectionPanel=this.el('section',this.center,'mwb-assembly-selection');
       this.selectionPanel.setAttribute('aria-label','条件抽题');
@@ -855,7 +938,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         const display=select?.selectedOptions?.[0]?.textContent||labelOf(value);
         const chip=this.button(this.activeFilters,`${label}：${display} ×`,()=>{
           delete this.filters[key];if (key==='chapter') delete this.filters.section;this.limit=100;
-          if(key==='query'&&this.searchInput)this.searchInput.value='';
+          if(key==='query')this.resetSearchInput();
           this.populateFilters();this.renderResults();
         },'mwb-assembly-filter-chip');
         chip.dataset.filterKey=key;chip.setAttribute('aria-label',`清除${label}筛选`);
@@ -867,7 +950,7 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.filters={...filters};this.limit=100;
       this.resetUsageFilter?.();this.clearItemPreview();
       this.workspaceAnchors.library=null;this.workspaceScroll.library=0;
-      if(this.searchInput)this.searchInput.value=this.filters.query||'';
+      this.resetSearchInput();
       this.populateFilters();this.updateTabs();this.switchPane('library');
       if(this.workspaceMode!=='library')this.switchWorkspaceMode('library');else this.renderResults();
       this.resultsDisclosure.open=true;
@@ -912,23 +995,34 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
           {context:this.usageContext(),mode:this.usageFilter.mode,days:this.usageFilter.days,now:this.usageNow});
       }
       catch(error){this.resultsSummary.textContent='使用筛选未就绪';this.emptyState(this.results,'使用记录待核对',errorText(error));return;}
-      this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${Math.min(items.length,this.limit)} 条`;
+      let familySummary='';
       if(this.filters.familyId&&core.familyGroups){
         const family=core.familyGroups(this.index).groups.find(value=>value.familyId===this.filters.familyId);
-        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);this.resultsSummary.textContent+=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');this.renderFamilyOverview(family,items.length);}
+        if(family){const detail=[...Object.entries(family.tiers),...Object.entries(family.roles)].map(([label,count])=>`${label} ${count}`);familySummary=` · 题族共 ${family.count} 题`+(detail.length?'（'+detail.join('、')+'）':'');this.renderFamilyOverview(family,items.length);}
       }
       if(!items.length){
         const empty=this.emptyState(this.results,'没有匹配内容',this.index.items.length?'试试减少筛选条件，或更换关键词。':'先在“内容目录”中配置题库或知识目录，再刷新素材。');
         if(Object.entries(this.filters).some(([key,value])=>key!=='kind'&&value))this.button(empty,'清除筛选',()=>{
-          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.resetUsageFilter();this.searchInput.value='';this.populateFilters();this.renderResults();
+          this.filters={kind:this.filters.kind,query:''};this.limit=100;this.resetUsageFilter();this.resetSearchInput();this.populateFilters();this.renderResults();
         });
         else if(!this.index.items.length)this.button(empty,'配置内容目录',()=>{this.configDetails.open=true;this.switchPane('filters');this.questionRootsInput.focus();});
       }
-      for(const item of items.slice(0,this.limit)) {
+      this.appendResultPage(items,previews,0,familySummary);
+      this.updateSelectedRows();
+      this.restoreWorkspaceAnchor('library');
+    }
+    appendResultPage(items,previews,start,familySummary) {
+      const end=Math.min(items.length,this.limit);
+      this.resultsSummary.textContent=`找到 ${items.length} ${this.filters.kind==='knowledge'?'篇知识':'道题'}，显示 ${end} 条`+familySummary;
+      let firstTitle;
+      for(const item of items.slice(start,end)) {
         const row=this.el('article',this.results,'mwb-assembly-result');
         row.dataset.sourcePath=item.path;row.dataset.sourceKind=item.kind;
         const open=()=>this.showItem(item,'results');
         const detail=this.button(row,item.title,open,'mwb-assembly-result-title');detail.title=item.title+'\n'+item.path+'\n点击查看完整内容';
+        firstTitle??=detail;
+        const selected=this.selectedItem?.key===item.key;
+        row.classList.toggle('is-selected',selected);detail.setAttribute('aria-pressed',String(selected));
         const info=[item.subject,item.kind==='question'?(typeNames[item.questionType]||item.questionType):'整篇知识',item.difficulty?`难度 ${item.difficulty}`:'',item.tier,item.role].filter(Boolean);
         const badges=this.el('div',row,'mwb-assembly-badges');
         for(const text of info)this.el('span',badges,'mwb-assembly-badge',text);
@@ -946,9 +1040,16 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
         row.classList.toggle('is-added',added);
         const add=this.button(row,added?'已加入':'加入',()=>this.add(item));add.disabled=added;add.classList.add('mwb-assembly-add');
       }
-      if(items.length>this.limit) this.button(this.results,'再显示 100 条',()=>{this.limit+=100;this.renderResults();});
-      this.updateSelectedRows();
-      this.restoreWorkspaceAnchor('library');
+      if(end<items.length){
+        const more=this.button(this.results,'再显示 100 条',()=>{
+          if(!more.isConnected||!previews.active)return;
+          const focused=more.ownerDocument.activeElement===more;
+          more.remove();this.limit=end+100;
+          const next=this.appendResultPage(items,previews,end,familySummary);
+          if(focused)next?.focus({preventScroll:true});
+        });
+      }
+      return firstTitle;
     }
     updateSelectedRows() {
       for(const row of this.center?.querySelectorAll('[data-source-path]')||[]){
@@ -1053,6 +1154,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     drawSelection() {
       if(this.closed||this.actionBusy||this.scanBusy) return;
       if(this.filters.kind!=='question') return;
+      if(this.searchComposing)return;
+      if(this.pendingSearch)this.commitSearch();
       try {
         const result=core.selectQuestions(this.usageIndex(),this.filters,this.plan,Number(this.selectionCount));
         this.selection={...result,index:this.index,context:this.selectionContext()};
@@ -1103,7 +1206,8 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
     relatedKnowledge(item) {
       if(item.kind!=='question')return [];
       const keys=new Set((item.knowledgeRefs||[]).flatMap(ref=>ref.nodeKeys||[ref.nodeKey]).filter(Boolean));
-      return this.index.items.filter(node=>node.kind==='knowledge'&&keys.has(node.key));
+      const {nodes,nodeOrder}=this.filterCatalog();
+      return [...keys].filter(key=>nodes.has(key)).sort((a,b)=>nodeOrder.get(a)-nodeOrder.get(b)).map(key=>nodes.get(key));
     }
     add(item) {
       if(this.actionBusy) return;
@@ -1747,28 +1851,36 @@ module.exports = function createAssemblyView({ItemView, Notice, Component, core,
       this.updateSummary();
       this.renderArrangement();
     }
-    async scan() {
+    async scan({verify=false} = {}) {
       if(this.actionBusy){this.notice('请等待当前操作完成');return;}
+      this.scanController?.abort();
+      const controller=this.scanController=new AbortController();
       const generation=++this.scanGeneration;this.scanBusy=true;
       this.updateSummary();
       this.clearSelection('正在刷新素材，请完成后重新生成候选。');this.renderSelection();
       this.setStatus('正在刷新题库与知识笔记…');
       try {
-        const index=await service.scan(this.settings);
+        const options={signal:controller.signal};
+        const index=!verify && service.browseIndex
+          ? await service.browseIndex(this.settings,options)
+          : await service.scan(this.settings,options);
         if(this.closed||generation!==this.scanGeneration)return;
         this.index=index;this.indexState='ready';this.limit=100;
-        if(usageService)await this.refreshUsage();
+        if(usageService)await this.refreshUsage({render:false});
         if(this.closed||generation!==this.scanGeneration)return;
         this.populateFilters();this.renderTree();this.renderResults();this.renderOutline();
         const issues=index.issues?.length||0;
         this.setStatus(`已刷新 ${index.items.length} 份素材${issues?`；${issues} 项待核对` : ''}。编排中的来源变化需单独接受。`,!!issues);
         return true;
       } catch(error){if(!this.closed&&generation===this.scanGeneration){this.indexState='error';this.setStatus(errorText(error),true);}}
-      finally{if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}}
+      finally{
+        if(this.scanController===controller)this.scanController=null;
+        if(generation===this.scanGeneration){this.scanBusy=false;if(!this.closed){this.renderSelection();this.updateSummary();}}
+      }
     }
     async updateReferences() {
       if(this.actionBusy)return;
-      const scanned=await this.scan();if(!scanned||this.closed||this.scanBusy)return;
+      const scanned=await this.scan({verify:true});if(!scanned||this.closed||this.scanBusy)return;
       const resolved=core.resolvePlan(this.plan,this.index);
       let count=0;
       const entries=resolved.entries.map(({entry,item,status})=>{
